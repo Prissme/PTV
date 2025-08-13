@@ -1,0 +1,42 @@
+# Fichiers de développement
+.git
+.gitignore
+README.md
+*.md
+
+# Environnement Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Variables d'environnement (ne jamais inclure dans l'image)
+.env
+.env.local
+.env.example
+
+# Cache
+.cache/
+.pytest_cache/
+
+# Autres
+node_modules/
+dist/
+build/
