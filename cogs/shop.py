@@ -5,14 +5,14 @@ import logging
 
 from config import ITEMS_PER_PAGE, Colors, Emojis
 from utils.embeds import (
-    create_shop_embed, create_purchase_embed, create_inventory_embed,
+    create_shop_embed, create_purchase_embed,
     create_error_embed, create_warning_embed
 )
 
 logger = logging.getLogger(__name__)
 
 class Shop(commands.Cog):
-    """Système boutique : shop, buy, inventory"""
+    """Système boutique essentiel : shop, buy"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -21,7 +21,7 @@ class Shop(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info("✅ Cog Shop initialisé")
+        logger.info("✅ Cog Shop initialisé (simplifié)")
 
     @commands.command(name='shop', aliases=['boutique', 'store'])
     async def shop_cmd(self, ctx, page: int = 1):
@@ -131,82 +131,6 @@ class Shop(commands.Cog):
         except Exception as e:
             logger.error(f"Erreur buy {user_id} -> {item_id}: {e}")
             embed = create_error_embed("Erreur", "Erreur lors de l'achat.")
-            await ctx.send(embed=embed)
-
-    @commands.command(name='inventory', aliases=['inv', 'mes-achats'])
-    async def inventory_cmd(self, ctx, member: discord.Member = None):
-        """Affiche les achats d'un utilisateur"""
-        target = member or ctx.author
-        
-        try:
-            purchases = await self.db.get_user_purchases(target.id)
-            embed = create_inventory_embed(target, purchases)
-            await ctx.send(embed=embed)
-            
-        except Exception as e:
-            logger.error(f"Erreur inventory {target.id}: {e}")
-            embed = create_error_embed("Erreur", "Erreur lors de l'affichage de l'inventaire.")
-            await ctx.send(embed=embed)
-
-    @commands.command(name='iteminfo', aliases=['info-item'])
-    async def iteminfo_cmd(self, ctx, item_id: int):
-        """Affiche les détails d'un item du shop"""
-        try:
-            item = await self.db.get_shop_item(item_id)
-            
-            if not item:
-                embed = create_error_embed("Item introuvable", f"Aucun item avec l'ID {item_id}.")
-                await ctx.send(embed=embed)
-                return
-            
-            # Créer l'embed d'information
-            embed = discord.Embed(
-                title=f"ℹ️ Informations sur l'item",
-                color=Colors.INFO
-            )
-            
-            # Icône selon le type
-            icon = Emojis.ROLE if item["type"] == "role" else Emojis.SHOP
-            
-            embed.add_field(name="📛 Nom", value=f"{icon} **{item['name']}**", inline=True)
-            embed.add_field(name="🆔 ID", value=f"`{item['id']}`", inline=True)
-            embed.add_field(name="💰 Prix", value=f"**{item['price']:,}** PrissBucks", inline=True)
-            
-            embed.add_field(name="📝 Description", value=item['description'], inline=False)
-            embed.add_field(name="📊 Statut", value="✅ Disponible" if item['is_active'] else "❌ Indisponible", inline=True)
-            embed.add_field(name="🏷️ Type", value=item['type'].capitalize(), inline=True)
-            
-            # Informations spécifiques au type
-            if item["type"] == "role" and item.get("data", {}).get("role_id"):
-                role_id = item["data"]["role_id"]
-                role = ctx.guild.get_role(int(role_id))
-                if role:
-                    embed.add_field(name="🎭 Rôle Discord", value=f"{role.mention} (`{role.id}`)", inline=True)
-                else:
-                    embed.add_field(name="🎭 Rôle Discord", value=f"⚠️ Rôle introuvable (`{role_id}`)", inline=True)
-            
-            # Date de création
-            if item.get('created_at'):
-                created_timestamp = int(item['created_at'].timestamp())
-                embed.add_field(name="📅 Ajouté le", value=f"<t:{created_timestamp}:d>", inline=True)
-            
-            # Statistiques d'achat
-            try:
-                async with self.db.pool.acquire() as conn:
-                    purchase_count = await conn.fetchval(
-                        "SELECT COUNT(*) FROM user_purchases WHERE item_id = $1", item_id
-                    )
-                embed.add_field(name="📈 Nombre d'achats", value=f"**{purchase_count}** fois", inline=True)
-            except:
-                pass  # Ignorer si erreur
-            
-            embed.set_footer(text=f"Utilisez !buy {item_id} pour acheter cet item")
-            
-            await ctx.send(embed=embed)
-            
-        except Exception as e:
-            logger.error(f"Erreur iteminfo {item_id}: {e}")
-            embed = create_error_embed("Erreur", "Erreur lors de l'affichage des informations.")
             await ctx.send(embed=embed)
 
 async def setup(bot):
