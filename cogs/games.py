@@ -128,7 +128,7 @@ class PPCView(discord.ui.View):
             # Continuer au round suivant
             await self.next_round()
 
-    async def next_round(self, interaction: discord.Interaction):
+    async def next_round(self):
         """Passe au round suivant"""
         self.current_round += 1
         self.challenger_choice = None
@@ -137,18 +137,13 @@ class PPCView(discord.ui.View):
         # Créer l'embed du round suivant
         embed = self.create_game_embed()
         
-        # Mettre à jour le message
+        # Mettre à jour le message principal
         try:
-            await interaction.edit_original_response(embed=embed, view=self)
-        except:
-            try:
-                await interaction.followup.send(embed=embed, view=self)
-            except:
-                # En dernier recours, utiliser le message sauvegardé
-                if hasattr(self, 'message') and self.message:
-                    await self.message.edit(embed=embed, view=self)
+            await self.message.edit(embed=embed, view=self)
+        except Exception as e:
+            logger.error(f"Erreur mise à jour round suivant: {e}")
 
-    async def finish_game(self, interaction: discord.Interaction):
+    async def finish_game(self):
         """Termine le jeu et détermine le gagnant final"""
         self.game_finished = True
         
@@ -210,17 +205,11 @@ class PPCView(discord.ui.View):
         for item in self.children:
             item.disabled = True
         
-        # Modifier le message original pour que tout le monde puisse voir
+        # Modifier le message principal pour que tout le monde puisse voir
         try:
-            await interaction.edit_original_response(embed=embed, view=self)
-        except:
-            # Si l'édition échoue, envoyer un nouveau message public
-            try:
-                await interaction.followup.send(embed=embed, view=self)
-            except:
-                # En dernier recours, utiliser le message sauvegardé
-                if hasattr(self, 'message') and self.message:
-                    await self.message.edit(embed=embed, view=self)
+            await self.message.edit(embed=embed, view=self)
+        except Exception as e:
+            logger.error(f"Erreur mise à jour résultat final: {e}")
 
     def create_game_embed(self):
         """Crée l'embed pour l'état actuel du jeu"""
