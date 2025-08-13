@@ -6,7 +6,7 @@ load_dotenv()
 
 # ==================== BOT SETTINGS ====================
 TOKEN = os.getenv("DISCORD_TOKEN")
-PREFIX = os.getenv("PREFIX", "!")
+PREFIX = os.getenv("PREFIX", "e!")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 # Vérification des variables critiques
