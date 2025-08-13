@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timezone
 
 from config import Colors, Emojis
-from embeds import create_error_embed, create_success_embed, create_info_embed
+from utils.embeds import create_error_embed, create_success_embed, create_info_embed
 
 logger = logging.getLogger(__name__)
 
@@ -300,7 +300,8 @@ class PPCView(discord.ui.View):
             rounds_text = ""
             for round_data in self.rounds:
                 c_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['challenger_choice']]
-                o_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['opponent_choice']]
+                o_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['opponent_choice']
+
                 
                 if round_data['winner'] == self.challenger:
                     result = f"🟢 {self.challenger.display_name}"
