@@ -1,0 +1,23 @@
+[app]
+name = "discord-economy-bot"
+
+[build]
+dockerfile = "Dockerfile"
+
+[deploy]
+type = "web"
+ports = [8000]
+health_check = "/"
+
+[[deploy.env]]
+key = "PORT"
+value = "8000"
+
+# Ajoutez vos variables d'environnement ici
+# [[deploy.env]]
+# key = "DISCORD_TOKEN"
+# value = "your_bot_token_here"
+# 
+# [[deploy.env]]
+# key = "DATABASE_URL"
+# value = "your_database_url_here"
