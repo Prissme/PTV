@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 import logging
+from datetime import datetime
 
 from config import PREFIX, Colors, Emojis
 from utils.embeds import create_help_embed, create_info_embed
@@ -15,6 +16,9 @@ class Help(commands.Cog):
     
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
+        # Ajouter l'heure de démarrage du bot si pas déjà définie
+        if not hasattr(self.bot, 'start_time'):
+            self.bot.start_time = datetime.utcnow()
         logger.info("✅ Cog Help initialisé")
 
     @commands.command(name='help', aliases=['h', 'aide', 'commands'])
@@ -41,10 +45,11 @@ class Help(commands.Cog):
             embed.set_thumbnail(url=self.bot.user.display_avatar.url)
             
             # Ajouter des infos sur le bot
+            start_time = getattr(self.bot, 'start_time', datetime.utcnow())
             embed.add_field(
                 name="🤖 Informations Bot",
                 value=f"**Serveurs :** {len(self.bot.guilds)}\n"
-                      f"**Uptime :** <t:{int(self.bot.start_time.timestamp())}:R>\n"
+                      f"**Uptime :** <t:{int(start_time.timestamp())}:R>\n"
                       f"**Latence :** {round(self.bot.latency * 1000)}ms",
                 inline=False
             )
@@ -203,7 +208,9 @@ class Help(commands.Cog):
             )
             
             embed.set_thumbnail(url=self.bot.user.display_avatar.url)
-            embed.set_footer(text=f"Développé avec ❤️ • Uptime: depuis le {self.bot.start_time.strftime('%d/%m/%Y')}")
+            
+            start_time = getattr(self.bot, 'start_time', datetime.utcnow())
+            embed.set_footer(text=f"Développé avec ❤️ • Uptime: depuis le {start_time.strftime('%d/%m/%Y')}")
             
             await ctx.send(embed=embed)
             
@@ -258,7 +265,8 @@ class Help(commands.Cog):
             )
             
             # Uptime
-            uptime_seconds = (ctx.message.created_at - self.bot.start_time).total_seconds()
+            start_time = getattr(self.bot, 'start_time', datetime.utcnow())
+            uptime_seconds = (ctx.message.created_at - start_time).total_seconds()
             uptime_text = self.format_uptime(uptime_seconds)
             embed.add_field(
                 name="⏰ Uptime",
@@ -340,9 +348,4 @@ class Help(commands.Cog):
 
 async def setup(bot):
     """Fonction appelée pour charger le cog"""
-    # Ajouter l'heure de démarrage du bot
-    if not hasattr(bot, 'start_time'):
-        from datetime import datetime
-        bot.start_time = datetime.utcnow()
-    
     await bot.add_cog(Help(bot))
