@@ -95,16 +95,6 @@ class PPCView(discord.ui.View):
         # Déterminer le gagnant du round
         round_winner = self.determine_round_winner()
         
-        # Emojis pour l'affichage
-        choice_emojis = {
-            'pierre': '🗿',
-            'papier': '📄', 
-            'ciseaux': '✂️'
-        }
-        
-        challenger_display = f"{choice_emojis[self.challenger_choice]} {self.challenger_choice.capitalize()}"
-        opponent_display = f"{choice_emojis[self.opponent_choice]} {self.opponent_choice.capitalize()}"
-        
         # Enregistrer le résultat du round
         round_result = {
             'round': self.current_round,
@@ -213,10 +203,6 @@ class PPCView(discord.ui.View):
 
     def create_game_embed(self):
         """Crée l'embed pour l'état actuel du jeu"""
-        # Calculer les victoires nécessaires restantes
-        challenger_needed = max(0, 2 - self.challenger_wins)
-        opponent_needed = max(0, 2 - self.opponent_wins)
-        
         embed = discord.Embed(
             title="🎮 Pierre - Papier - Ciseaux (BO3)",
             description=f"**Round {self.current_round}** en cours !\n\n"
@@ -233,7 +219,7 @@ class PPCView(discord.ui.View):
             rounds_text = ""
             for round_data in self.rounds:
                 c_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['challenger_choice']]
-                o_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['opponent_choice']]]
+                o_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['opponent_choice']]
                 
                 if round_data['winner'] == self.challenger:
                     result = f"🟢 {self.challenger.display_name}"
@@ -300,8 +286,7 @@ class PPCView(discord.ui.View):
             rounds_text = ""
             for round_data in self.rounds:
                 c_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['challenger_choice']]
-                o_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['opponent_choice']
-
+                o_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['opponent_choice']]
                 
                 if round_data['winner'] == self.challenger:
                     result = f"🟢 {self.challenger.display_name}"
@@ -435,5 +420,3 @@ class PierrepapierCiseaux(commands.Cog):
 async def setup(bot):
     """Fonction appelée pour charger le cog"""
     await bot.add_cog(PierrepapierCiseaux(bot))
-    
-    # Note: La synchronisation se fait automatiquement au démarrage du bot
