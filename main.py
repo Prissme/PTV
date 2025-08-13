@@ -41,17 +41,6 @@ async def on_ready():
     """Événement déclenché quand le bot est prêt"""
     logger.info(f"✅ {bot.user} est connecté et prêt !")
     logger.info(f"📊 Connecté à {len(bot.guilds)} serveur(s)")
-    
-    # Connecter la base de données
-    global database
-    try:
-        database = Database(dsn=DATABASE_URL)
-        await database.connect()
-        bot.database = database  # Rendre la DB accessible aux cogs
-        logger.info("✅ Base de données connectée avec succès")
-    except Exception as e:
-        logger.error(f"❌ Erreur de connexion à la base de données: {e}")
-        raise
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -79,6 +68,19 @@ async def on_guild_join(guild):
 async def on_guild_remove(guild):
     """Événement quand le bot quitte un serveur"""
     logger.info(f"❌ Bot retiré du serveur: {guild.name} ({guild.id})")
+
+async def setup_database():
+    """Connecte la base de données et l'attache au bot"""
+    global database
+    try:
+        database = Database(dsn=DATABASE_URL)
+        await database.connect()
+        bot.database = database  # Rendre la DB accessible aux cogs
+        logger.info("✅ Base de données connectée avec succès")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Erreur de connexion à la base de données: {e}")
+        return False
 
 async def load_cogs():
     """Charge automatiquement tous les cogs"""
@@ -172,10 +174,18 @@ async def list_cogs(ctx):
 async def main():
     """Fonction principale pour démarrer le bot"""
     try:
-        # Charger les cogs
+        # 1. D'ABORD connecter la base de données
+        logger.info("🔌 Connexion à la base de données...")
+        if not await setup_database():
+            logger.error("💥 Impossible de se connecter à la base de données, arrêt.")
+            return
+        
+        # 2. ENSUITE charger les cogs (maintenant que bot.database existe)
+        logger.info("📦 Chargement des cogs...")
         await load_cogs()
         
-        # Démarrer le bot
+        # 3. ENFIN démarrer le bot
+        logger.info("🚀 Démarrage du bot Discord...")
         await bot.start(TOKEN)
         
     except KeyboardInterrupt:
