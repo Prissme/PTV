@@ -12,16 +12,22 @@ from utils.embeds import create_error_embed, create_success_embed, create_info_e
 logger = logging.getLogger(__name__)
 
 class PPCView(discord.ui.View):
-    """Vue pour le jeu Pierre-Papier-Ciseaux"""
+    """Vue pour le jeu Pierre-Papier-Ciseaux en BO3"""
     
     def __init__(self, challenger, opponent, bet_amount, db):
-        super().__init__(timeout=60.0)  # 1 minute pour jouer
+        super().__init__(timeout=180.0)  # 3 minutes pour un BO3
         self.challenger = challenger
         self.opponent = opponent  
         self.bet_amount = bet_amount
         self.db = db
         
-        # Choix des joueurs
+        # Système de rounds BO3
+        self.rounds = []  # Historique des rounds
+        self.challenger_wins = 0
+        self.opponent_wins = 0
+        self.current_round = 1
+        
+        # Choix du round actuel
         self.challenger_choice = None
         self.opponent_choice = None
         
@@ -74,19 +80,17 @@ class PPCView(discord.ui.View):
             self.opponent_choice = choice
 
         await interaction.response.send_message(
-            f"✅ Tu as choisi {emoji} **{choice.capitalize()}** !", ephemeral=True
+            f"✅ Tu as choisi {emoji} **{choice.capitalize()}** pour le round {self.current_round} !", ephemeral=True
         )
 
-        # Vérifier si les deux ont joué
+        # Vérifier si les deux ont joué ce round
         if self.challenger_choice and self.opponent_choice:
-            await self.resolve_game(interaction)
+            await self.resolve_round(interaction)
 
-    async def resolve_game(self, interaction: discord.Interaction):
-        """Résout le jeu et détermine le gagnant"""
-        self.game_finished = True
-        
-        # Déterminer le gagnant
-        winner = self.determine_winner()
+    async def resolve_round(self, interaction: discord.Interaction):
+        """Résout le round actuel"""
+        # Déterminer le gagnant du round
+        round_winner = self.determine_round_winner()
         
         # Emojis pour l'affichage
         choice_emojis = {
@@ -95,44 +99,102 @@ class PPCView(discord.ui.View):
             'ciseaux': '✂️'
         }
         
-        challenger_display = f"{choice_emojis[self.challenger_choice]} **{self.challenger_choice.capitalize()}**"
-        opponent_display = f"{choice_emojis[self.opponent_choice]} **{self.opponent_choice.capitalize()}**"
+        challenger_display = f"{choice_emojis[self.challenger_choice]} {self.challenger_choice.capitalize()}"
+        opponent_display = f"{choice_emojis[self.opponent_choice]} {self.opponent_choice.capitalize()}"
         
-        # Créer l'embed de résultat
-        if winner == 'tie':
-            embed = discord.Embed(
-                title="🤝 Match nul !",
-                description=f"**{self.challenger.display_name}**: {challenger_display}\n"
-                           f"**{self.opponent.display_name}**: {opponent_display}\n\n"
-                           f"Personne ne gagne les **{self.bet_amount:,}** PrissBucks !",
-                color=Colors.WARNING
-            )
+        # Enregistrer le résultat du round
+        round_result = {
+            'round': self.current_round,
+            'challenger_choice': self.challenger_choice,
+            'opponent_choice': self.opponent_choice,
+            'winner': round_winner
+        }
+        self.rounds.append(round_result)
+        
+        # Mettre à jour les scores
+        if round_winner == self.challenger:
+            self.challenger_wins += 1
+        elif round_winner == self.opponent:
+            self.opponent_wins += 1
+        # Les égalités ne comptent pas dans le score
+        
+        # Vérifier si le jeu est terminé (premier à 2 victoires)
+        if self.challenger_wins >= 2 or self.opponent_wins >= 2:
+            await self.finish_game(interaction)
         else:
-            winner_user = winner
-            loser_user = self.opponent if winner == self.challenger else self.challenger
-            
-            # Transférer les PrissBucks
-            try:
-                success = await self.db.transfer(loser_user.id, winner_user.id, self.bet_amount)
-                if success:
-                    transfer_msg = f"💰 **{self.bet_amount:,}** PrissBucks transférés de {loser_user.display_name} vers {winner_user.display_name} !"
-                else:
-                    transfer_msg = f"⚠️ Erreur lors du transfert des PrissBucks"
-            except Exception as e:
-                logger.error(f"Erreur transfert PPC: {e}")
+            # Continuer au round suivant
+            await self.next_round(interaction)
+
+    async def next_round(self, interaction: discord.Interaction):
+        """Passe au round suivant"""
+        self.current_round += 1
+        self.challenger_choice = None
+        self.opponent_choice = None
+        
+        # Créer l'embed du round suivant
+        embed = self.create_game_embed()
+        
+        # Mettre à jour le message
+        try:
+            await interaction.edit_original_response(embed=embed, view=self)
+        except:
+            await interaction.followup.send(embed=embed, view=self)
+
+    async def finish_game(self, interaction: discord.Interaction):
+        """Termine le jeu et détermine le gagnant final"""
+        self.game_finished = True
+        
+        # Déterminer le gagnant final
+        if self.challenger_wins > self.opponent_wins:
+            winner = self.challenger
+            loser = self.opponent
+        else:
+            winner = self.opponent
+            loser = self.challenger
+        
+        # Transférer les PrissBucks
+        transfer_msg = ""
+        try:
+            success = await self.db.transfer(loser.id, winner.id, self.bet_amount)
+            if success:
+                transfer_msg = f"💰 **{self.bet_amount:,}** PrissBucks transférés de {loser.display_name} vers {winner.display_name} !"
+            else:
                 transfer_msg = f"⚠️ Erreur lors du transfert des PrissBucks"
+        except Exception as e:
+            logger.error(f"Erreur transfert PPC: {e}")
+            transfer_msg = f"⚠️ Erreur lors du transfert des PrissBucks"
+        
+        # Créer l'embed de résultat final
+        embed = discord.Embed(
+            title=f"🏆 {winner.display_name} remporte le BO3 !",
+            description=f"**Score final:** {self.challenger_wins}-{self.opponent_wins}\n\n{transfer_msg}",
+            color=Colors.SUCCESS
+        )
+        
+        # Ajouter l'historique des rounds
+        rounds_text = ""
+        for i, round_data in enumerate(self.rounds, 1):
+            c_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['challenger_choice']]
+            o_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['opponent_choice']]
             
-            embed = discord.Embed(
-                title=f"🎉 {winner_user.display_name} gagne !",
-                description=f"**{self.challenger.display_name}**: {challenger_display}\n"
-                           f"**{self.opponent.display_name}**: {opponent_display}\n\n"
-                           f"{transfer_msg}",
-                color=Colors.SUCCESS
-            )
+            if round_data['winner'] == self.challenger:
+                winner_emoji = "🟢"
+            elif round_data['winner'] == self.opponent:
+                winner_emoji = "🔴"
+            else:
+                winner_emoji = "🟡"
+            
+            rounds_text += f"**Round {i}:** {c_emoji} vs {o_emoji} {winner_emoji}\n"
         
         embed.add_field(
-            name="🎯 Règles du jeu",
-            value="Pierre bat Ciseaux • Papier bat Pierre • Ciseaux bat Papier",
+            name="📊 Historique des rounds",
+            value=rounds_text + f"\n🟢 = {self.challenger.display_name} | 🔴 = {self.opponent.display_name} | 🟡 = Égalité",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="🎯 Format",
+            value="Best of 3 (BO3) - Premier à 2 victoires\nLes égalités ne comptent pas dans le score",
             inline=False
         )
         
@@ -140,14 +202,70 @@ class PPCView(discord.ui.View):
         for item in self.children:
             item.disabled = True
         
-        # Modifier le message original
+        # Modifier le message original pour que tout le monde puisse voir
         try:
             await interaction.edit_original_response(embed=embed, view=self)
         except:
+            # Si l'édition échoue, envoyer un nouveau message public
             await interaction.followup.send(embed=embed, view=self)
 
-    def determine_winner(self):
-        """Détermine le gagnant selon les règles du PPC"""
+    def create_game_embed(self):
+        """Crée l'embed pour l'état actuel du jeu"""
+        # Calculer les victoires nécessaires restantes
+        challenger_needed = max(0, 2 - self.challenger_wins)
+        opponent_needed = max(0, 2 - self.opponent_wins)
+        
+        embed = discord.Embed(
+            title="🎮 Pierre - Papier - Ciseaux (BO3)",
+            description=f"**Round {self.current_round}** en cours !\n\n"
+                       f"💰 **Mise:** {self.bet_amount:,} PrissBucks\n"
+                       f"🏆 **Format:** Best of 3 (premier à 2 victoires)\n\n"
+                       f"**Score actuel:**\n"
+                       f"🟢 {self.challenger.display_name}: {self.challenger_wins}/2 victoires\n"
+                       f"🔴 {self.opponent.display_name}: {self.opponent_wins}/2 victoires",
+            color=Colors.PREMIUM
+        )
+        
+        # Ajouter l'historique des rounds précédents s'il y en a
+        if self.rounds:
+            rounds_text = ""
+            for round_data in self.rounds:
+                c_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['challenger_choice']]
+                o_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['opponent_choice']]
+                
+                if round_data['winner'] == self.challenger:
+                    result = f"🟢 {self.challenger.display_name}"
+                elif round_data['winner'] == self.opponent:
+                    result = f"🔴 {self.opponent.display_name}"
+                else:
+                    result = "🟡 Égalité"
+                
+                rounds_text += f"**R{round_data['round']}:** {c_emoji} vs {o_emoji} → {result}\n"
+            
+            embed.add_field(
+                name="📊 Rounds précédents",
+                value=rounds_text,
+                inline=False
+            )
+        
+        embed.add_field(
+            name="🎯 Règles",
+            value="🗿 Pierre bat ✂️ Ciseaux\n📄 Papier bat 🗿 Pierre\n✂️ Ciseaux bat 📄 Papier",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="👥 Joueurs",
+            value=f"🟢 **{self.challenger.display_name}**\n🔴 **{self.opponent.display_name}**",
+            inline=True
+        )
+        
+        embed.set_footer(text=f"Round {self.current_round} • Faites vos choix !")
+        
+        return embed
+
+    def determine_round_winner(self):
+        """Détermine le gagnant du round selon les règles du PPC"""
         c_choice = self.challenger_choice
         o_choice = self.opponent_choice
         
@@ -169,10 +287,33 @@ class PPCView(discord.ui.View):
         """Appelé quand le délai est dépassé"""
         embed = discord.Embed(
             title="⏰ Temps écoulé !",
-            description="Le jeu a expiré car tous les joueurs n'ont pas fait leur choix à temps.\n"
+            description=f"Le jeu BO3 a expiré au round {self.current_round}.\n"
+                       f"Score actuel: {self.challenger_wins}-{self.opponent_wins}\n\n"
                        f"Mise de **{self.bet_amount:,}** PrissBucks non transférée.",
             color=Colors.ERROR
         )
+        
+        # Ajouter l'historique s'il y en a
+        if self.rounds:
+            rounds_text = ""
+            for round_data in self.rounds:
+                c_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['challenger_choice']]
+                o_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['opponent_choice']]
+                
+                if round_data['winner'] == self.challenger:
+                    result = f"🟢 {self.challenger.display_name}"
+                elif round_data['winner'] == self.opponent:
+                    result = f"🔴 {self.opponent.display_name}"
+                else:
+                    result = "🟡 Égalité"
+                
+                rounds_text += f"**R{round_data['round']}:** {c_emoji} vs {o_emoji} → {result}\n"
+            
+            embed.add_field(
+                name="📊 Rounds joués",
+                value=rounds_text,
+                inline=False
+            )
         
         # Désactiver les boutons
         for item in self.children:
@@ -185,7 +326,7 @@ class PPCView(discord.ui.View):
             pass
 
 class PierrepapierCiseaux(commands.Cog):
-    """Mini-jeu Pierre-Papier-Ciseaux avec mises"""
+    """Mini-jeu Pierre-Papier-Ciseaux avec mises en BO3"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -194,15 +335,15 @@ class PierrepapierCiseaux(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info("✅ Cog Pierre-Papier-Ciseaux initialisé")
+        logger.info("✅ Cog Pierre-Papier-Ciseaux BO3 initialisé")
 
-    @app_commands.command(name="ppc", description="Défie quelqu'un au Pierre-Papier-Ciseaux avec une mise")
+    @app_commands.command(name="ppc", description="Défie quelqu'un au Pierre-Papier-Ciseaux en BO3 avec une mise")
     @app_commands.describe(
         adversaire="L'utilisateur que tu veux défier",
         mise="Montant à miser (en PrissBucks)"
     )
     async def ppc_command(self, interaction: discord.Interaction, adversaire: discord.Member, mise: int):
-        """Lance un défi Pierre-Papier-Ciseaux"""
+        """Lance un défi Pierre-Papier-Ciseaux en BO3"""
         challenger = interaction.user
         opponent = adversaire
         bet_amount = mise
@@ -244,34 +385,13 @@ class PierrepapierCiseaux(commands.Cog):
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
 
-            # Créer l'embed du jeu
-            embed = discord.Embed(
-                title="🎮 Pierre - Papier - Ciseaux",
-                description=f"**{challenger.display_name}** défie **{opponent.display_name}** !\n\n"
-                           f"💰 **Mise:** {bet_amount:,} PrissBucks\n"
-                           f"⏱️ **Temps limite:** 60 secondes\n\n"
-                           f"Chacun doit faire son choix en cliquant sur un bouton ci-dessous.",
-                color=Colors.PREMIUM
-            )
-            
-            embed.add_field(
-                name="🎯 Règles",
-                value="🗿 Pierre bat ✂️ Ciseaux\n📄 Papier bat 🗿 Pierre\n✂️ Ciseaux bat 📄 Papier",
-                inline=True
-            )
-            
-            embed.add_field(
-                name="👥 Joueurs",
-                value=f"**Challenger:** {challenger.mention}\n**Adversaire:** {opponent.mention}",
-                inline=True
-            )
-            
-            embed.set_footer(text="Seuls les joueurs concernés peuvent faire leur choix !")
-
             # Créer la vue avec les boutons
             view = PPCView(challenger, opponent, bet_amount, self.db)
             
-            # Envoyer le message
+            # Créer l'embed initial
+            embed = view.create_game_embed()
+            
+            # Envoyer le message PUBLIC (pas ephemeral)
             await interaction.response.send_message(embed=embed, view=view)
             
             # Sauvegarder la référence du message pour le timeout
@@ -294,6 +414,7 @@ class PierrepapierCiseaux(commands.Cog):
             embed = discord.Embed(
                 title=f"🎮 Statistiques PPC de {target.display_name}",
                 description=f"**Solde actuel:** {balance:,} PrissBucks\n\n"
+                           f"*Format: Best of 3 (BO3)*\n"
                            f"*Les statistiques détaillées arrivent bientôt !*",
                 color=Colors.INFO
             )
