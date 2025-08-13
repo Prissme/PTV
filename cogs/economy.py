@@ -6,27 +6,26 @@ import logging
 
 from config import (
     DAILY_MIN, DAILY_MAX, DAILY_BONUS_CHANCE, DAILY_BONUS_MIN, DAILY_BONUS_MAX,
-    DAILY_COOLDOWN, TRANSFER_COOLDOWN, DEFAULT_LEADERBOARD_LIMIT, MAX_LEADERBOARD_LIMIT,
-    Colors, Emojis
+    DAILY_COOLDOWN, TRANSFER_COOLDOWN, Colors, Emojis
 )
 from utils.embeds import (
     create_balance_embed, create_daily_embed, create_transfer_embed,
-    create_leaderboard_embed, create_error_embed, create_cooldown_embed
+    create_error_embed, create_cooldown_embed
 )
 
 logger = logging.getLogger(__name__)
 
 class Economy(commands.Cog):
-    """Commandes économie de base : balance, daily, give, leaderboard"""
+    """Commandes économie essentielles : balance, daily, give"""
     
     def __init__(self, bot):
         self.bot = bot
-        self.db = None  # Sera initialisé dans cog_load
+        self.db = None
     
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info("✅ Cog Economy initialisé")
+        logger.info("✅ Cog Economy initialisé (simplifié)")
     
     @commands.command(name='balance', aliases=['bal', 'money'])
     async def balance_cmd(self, ctx, member: discord.Member = None):
@@ -133,109 +132,6 @@ class Economy(commands.Cog):
         except Exception as e:
             logger.error(f"Erreur daily pour {user_id}: {e}")
             embed = create_error_embed("Erreur", "Erreur lors du daily spin.")
-            await ctx.send(embed=embed)
-
-    @commands.command(name='leaderboard', aliases=['top', 'rich', 'lb'])
-    async def leaderboard_cmd(self, ctx, limit: int = DEFAULT_LEADERBOARD_LIMIT):
-        """Affiche le classement des plus riches"""
-        # Limiter la valeur
-        if limit > MAX_LEADERBOARD_LIMIT:
-            limit = MAX_LEADERBOARD_LIMIT
-        elif limit < 1:
-            limit = DEFAULT_LEADERBOARD_LIMIT
-
-        try:
-            top_users = await self.db.get_top_users(limit)
-            
-            if not top_users:
-                embed = create_error_embed("Classement vide", "Aucun utilisateur trouvé dans le classement.")
-                await ctx.send(embed=embed)
-                return
-
-            embed = create_leaderboard_embed(top_users, self.bot, limit)
-            await ctx.send(embed=embed)
-            
-        except Exception as e:
-            logger.error(f"Erreur leaderboard: {e}")
-            embed = create_error_embed("Erreur", "Erreur lors de l'affichage du classement.")
-            await ctx.send(embed=embed)
-
-    @commands.command(name='profile', aliases=['profil', 'me'])
-    async def profile_cmd(self, ctx, member: discord.Member = None):
-        """Affiche le profil économique d'un utilisateur"""
-        target = member or ctx.author
-        
-        try:
-            # Récupérer les données
-            balance = await self.db.get_balance(target.id)
-            last_daily = await self.db.get_last_daily(target.id)
-            purchases = await self.db.get_user_purchases(target.id)
-            
-            # Calculer le total dépensé
-            total_spent = sum(purchase['price_paid'] for purchase in purchases)
-            
-            # Créer l'embed
-            embed = discord.Embed(
-                title=f"👤 Profil de {target.display_name}",
-                color=Colors.INFO
-            )
-            
-            embed.add_field(
-                name=f"{Emojis.MONEY} Solde actuel",
-                value=f"**{balance:,}** PrissBucks",
-                inline=True
-            )
-            
-            embed.add_field(
-                name="🛒 Items possédés",
-                value=f"**{len(purchases)}** item(s)",
-                inline=True
-            )
-            
-            embed.add_field(
-                name="💸 Total dépensé",
-                value=f"**{total_spent:,}** PrissBucks",
-                inline=True
-            )
-            
-            # Dernier daily
-            if last_daily:
-                daily_text = f"<t:{int(last_daily.timestamp())}:R>"
-            else:
-                daily_text = "Jamais utilisé"
-                
-            embed.add_field(
-                name=f"{Emojis.DAILY} Dernier daily",
-                value=daily_text,
-                inline=True
-            )
-            
-            # Richesse relative
-            try:
-                top_users = await self.db.get_top_users(1000)  # Top 1000 pour calculer le rang
-                user_rank = None
-                for i, (user_id, _) in enumerate(top_users, 1):
-                    if user_id == target.id:
-                        user_rank = i
-                        break
-                
-                if user_rank:
-                    embed.add_field(
-                        name=f"{Emojis.LEADERBOARD} Classement",
-                        value=f"**#{user_rank}** sur le serveur",
-                        inline=True
-                    )
-            except:
-                pass  # Ignorer les erreurs de classement
-            
-            embed.set_thumbnail(url=target.display_avatar.url)
-            embed.set_footer(text="Utilise !daily pour gagner des pièces quotidiennes !")
-            
-            await ctx.send(embed=embed)
-            
-        except Exception as e:
-            logger.error(f"Erreur profile pour {target.id}: {e}")
-            embed = create_error_embed("Erreur", "Erreur lors de l'affichage du profil.")
             await ctx.send(embed=embed)
 
     # Gestion d'erreur spécifique pour ce cog
