@@ -41,6 +41,13 @@ async def on_ready():
     """Événement déclenché quand le bot est prêt"""
     logger.info(f"✅ {bot.user} est connecté et prêt !")
     logger.info(f"📊 Connecté à {len(bot.guilds)} serveur(s)")
+    
+    # Synchroniser les slash commands
+    try:
+        synced = await bot.tree.sync()
+        logger.info(f"🔄 {len(synced)} slash command(s) synchronisée(s)")
+    except Exception as e:
+        logger.error(f"❌ Erreur sync slash commands: {e}")
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -122,6 +129,14 @@ async def reload_cog(ctx, cog_name: str):
         await bot.reload_extension(f'cogs.{cog_name}')
         await ctx.send(f"✅ **Cog '{cog_name}' rechargé avec succès !**")
         logger.info(f"🔄 Cog '{cog_name}' rechargé par {ctx.author}")
+        
+        # Re-synchroniser les slash commands après reload
+        try:
+            synced = await bot.tree.sync()
+            logger.info(f"🔄 {len(synced)} slash command(s) re-synchronisée(s)")
+        except Exception as e:
+            logger.error(f"Erreur re-sync après reload: {e}")
+            
     except Exception as e:
         await ctx.send(f"❌ **Erreur lors du rechargement de '{cog_name}': {e}**")
         logger.error(f"Erreur reload {cog_name}: {e}")
@@ -134,6 +149,14 @@ async def load_cog(ctx, cog_name: str):
         await bot.load_extension(f'cogs.{cog_name}')
         await ctx.send(f"✅ **Cog '{cog_name}' chargé avec succès !**")
         logger.info(f"➕ Cog '{cog_name}' chargé par {ctx.author}")
+        
+        # Re-synchroniser les slash commands après load
+        try:
+            synced = await bot.tree.sync()
+            logger.info(f"🔄 {len(synced)} slash command(s) re-synchronisée(s)")
+        except Exception as e:
+            logger.error(f"Erreur re-sync après load: {e}")
+            
     except Exception as e:
         await ctx.send(f"❌ **Erreur lors du chargement de '{cog_name}': {e}**")
         logger.error(f"Erreur load {cog_name}: {e}")
@@ -146,6 +169,14 @@ async def unload_cog(ctx, cog_name: str):
         await bot.unload_extension(f'cogs.{cog_name}')
         await ctx.send(f"✅ **Cog '{cog_name}' déchargé avec succès !**")
         logger.info(f"➖ Cog '{cog_name}' déchargé par {ctx.author}")
+        
+        # Re-synchroniser les slash commands après unload
+        try:
+            synced = await bot.tree.sync()
+            logger.info(f"🔄 {len(synced)} slash command(s) re-synchronisée(s)")
+        except Exception as e:
+            logger.error(f"Erreur re-sync après unload: {e}")
+            
     except Exception as e:
         await ctx.send(f"❌ **Erreur lors du déchargement de '{cog_name}': {e}**")
         logger.error(f"Erreur unload {cog_name}: {e}")
@@ -168,8 +199,25 @@ async def list_cogs(ctx):
     else:
         embed.add_field(name="Aucun Cog", value="Aucun cog chargé", inline=False)
     
+    # Afficher le nombre de slash commands
+    slash_count = len(bot.tree.get_commands())
+    embed.add_field(name="Slash Commands", value=f"`{slash_count}` commande(s) slash", inline=True)
+    
     embed.set_footer(text=f"Utilisez {PREFIX}reload <cog> pour recharger")
     await ctx.send(embed=embed)
+
+# Nouvelle commande pour forcer la sync des slash commands
+@bot.command(name='sync')
+@commands.is_owner()
+async def sync_slash_commands(ctx):
+    """[OWNER] Force la synchronisation des slash commands"""
+    try:
+        synced = await bot.tree.sync()
+        await ctx.send(f"✅ **{len(synced)} slash command(s) synchronisée(s) !**")
+        logger.info(f"🔄 Sync manuelle: {len(synced)} slash command(s)")
+    except Exception as e:
+        await ctx.send(f"❌ **Erreur lors de la synchronisation: {e}**")
+        logger.error(f"Erreur sync manuelle: {e}")
 
 async def main():
     """Fonction principale pour démarrer le bot"""
