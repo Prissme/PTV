@@ -307,11 +307,6 @@ class PierrepapierCiseaux(commands.Cog):
 
 async def setup(bot):
     """Fonction appelée pour charger le cog"""
-    await bot.add_cog(PierreapierCiseaux(bot))
+    await bot.add_cog(PierrepapierCiseaux(bot))
     
-    # Synchroniser les slash commands
-    try:
-        synced = await bot.tree.sync()
-        logger.info(f"✅ {len(synced)} slash command(s) synchronisée(s) (PPC inclus)")
-    except Exception as e:
-        logger.error(f"Erreur sync slash commands PPC: {e}")
+    # Note: La synchronisation se fait automatiquement au démarrage du bot
