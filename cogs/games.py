@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timezone
 
 from config import Colors, Emojis
-from utils.embeds import create_error_embed, create_success_embed, create_info_embed
+from embeds import create_error_embed, create_success_embed, create_info_embed
 
 logger = logging.getLogger(__name__)
 
