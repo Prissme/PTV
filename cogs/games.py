@@ -178,7 +178,7 @@ class PPCView(discord.ui.View):
         rounds_text = ""
         for i, round_data in enumerate(self.rounds, 1):
             c_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['challenger_choice']]
-            o_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['opponent_choice']]
+            o_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[round_data['opponent_choice']]]
             
             if round_data['winner'] == self.challenger:
                 winner_emoji = "🟢"
@@ -191,7 +191,7 @@ class PPCView(discord.ui.View):
         
         embed.add_field(
             name="📊 Historique des rounds",
-            value=rounds_text + f"\n🟢 = {self.challenger.display_name} | 🔴 = {self.opponent.display_name} | 🟡 = Egalité",
+            value=rounds_text + f"\n🟢 = {self.challenger.display_name} | 🔴 = {self.opponent.display_name} | 🟡 = Égalité",
             inline=False
         )
         
