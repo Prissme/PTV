@@ -89,6 +89,9 @@ class PPCView(discord.ui.View):
 
     async def resolve_round(self, interaction: discord.Interaction):
         """Résout le round actuel"""
+        # Répondre à l'interaction du dernier joueur
+        await interaction.response.defer(ephemeral=True)
+        
         # Déterminer le gagnant du round
         round_winner = self.determine_round_winner()
         
@@ -120,10 +123,10 @@ class PPCView(discord.ui.View):
         
         # Vérifier si le jeu est terminé (premier à 2 victoires)
         if self.challenger_wins >= 2 or self.opponent_wins >= 2:
-            await self.finish_game(interaction)
+            await self.finish_game()
         else:
             # Continuer au round suivant
-            await self.next_round(interaction)
+            await self.next_round()
 
     async def next_round(self, interaction: discord.Interaction):
         """Passe au round suivant"""
@@ -138,7 +141,12 @@ class PPCView(discord.ui.View):
         try:
             await interaction.edit_original_response(embed=embed, view=self)
         except:
-            await interaction.followup.send(embed=embed, view=self)
+            try:
+                await interaction.followup.send(embed=embed, view=self)
+            except:
+                # En dernier recours, utiliser le message sauvegardé
+                if hasattr(self, 'message') and self.message:
+                    await self.message.edit(embed=embed, view=self)
 
     async def finish_game(self, interaction: discord.Interaction):
         """Termine le jeu et détermine le gagnant final"""
@@ -207,7 +215,12 @@ class PPCView(discord.ui.View):
             await interaction.edit_original_response(embed=embed, view=self)
         except:
             # Si l'édition échoue, envoyer un nouveau message public
-            await interaction.followup.send(embed=embed, view=self)
+            try:
+                await interaction.followup.send(embed=embed, view=self)
+            except:
+                # En dernier recours, utiliser le message sauvegardé
+                if hasattr(self, 'message') and self.message:
+                    await self.message.edit(embed=embed, view=self)
 
     def create_game_embed(self):
         """Crée l'embed pour l'état actuel du jeu"""
@@ -344,6 +357,9 @@ class PierrepapierCiseaux(commands.Cog):
     )
     async def ppc_command(self, interaction: discord.Interaction, adversaire: discord.Member, mise: int):
         """Lance un défi Pierre-Papier-Ciseaux en BO3"""
+        # Répondre immédiatement pour éviter le timeout
+        await interaction.response.defer()
+        
         challenger = interaction.user
         opponent = adversaire
         bet_amount = mise
@@ -351,17 +367,17 @@ class PierrepapierCiseaux(commands.Cog):
         # Validations de base
         if bet_amount <= 0:
             embed = create_error_embed("Mise invalide", "La mise doit être positive !")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
             
         if challenger.id == opponent.id:
             embed = create_error_embed("Défi impossible", "Tu ne peux pas te défier toi-même !")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
             
         if opponent.bot:
             embed = create_error_embed("Défi impossible", "Tu ne peux pas défier un bot !")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         try:
@@ -374,7 +390,7 @@ class PierrepapierCiseaux(commands.Cog):
                     "Solde insuffisant",
                     f"Tu as {challenger_balance:,} PrissBucks mais tu essaies de miser {bet_amount:,} PrissBucks."
                 )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                await interaction.followup.send(embed=embed, ephemeral=True)
                 return
                 
             if opponent_balance < bet_amount:
@@ -382,7 +398,7 @@ class PierrepapierCiseaux(commands.Cog):
                     "Solde insuffisant",
                     f"{opponent.display_name} n'a que {opponent_balance:,} PrissBucks mais la mise est de {bet_amount:,} PrissBucks."
                 )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                await interaction.followup.send(embed=embed, ephemeral=True)
                 return
 
             # Créer la vue avec les boutons
@@ -391,16 +407,16 @@ class PierrepapierCiseaux(commands.Cog):
             # Créer l'embed initial
             embed = view.create_game_embed()
             
-            # Envoyer le message PUBLIC (pas ephemeral)
-            await interaction.response.send_message(embed=embed, view=view)
+            # Envoyer le message PUBLIC avec followup
+            message = await interaction.followup.send(embed=embed, view=view)
             
             # Sauvegarder la référence du message pour le timeout
-            view.message = await interaction.original_response()
+            view.message = message
             
         except Exception as e:
             logger.error(f"Erreur PPC {challenger.id} vs {opponent.id}: {e}")
             embed = create_error_embed("Erreur", "Erreur lors de la création du jeu.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     @commands.command(name='ppc_stats')
     async def ppc_stats_cmd(self, ctx, user: discord.Member = None):
