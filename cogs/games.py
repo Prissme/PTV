@@ -191,7 +191,7 @@ class PPCView(discord.ui.View):
         
         embed.add_field(
             name="📊 Historique des rounds",
-            value=rounds_text + f"\n🟢 = {self.challenger.display_name} | 🔴 = {self.opponent.display_name} | 🟡 = Égalité",
+            value=rounds_text + f"\n🟢 = {self.challenger.display_name} | 🔴 = {self.opponent.display_name} | 🟡 = Egalité",
             inline=False
         )
         
