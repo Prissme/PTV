@@ -1,14 +1,14 @@
 # Discord Bot Dependencies
-discord.py==2.5.2
+discord.py==2.4.0
 
 # Database
-asyncpg==0.27.0
+asyncpg==0.29.0
 
 # Environment Variables
-python-dotenv==1.0.0
+python-dotenv==1.0.1
 
 # Health server pour Koyeb
-aiohttp==3.8.5
+aiohttp==3.9.1
 
 # Optional: Logging and monitoring
-colorlog==6.7.0
+colorlog==6.8.2
