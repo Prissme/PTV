@@ -60,6 +60,13 @@ class Help(commands.Cog):
                 inline=False
             )
 
+            # Commandes Admin
+            embed.add_field(
+                name="👮‍♂️ **Administration**",
+                value=f"`/addpb <utilisateur> <montant>` ou `{PREFIX}addpb` - Ajouter des PrissBucks (Admin)",
+                inline=False
+            )
+
             # Détails sur les systèmes
             embed.add_field(
                 name="💡 **Détails importants**",
