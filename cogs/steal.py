@@ -24,8 +24,8 @@ class Steal(commands.Cog):
         self.SUCCESS_RATE = 50  # 50% de chances de réussite
         self.STEAL_PERCENTAGE = 10  # Vol 10% des pièces
         self.FAIL_PENALTY_PERCENTAGE = 40  # Perd 40% si échec
-        self.COOLDOWN_HOURS = 1  # Cooldown de 1 heure
-        self.COOLDOWN_SECONDS = self.COOLDOWN_HOURS * 3600
+        self.COOLDOWN_HOURS = 0,5  # Cooldown de 1 heure
+        self.COOLDOWN_SECONDS = self.COOLDOWN_HOURS * 1800
         
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
