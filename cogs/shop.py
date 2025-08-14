@@ -470,6 +470,219 @@ class Shop(commands.Cog):
             embed = create_error_embed("Erreur", "Erreur lors de la désactivation de l'item.")
             await send_func(embed=embed)
 
+# Ajoutez ces commandes dans votre cog Shop (cogs/shop.py)
+
+@commands.command(name='shopdiag')
+@commands.is_owner()
+async def shop_diagnostic(self, ctx):
+    """[OWNER] Diagnostic complet du shop"""
+    try:
+        # Test de connexion DB
+        if not self.db or not self.db.pool:
+            await ctx.send("❌ **Base de données non connectée !**")
+            return
+        
+        # Récupérer TOUS les items (actifs et inactifs)
+        async with self.db.pool.acquire() as conn:
+            all_items = await conn.fetch("""
+                SELECT id, name, description, price, type, data, is_active, created_at 
+                FROM shop_items 
+                ORDER BY created_at DESC
+            """)
+        
+        embed = discord.Embed(
+            title="🔍 Diagnostic Shop",
+            color=Colors.INFO
+        )
+        
+        if not all_items:
+            embed.description = "❌ **Aucun item trouvé dans la base de données !**"
+            embed.add_field(
+                name="🔧 Solution",
+                value="Utilisez la commande `setupcooldownreset` pour créer l'item.",
+                inline=False
+            )
+        else:
+            active_items = [item for item in all_items if item['is_active']]
+            inactive_items = [item for item in all_items if not item['is_active']]
+            cooldown_items = [item for item in all_items if item['type'] == 'cooldown_reset']
+            
+            embed.description = f"📊 **{len(all_items)} item(s) total dans la DB**"
+            
+            embed.add_field(
+                name="✅ Items actifs",
+                value=f"{len(active_items)} item(s)",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="❌ Items inactifs",
+                value=f"{len(inactive_items)} item(s)",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="⏰ Items Reset Cooldowns",
+                value=f"{len(cooldown_items)} item(s)",
+                inline=True
+            )
+            
+            # Détails des items actifs
+            if active_items:
+                items_list = ""
+                for item in active_items[:5]:  # Limiter à 5
+                    items_list += f"• **{item['name']}** (ID: {item['id']}, Type: {item['type']})\n"
+                if len(active_items) > 5:
+                    items_list += f"• ... et {len(active_items) - 5} autre(s)\n"
+                
+                embed.add_field(
+                    name="📋 Items actifs détaillés",
+                    value=items_list or "Aucun",
+                    inline=False
+                )
+            
+            # Détails des items cooldown_reset
+            if cooldown_items:
+                cooldown_list = ""
+                for item in cooldown_items:
+                    status = "✅" if item['is_active'] else "❌"
+                    cooldown_list += f"{status} **{item['name']}** (ID: {item['id']}, Prix: {item['price']} PB)\n"
+                
+                embed.add_field(
+                    name="⏰ Items Reset Cooldowns détaillés",
+                    value=cooldown_list,
+                    inline=False
+                )
+        
+        await ctx.send(embed=embed)
+        
+    except Exception as e:
+        logger.error(f"Erreur diagnostic shop: {e}")
+        embed = create_error_embed("Erreur Diagnostic", f"```{str(e)}```")
+        await ctx.send(embed=embed)
+
+@commands.command(name='setupcooldownreset')
+@commands.is_owner()
+async def setup_cooldown_reset(self, ctx):
+    """[OWNER] Ajoute l'item Reset Cooldowns au shop"""
+    try:
+        import json
+        
+        # Vérifier si un item cooldown_reset existe déjà
+        async with self.db.pool.acquire() as conn:
+            existing = await conn.fetchrow("""
+                SELECT id, name, is_active FROM shop_items 
+                WHERE type = 'cooldown_reset'
+                ORDER BY created_at DESC
+                LIMIT 1
+            """)
+        
+        if existing and existing['is_active']:
+            embed = create_warning_embed(
+                "Item déjà présent",
+                f"Un item Reset Cooldowns actif existe déjà (ID: {existing['id']})\n"
+                f"Nom: **{existing['name']}**"
+            )
+            await ctx.send(embed=embed)
+            return
+        
+        # Données de l'item
+        item_data = {
+            "instant_use": True,
+            "effect": "reset_all_cooldowns",
+            "description": "Remet à zéro tous les cooldowns du joueur immédiatement après l'achat"
+        }
+        
+        # Ajouter l'item
+        item_id = await self.db.add_shop_item(
+            name="⏰ Reset Cooldowns",
+            description="Désactive instantanément TOUS tes cooldowns en cours ! (Daily, Vol, Give, etc.) - Usage immédiat à l'achat",
+            price=200,
+            item_type="cooldown_reset",
+            data=item_data
+        )
+        
+        embed = create_success_embed(
+            "✅ Item Reset Cooldowns créé !",
+            f"L'item a été ajouté avec succès dans la boutique."
+        )
+        
+        embed.add_field(
+            name="📋 Détails",
+            value=f"**ID:** {item_id}\n"
+                  f"**Nom:** ⏰ Reset Cooldowns\n"
+                  f"**Prix:** 200 PrissBucks (base)\n"
+                  f"**Prix avec taxe:** {200 + int(200 * SHOP_TAX_RATE)} PrissBucks\n"
+                  f"**Type:** cooldown_reset",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="🔧 Test",
+            value=f"Utilisez `{PREFIX}shop` pour vérifier que l'item apparaît !",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
+        logger.info(f"Item Reset Cooldowns créé par {ctx.author} (ID: {item_id})")
+        
+    except Exception as e:
+        logger.error(f"Erreur setup cooldown reset: {e}")
+        embed = create_error_embed("Erreur", f"Impossible de créer l'item:\n```{str(e)}```")
+        await ctx.send(embed=embed)
+
+@commands.command(name='fixcooldownreset')
+@commands.is_owner()
+async def fix_cooldown_reset(self, ctx):
+    """[OWNER] Active/réactive l'item Reset Cooldowns"""
+    try:
+        async with self.db.pool.acquire() as conn:
+            # Chercher tous les items cooldown_reset
+            items = await conn.fetch("""
+                SELECT id, name, is_active FROM shop_items 
+                WHERE type = 'cooldown_reset'
+                ORDER BY created_at DESC
+            """)
+            
+            if not items:
+                await ctx.send("❌ **Aucun item Reset Cooldowns trouvé !**\nUtilisez `setupcooldownreset` pour le créer.")
+                return
+            
+            # Activer le plus récent et désactiver les autres
+            latest_item = items[0]
+            
+            # Désactiver tous les anciens
+            await conn.execute("""
+                UPDATE shop_items SET is_active = FALSE 
+                WHERE type = 'cooldown_reset'
+            """)
+            
+            # Activer le plus récent
+            await conn.execute("""
+                UPDATE shop_items SET is_active = TRUE 
+                WHERE id = $1
+            """, latest_item['id'])
+            
+            embed = create_success_embed(
+                "✅ Item Reset Cooldowns activé !",
+                f"L'item **{latest_item['name']}** (ID: {latest_item['id']}) est maintenant actif."
+            )
+            
+            if len(items) > 1:
+                embed.add_field(
+                    name="🧹 Nettoyage",
+                    value=f"{len(items) - 1} ancien(s) item(s) désactivé(s)",
+                    inline=False
+                )
+            
+            await ctx.send(embed=embed)
+            logger.info(f"Item cooldown_reset activé: ID {latest_item['id']}")
+            
+    except Exception as e:
+        logger.error(f"Erreur fix cooldown reset: {e}")
+        embed = create_error_embed("Erreur", f"```{str(e)}```")
+        await ctx.send(embed=embed)
+    
     @commands.command(name='shopstats')
     @commands.has_permissions(administrator=True)
     async def shop_stats_cmd(self, ctx):
