@@ -32,12 +32,13 @@ DAILY_COOLDOWN = 86400  # 24 heures
 TRANSFER_MIN = 1
 TRANSFER_MAX = 100000
 TRANSFER_COOLDOWN = 5  # secondes
-TRANSFER_TAX_RATE = 0.02  # 2% de taxe sur les transferts
+TRANSFER_TAX_RATE = 0.05  # 5% de taxe sur les transferts (augmenté de 2% à 5%)
 
 # ==================== SHOP SETTINGS ====================
 ITEMS_PER_PAGE = 5
 MAX_LEADERBOARD_LIMIT = 20
 DEFAULT_LEADERBOARD_LIMIT = 10
+SHOP_TAX_RATE = 0.05  # 5% de taxe sur les achats du shop
 
 # ==================== HEALTH SERVER SETTINGS ====================
 HEALTH_PORT = int(os.getenv("PORT", 8000))
