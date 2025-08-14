@@ -22,13 +22,15 @@ class Economy(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.db = None
+        
         # Dictionnaire pour gérer les cooldowns manuellement des slash commands
         self.give_cooldowns = {}
+        self.daily_cooldowns = {}
     
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info("✅ Cog Economy initialisé (simplifié) avec slash commands")
+        logger.info("✅ Cog Economy initialisé avec slash commands complets")
     
     def _check_give_cooldown(self, user_id: int) -> float:
         """Vérifie et retourne le cooldown restant pour give"""
@@ -41,6 +43,8 @@ class Economy(commands.Cog):
         self.give_cooldowns[user_id] = now
         return 0
 
+    # ==================== BALANCE COMMANDS ====================
+    
     @commands.command(name='balance', aliases=['bal', 'money'])
     async def balance_cmd(self, ctx, member: discord.Member = None):
         """Affiche le solde d'un utilisateur"""
@@ -71,6 +75,8 @@ class Economy(commands.Cog):
             logger.error(f"Erreur balance pour {target.id}: {e}")
             embed = create_error_embed("Erreur", "Erreur lors de la récupération du solde.")
             await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ==================== ADMIN COMMANDS ====================
 
     @commands.command(name='addpb', aliases=['addprissbucks', 'give_admin'])
     @commands.has_permissions(administrator=True)
@@ -197,6 +203,8 @@ class Economy(commands.Cog):
             # Laisser la gestion globale s'occuper des autres erreurs
             raise error
 
+    # ==================== GIVE COMMANDS ====================
+
     @commands.command(name='give', aliases=['pay', 'transfer'])
     @commands.cooldown(1, TRANSFER_COOLDOWN, commands.BucketType.user)
     async def give_cmd(self, ctx, member: discord.Member, amount: int):
@@ -273,6 +281,8 @@ class Economy(commands.Cog):
             logger.error(f"Erreur give {giver.id} -> {receiver.id}: {e}")
             embed = create_error_embed("Erreur", "Erreur lors du transfert.")
             await send_func(embed=embed)
+
+    # ==================== DAILY COMMANDS ====================
 
     @commands.command(name='daily', aliases=['dailyspin', 'spin'])
     @commands.cooldown(1, DAILY_COOLDOWN, commands.BucketType.user)
@@ -355,7 +365,8 @@ class Economy(commands.Cog):
             embed = create_error_embed("Erreur", "Erreur lors du daily spin.")
             await send_func(embed=embed)
 
-    # Gestion d'erreur spécifique pour ce cog
+    # ==================== ERROR HANDLING ====================
+
     @commands.Cog.listener()
     async def on_command_error(self, ctx, error):
         """Gestion d'erreurs spécifique au cog Economy"""
