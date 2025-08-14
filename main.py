@@ -3,6 +3,8 @@ from discord.ext import commands
 import asyncio
 import logging
 import os
+import signal
+import sys
 from pathlib import Path
 
 # Imports locaux
@@ -36,6 +38,20 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 # Base de données globale
 database = None
 
+# Flag pour arrêt propre
+shutdown_flag = False
+
+def signal_handler(signum, frame):
+    """Gestionnaire pour arrêt propre"""
+    global shutdown_flag
+    logger.info(f"Signal {signum} reçu, arrêt en cours...")
+    shutdown_flag = True
+
+# Installer les gestionnaires de signaux (sauf sur Windows)
+if sys.platform != "win32":
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
 @bot.event
 async def on_ready():
     """Événement déclenché quand le bot est prêt"""
@@ -52,6 +68,10 @@ async def on_ready():
 @bot.event
 async def on_command_error(ctx, error):
     """Gestion globale des erreurs de commandes"""
+    # Ignorer les erreurs déjà gérées par les cogs
+    if hasattr(ctx.command, 'has_error_handler') and ctx.command.has_error_handler():
+        return
+    
     if isinstance(error, commands.CommandNotFound):
         return  # Ignorer les commandes inexistantes
     elif isinstance(error, commands.MissingRequiredArgument):
@@ -62,14 +82,63 @@ async def on_command_error(ctx, error):
         await ctx.send(f"⏰ **Cooldown !** Réessaye dans {error.retry_after:.1f} secondes.")
     elif isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ **Tu n'as pas les permissions nécessaires !**")
+    elif isinstance(error, commands.BotMissingPermissions):
+        missing_perms = ", ".join(error.missing_permissions)
+        await ctx.send(f"❌ **Le bot n'a pas les permissions nécessaires :** {missing_perms}")
+    elif isinstance(error, commands.NotOwner):
+        await ctx.send("❌ **Seul le propriétaire du bot peut utiliser cette commande !**")
     else:
         logger.error(f"Erreur non gérée dans {ctx.command}: {error}")
         await ctx.send("❌ **Une erreur inattendue s'est produite.**")
 
 @bot.event
+async def on_application_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+    """Gestion globale des erreurs des slash commands"""
+    if isinstance(error, discord.app_commands.CommandOnCooldown):
+        embed = discord.Embed(
+            title="⏰ Cooldown actif !",
+            description=f"Tu pourras utiliser cette commande dans **{error.retry_after:.1f}** secondes.",
+            color=0xff9900
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except:
+            pass
+    elif isinstance(error, discord.app_commands.MissingPermissions):
+        embed = discord.Embed(
+            title="❌ Permissions insuffisantes",
+            description="Tu n'as pas les permissions nécessaires pour utiliser cette commande.",
+            color=0xff0000
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except:
+            pass
+    else:
+        logger.error(f"Erreur slash command non gérée: {error}")
+        embed = discord.Embed(
+            title="❌ Erreur",
+            description="Une erreur inattendue s'est produite.",
+            color=0xff0000
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except:
+            pass
+
+@bot.event
 async def on_guild_join(guild):
     """Événement quand le bot rejoint un serveur"""
-    logger.info(f"✅ Bot ajouté au serveur: {guild.name} ({guild.id})")
+    logger.info(f"✅ Bot ajouté au serveur: {guild.name} ({guild.id}) - {guild.member_count} membres")
 
 @bot.event
 async def on_guild_remove(guild):
@@ -165,6 +234,10 @@ async def load_cog(ctx, cog_name: str):
 @commands.is_owner()
 async def unload_cog(ctx, cog_name: str):
     """[OWNER] Décharge un cog"""
+    if cog_name.lower() in ['economy', 'help']:
+        await ctx.send(f"❌ **Le cog '{cog_name}' ne peut pas être déchargé (cog critique).**")
+        return
+    
     try:
         await bot.unload_extension(f'cogs.{cog_name}')
         await ctx.send(f"✅ **Cog '{cog_name}' déchargé avec succès !**")
@@ -194,7 +267,7 @@ async def list_cogs(ctx):
     )
     
     if loaded_cogs:
-        cogs_list = "\n".join([f"✅ `{cog}`" for cog in loaded_cogs])
+        cogs_list = "\n".join([f"✅ `{cog}`" for cog in sorted(loaded_cogs)])
         embed.add_field(name="Cogs Actifs", value=cogs_list, inline=False)
     else:
         embed.add_field(name="Aucun Cog", value="Aucun cog chargé", inline=False)
@@ -203,10 +276,13 @@ async def list_cogs(ctx):
     slash_count = len(bot.tree.get_commands())
     embed.add_field(name="Slash Commands", value=f"`{slash_count}` commande(s) slash", inline=True)
     
+    # Statut de la base de données
+    db_status = "🟢 Connectée" if database and database.pool else "🔴 Déconnectée"
+    embed.add_field(name="Base de données", value=db_status, inline=True)
+    
     embed.set_footer(text=f"Utilisez {PREFIX}reload <cog> pour recharger")
     await ctx.send(embed=embed)
 
-# Nouvelle commande pour forcer la sync des slash commands
 @bot.command(name='sync')
 @commands.is_owner()
 async def sync_slash_commands(ctx):
@@ -219,8 +295,32 @@ async def sync_slash_commands(ctx):
         await ctx.send(f"❌ **Erreur lors de la synchronisation: {e}**")
         logger.error(f"Erreur sync manuelle: {e}")
 
+async def cleanup():
+    """Nettoyage propre des ressources"""
+    global database
+    
+    logger.info("🧹 Nettoyage en cours...")
+    
+    # Fermer la base de données
+    if database and database.pool:
+        try:
+            await database.close()
+            logger.info("🔌 Connexion à la base fermée")
+        except Exception as e:
+            logger.error(f"Erreur fermeture DB: {e}")
+    
+    # Fermer le bot
+    if not bot.is_closed():
+        try:
+            await bot.close()
+            logger.info("🤖 Bot fermé")
+        except Exception as e:
+            logger.error(f"Erreur fermeture bot: {e}")
+
 async def main():
     """Fonction principale pour démarrer le bot"""
+    global shutdown_flag
+    
     try:
         # 1. D'ABORD connecter la base de données
         logger.info("🔌 Connexion à la base de données...")
@@ -234,24 +334,37 @@ async def main():
         
         # 3. ENFIN démarrer le bot
         logger.info("🚀 Démarrage du bot Discord...")
-        await bot.start(TOKEN)
+        
+        # Démarrer le bot en arrière-plan
+        bot_task = asyncio.create_task(bot.start(TOKEN))
+        
+        # Boucle de vérification du flag d'arrêt
+        while not shutdown_flag and not bot.is_closed():
+            await asyncio.sleep(1)
+        
+        # Arrêt demandé
+        if not bot.is_closed():
+            logger.info("🛑 Arrêt du bot...")
+            bot_task.cancel()
+            
+        try:
+            await bot_task
+        except asyncio.CancelledError:
+            pass
         
     except KeyboardInterrupt:
         logger.info("👋 Arrêt du bot demandé par l'utilisateur")
+        shutdown_flag = True
     except Exception as e:
         logger.error(f"💥 Erreur fatale: {e}")
         raise
     finally:
-        # Nettoyer la base de données
-        if database and database.pool:
-            try:
-                await database.close()
-                logger.info("🔌 Connexion à la base fermée")
-            except Exception as e:
-                logger.error(f"Erreur fermeture DB: {e}")
+        await cleanup()
 
 async def run_with_health_server():
     """Lance le bot avec le serveur de santé"""
+    global shutdown_flag
+    
     tasks = []
     
     # Tâche principale du bot
@@ -266,25 +379,37 @@ async def run_with_health_server():
         logger.info("🏥 Serveur de santé configuré")
     
     try:
-        # Attendre que l'une des tâches se termine
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        # Attendre que l'une des tâches se termine ou que l'arrêt soit demandé
+        while not shutdown_flag:
+            done, pending = await asyncio.wait(tasks, timeout=1.0, return_when=asyncio.FIRST_COMPLETED)
+            
+            if done:
+                # Une tâche s'est terminée
+                break
         
-        # Annuler les tâches restantes
-        for task in pending:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        # Annuler toutes les tâches restantes
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        
+        # Attendre que toutes les tâches se terminent proprement
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
                 
     except KeyboardInterrupt:
         logger.info("👋 Arrêt en cours...")
+        shutdown_flag = True
         for task in tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 if __name__ == "__main__":
     try:
+        # Gestion propre des signaux sur Windows
+        if sys.platform == "win32":
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        
         asyncio.run(run_with_health_server())
     except KeyboardInterrupt:
         print("\n👋 Au revoir !")
