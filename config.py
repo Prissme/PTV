@@ -32,6 +32,7 @@ DAILY_COOLDOWN = 86400  # 24 heures
 TRANSFER_MIN = 1
 TRANSFER_MAX = 100000
 TRANSFER_COOLDOWN = 5  # secondes
+TRANSFER_TAX_RATE = 0.02  # 2% de taxe sur les transferts
 
 # ==================== SHOP SETTINGS ====================
 ITEMS_PER_PAGE = 5
@@ -68,3 +69,4 @@ class Emojis:
     TRANSFER = "💸"
     INVENTORY = "📦"
     PREMIUM = "🌟"
+    TAX = "🏛️"
