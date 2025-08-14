@@ -129,6 +129,50 @@ class Database:
                 """, receiver_id, amount)
                 return True
 
+    async def transfer_with_tax(self, giver_id: int, receiver_id: int, amount: int, tax_rate: float, owner_id: int) -> Tuple[bool, Dict]:
+        """Transfère des pièces entre deux utilisateurs avec une taxe pour l'owner"""
+        if not self.pool:
+            raise RuntimeError("Database not connected")
+            
+        if amount <= 0:
+            return False, {"error": "Montant invalide"}
+            
+        # Calculer la taxe
+        tax_amount = int(amount * tax_rate)
+        net_amount = amount - tax_amount
+        
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                # Vérifier le solde du donneur
+                giver = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", giver_id)
+                if not giver or giver["balance"] < amount:
+                    return False, {"error": "Solde insuffisant"}
+                
+                # Débiter le montant total du donneur
+                await conn.execute("UPDATE users SET balance = balance - $1 WHERE user_id = $2", amount, giver_id)
+                
+                # Créditer le montant net au receveur
+                await conn.execute("""
+                    INSERT INTO users (user_id, balance)
+                    VALUES ($1, $2)
+                    ON CONFLICT (user_id) DO UPDATE SET balance = users.balance + EXCLUDED.balance
+                """, receiver_id, net_amount)
+                
+                # Créditer la taxe à l'owner (si tax_amount > 0)
+                if tax_amount > 0:
+                    await conn.execute("""
+                        INSERT INTO users (user_id, balance)
+                        VALUES ($1, $2)
+                        ON CONFLICT (user_id) DO UPDATE SET balance = users.balance + EXCLUDED.balance
+                    """, owner_id, tax_amount)
+                
+                return True, {
+                    "gross_amount": amount,
+                    "net_amount": net_amount,
+                    "tax_amount": tax_amount,
+                    "tax_rate": tax_rate * 100  # Pour l'affichage en %
+                }
+
     async def get_last_daily(self, user_id: int) -> Optional[datetime]:
         """Récupère la dernière fois que l'utilisateur a fait son daily"""
         if not self.pool:
