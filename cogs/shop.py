@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from discord import app_commands
 import math
 import logging
 
@@ -21,11 +22,27 @@ class Shop(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info("✅ Cog Shop initialisé (simplifié)")
+        logger.info("✅ Cog Shop initialisé (simplifié) avec slash commands")
 
     @commands.command(name='shop', aliases=['boutique', 'store'])
     async def shop_cmd(self, ctx, page: int = 1):
         """Affiche la boutique avec pagination"""
+        await self._execute_shop(ctx, page)
+
+    @app_commands.command(name="shop", description="Affiche la boutique avec tous les items disponibles")
+    @app_commands.describe(page="Numéro de la page à afficher (optionnel)")
+    async def shop_slash(self, interaction: discord.Interaction, page: int = 1):
+        """Slash command pour afficher la boutique"""
+        await interaction.response.defer()
+        await self._execute_shop(interaction, page, is_slash=True)
+
+    async def _execute_shop(self, ctx_or_interaction, page=1, is_slash=False):
+        """Logique commune pour shop (prefix et slash)"""
+        if is_slash:
+            send_func = ctx_or_interaction.followup.send
+        else:
+            send_func = ctx_or_interaction.send
+
         try:
             items = await self.db.get_shop_items(active_only=True)
             
@@ -34,7 +51,7 @@ class Shop(commands.Cog):
                     "Boutique vide",
                     "La boutique est vide pour le moment. Revenez plus tard !"
                 )
-                await ctx.send(embed=embed)
+                await send_func(embed=embed)
                 return
             
             # Pagination
@@ -45,7 +62,7 @@ class Shop(commands.Cog):
                     "Page invalide",
                     f"Utilise une page entre 1 et {total_pages}."
                 )
-                await ctx.send(embed=embed)
+                await send_func(embed=embed)
                 return
             
             # Récupérer les items de la page
@@ -55,18 +72,55 @@ class Shop(commands.Cog):
             
             # Créer l'embed
             embed = create_shop_embed(page_items, page, total_pages)
-            await ctx.send(embed=embed)
+            await send_func(embed=embed)
             
         except Exception as e:
             logger.error(f"Erreur shop: {e}")
             embed = create_error_embed("Erreur", "Erreur lors de l'affichage de la boutique.")
-            await ctx.send(embed=embed)
+            await send_func(embed=embed)
 
     @commands.command(name='buy', aliases=['acheter', 'purchase'])
     @commands.cooldown(1, 3, commands.BucketType.user)
     async def buy_cmd(self, ctx, item_id: int):
         """Achète un item du shop"""
-        user_id = ctx.author.id
+        await self._execute_buy(ctx, item_id)
+
+    @app_commands.command(name="buy", description="Achète un item de la boutique")
+    @app_commands.describe(item_id="L'ID de l'item à acheter (visible dans /shop)")
+    async def buy_slash(self, interaction: discord.Interaction, item_id: int):
+        """Slash command pour acheter un item"""
+        # Vérifier le cooldown manuellement pour les slash commands
+        bucket = self.buy_cmd._buckets.get_bucket(interaction.user.id)
+        if bucket and bucket.tokens == 0:
+            retry_after = bucket.get_retry_after()
+            embed = discord.Embed(
+                title=f"{Emojis.COOLDOWN} Cooldown actif !",
+                description=f"Tu pourras acheter un autre item dans **{retry_after:.1f}** secondes.",
+                color=Colors.WARNING
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        await interaction.response.defer()
+        
+        # Appliquer le cooldown
+        if bucket:
+            bucket.update_rate_limit()
+            
+        await self._execute_buy(interaction, item_id, is_slash=True)
+
+    async def _execute_buy(self, ctx_or_interaction, item_id, is_slash=False):
+        """Logique commune pour buy (prefix et slash)"""
+        if is_slash:
+            user_id = ctx_or_interaction.user.id
+            author = ctx_or_interaction.user
+            guild = ctx_or_interaction.guild
+            send_func = ctx_or_interaction.followup.send
+        else:
+            user_id = ctx_or_interaction.author.id
+            author = ctx_or_interaction.author
+            guild = ctx_or_interaction.guild
+            send_func = ctx_or_interaction.send
         
         try:
             # Récupérer les infos de l'item
@@ -76,7 +130,7 @@ class Shop(commands.Cog):
                     "Item introuvable",
                     "Cet item n'existe pas ou n'est plus disponible."
                 )
-                await ctx.send(embed=embed)
+                await send_func(embed=embed)
                 return
             
             # Effectuer l'achat (transaction atomique)
@@ -84,7 +138,7 @@ class Shop(commands.Cog):
             
             if not success:
                 embed = create_error_embed("Achat échoué", message)
-                await ctx.send(embed=embed)
+                await send_func(embed=embed)
                 return
             
             # Si c'est un rôle, l'attribuer
@@ -95,18 +149,18 @@ class Shop(commands.Cog):
                 try:
                     role_id = item["data"].get("role_id")
                     if role_id:
-                        role = ctx.guild.get_role(int(role_id))
+                        role = guild.get_role(int(role_id))
                         if role:
-                            await ctx.author.add_roles(role)
+                            await author.add_roles(role)
                             role_granted = True
                             role_name = role.name
-                            logger.info(f"Rôle {role.name} attribué à {ctx.author} (achat item {item_id})")
+                            logger.info(f"Rôle {role.name} attribué à {author} (achat item {item_id})")
                         else:
                             embed = create_warning_embed(
                                 "Achat réussi mais...",
                                 f"L'item a été acheté mais le rôle est introuvable. Contacte un administrateur.\n\n**Item acheté :** {item['name']}\n**Prix payé :** {item['price']:,} PrissBucks"
                             )
-                            await ctx.send(embed=embed)
+                            await send_func(embed=embed)
                             logger.error(f"Rôle {role_id} introuvable pour l'item {item_id}")
                             return
                     else:
@@ -118,20 +172,20 @@ class Shop(commands.Cog):
                         "Achat réussi mais...",
                         f"L'item a été acheté mais il y a eu une erreur lors de l'attribution du rôle. Contacte un administrateur.\n\n**Item acheté :** {item['name']}\n**Prix payé :** {item['price']:,} PrissBucks"
                     )
-                    await ctx.send(embed=embed)
+                    await send_func(embed=embed)
                     return
             
             # Récupérer le nouveau solde
             new_balance = await self.db.get_balance(user_id)
             
             # Message de confirmation
-            embed = create_purchase_embed(ctx.author, item, new_balance, role_granted, role_name)
-            await ctx.send(embed=embed)
+            embed = create_purchase_embed(author, item, new_balance, role_granted, role_name)
+            await send_func(embed=embed)
             
         except Exception as e:
             logger.error(f"Erreur buy {user_id} -> {item_id}: {e}")
             embed = create_error_embed("Erreur", "Erreur lors de l'achat.")
-            await ctx.send(embed=embed)
+            await send_func(embed=embed)
 
 async def setup(bot):
     """Fonction appelée pour charger le cog"""
