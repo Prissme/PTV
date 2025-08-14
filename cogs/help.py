@@ -7,14 +7,14 @@ from config import PREFIX, Colors, Emojis, TRANSFER_TAX_RATE, SHOP_TAX_RATE
 logger = logging.getLogger(__name__)
 
 class Help(commands.Cog):
-    """Aide simplifiée pour toutes les commandes du bot avec informations sur les taxes"""
+    """Aide simplifiée pour toutes les commandes du bot avec informations correctes sur les taxes"""
     
     def __init__(self, bot):
         self.bot = bot
     
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
-        logger.info("✅ Cog Help initialisé avec informations taxes")
+        logger.info("✅ Cog Help initialisé avec informations taxes corrigées")
 
     @commands.command(name='help', aliases=['h', 'aide'])
     async def help_cmd(self, ctx):
@@ -26,23 +26,23 @@ class Help(commands.Cog):
                 color=Colors.INFO
             )
 
-            # Commandes Économie avec taxes
+            # Commandes Économie avec taxes CORRIGÉES
             embed.add_field(
                 name=f"{Emojis.MONEY} **Économie**",
                 value=f"`{PREFIX}balance [@user]` - Voir le solde (aliases: `bal`, `money`)\n"
                       f"`/give <utilisateur> <montant>` ou `{PREFIX}give` - Donner des PrissBucks\n"
-                      f"   {Emojis.TAX} *Taxe {TRANSFER_TAX_RATE*100}% appliquée sur les transferts*\n"
+                      f"   {Emojis.TAX} *Taxe {TRANSFER_TAX_RATE*100:.0f}% appliquée sur les transferts*\n"
                       f"`{PREFIX}daily` - Récompense quotidienne 24h (aliases: `dailyspin`, `spin`)\n"
                       f"`{PREFIX}leaderboard [limite]` - Top des plus riches (aliases: `top`, `lb`, `rich`)",
                 inline=False
             )
             
-            # Commandes Shop avec taxes
+            # Commandes Shop avec taxes CORRIGÉES
             embed.add_field(
                 name=f"{Emojis.SHOP} **Boutique**",
                 value=f"`/shop [page]` ou `{PREFIX}shop [page]` - Voir la boutique\n"
                       f"`/buy <item_id>` ou `{PREFIX}buy <id>` - Acheter un item\n"
-                      f"   {Emojis.TAX} *Taxe {SHOP_TAX_RATE*100}% appliquée sur tous les achats*\n"
+                      f"   {Emojis.TAX} *Taxe {SHOP_TAX_RATE*100:.0f}% appliquée sur tous les achats*\n"
                       f"`{PREFIX}inventory [@user]` - Voir l'inventaire (aliases: `inv`)",
                 inline=False
             )
@@ -60,7 +60,8 @@ class Help(commands.Cog):
             embed.add_field(
                 name="ℹ️ **Utilitaires**",
                 value=f"`{PREFIX}ping` - Latence du bot et infos système\n"
-                      f"`{PREFIX}rank [@user]` - Position dans le classement",
+                      f"`{PREFIX}rank [@user]` - Position dans le classement\n"
+                      f"`{PREFIX}cooldowns` - Vérifier tes cooldowns actifs",
                 inline=False
             )
 
@@ -68,17 +69,18 @@ class Help(commands.Cog):
             embed.add_field(
                 name="👮‍♂️ **Administration**",
                 value=f"`/addpb <utilisateur> <montant>` ou `{PREFIX}addpb` - Ajouter des PrissBucks (Admin)\n"
+                      f"`{PREFIX}additem <prix> <@role> <nom>` - Ajouter un item au shop (Admin)\n"
                       f"`{PREFIX}shopstats` - Statistiques de la boutique (Admin)",
                 inline=False
             )
 
-            # Section spéciale sur le système de taxes
+            # Section spéciale sur le système de taxes CORRIGÉE
             embed.add_field(
                 name=f"{Emojis.TAX} **Système de Taxes**",
-                value=f"• **Transferts:** {TRANSFER_TAX_RATE*100}% de taxe sur `/give` et `{PREFIX}give`\n"
-                      f"• **Boutique:** {SHOP_TAX_RATE*100}% de taxe sur tous les achats\n"
+                value=f"• **Transferts:** {TRANSFER_TAX_RATE*100:.0f}% de taxe sur `/give` et `{PREFIX}give`\n"
+                      f"• **Boutique:** {SHOP_TAX_RATE*100:.0f}% de taxe sur tous les achats\n"
                       f"• **Utilité:** Les taxes financent le développement du serveur\n"
-                      f"• **Exemples:** Give 100 → reçoit 95, Shop 100 → coûte 105",
+                      f"• **Exemples:** Give 100 → reçoit {100-int(100*TRANSFER_TAX_RATE)}, Shop 100 → coûte {100+int(100*SHOP_TAX_RATE)}",
                 inline=False
             )
 
@@ -88,9 +90,10 @@ class Help(commands.Cog):
                 value="• **Daily:** 50-150 PrissBucks + 10% chance bonus (50-200)\n"
                       "• **PPC:** Jeu avec mise, transfert automatique au gagnant\n"
                       "• **Vol:** 50% réussite (vole 10%), 50% échec (perd 40%)\n"
-                      "• **Shop:** Rôles automatiquement attribués après achat\n"
-                      "• **Cooldowns:** Daily 24h, Give 5s, Buy 3s, Vol 1h, PPC 60s timeout\n"
-                      "• **Messages:** +1 PrissBuck par message (CD: 20s)",
+                      "• **Shop:** Rôles automatiquement attribués après achat + items spéciaux\n"
+                      "• **Cooldowns:** Daily 24h, Give 5s, Buy 3s, Vol 0.5h, PPC 60s timeout\n"
+                      "• **Messages:** +1 PrissBuck par message (CD: 20s)\n"
+                      "• **Reset CD:** Item spécial (200 PB) pour supprimer tous les cooldowns",
                 inline=False
             )
 
@@ -98,7 +101,7 @@ class Help(commands.Cog):
             guild_count = len(self.bot.guilds) if self.bot.guilds else 1
             slash_count = len(self.bot.tree.get_commands())
             embed.set_footer(
-                text=f"Préfixe: {PREFIX} • {guild_count} serveur(s) • {slash_count} slash command(s) • Taxes: {TRANSFER_TAX_RATE*100}%/{SHOP_TAX_RATE*100}%"
+                text=f"Préfixe: {PREFIX} • {guild_count} serveur(s) • {slash_count} slash command(s) • Taxes: {TRANSFER_TAX_RATE*100:.0f}%/{SHOP_TAX_RATE*100:.0f}%"
             )
             embed.set_thumbnail(url=self.bot.user.display_avatar.url)
             
@@ -108,7 +111,7 @@ class Help(commands.Cog):
             logger.error(f"Erreur help: {e}")
             await ctx.send(f"**❌ Erreur dans l'aide**\n"
                           f"Commandes de base : `{PREFIX}balance`, `{PREFIX}daily`, `/shop`, `/give`, `/buy`, `/ppc`\n"
-                          f"**Taxes:** {TRANSFER_TAX_RATE*100}% sur transferts, {SHOP_TAX_RATE*100}% sur achats")
+                          f"**Taxes:** {TRANSFER_TAX_RATE*100:.0f}% sur transferts, {SHOP_TAX_RATE*100:.0f}% sur achats")
 
     @commands.command(name='taxes', aliases=['taxe', 'taxinfo'])
     async def tax_info_cmd(self, ctx):
@@ -120,22 +123,22 @@ class Help(commands.Cog):
                 color=Colors.WARNING
             )
             
-            # Taxes sur les transferts
+            # Taxes sur les transferts CORRIGÉES
             embed.add_field(
                 name="💸 **Transferts de PrissBucks**",
-                value=f"• **Taux:** {TRANSFER_TAX_RATE*100}% sur tous les `/give` et `{PREFIX}give`\n"
-                      f"• **Exemple:** Donner 100 → Le receveur obtient 95\n"
-                      f"• **Taxe collectée:** 5 PrissBucks vers le serveur\n"
+                value=f"• **Taux:** {TRANSFER_TAX_RATE*100:.0f}% sur tous les `/give` et `{PREFIX}give`\n"
+                      f"• **Exemple:** Donner 100 → Le receveur obtient {100-int(100*TRANSFER_TAX_RATE)}\n"
+                      f"• **Taxe collectée:** {int(100*TRANSFER_TAX_RATE)} PrissBucks vers le serveur\n"
                       f"• **Coût pour toi:** 100 PrissBucks (montant demandé)",
                 inline=False
             )
             
-            # Taxes sur la boutique
+            # Taxes sur la boutique CORRIGÉES
             embed.add_field(
                 name=f"{Emojis.SHOP} **Achats en Boutique**",
-                value=f"• **Taux:** {SHOP_TAX_RATE*100}% sur tous les achats `/buy` et `{PREFIX}buy`\n"
-                      f"• **Exemple:** Item à 100 → Tu paies 105 au total\n"
-                      f"• **Taxe collectée:** 5 PrissBucks vers le serveur\n"
+                value=f"• **Taux:** {SHOP_TAX_RATE*100:.0f}% sur tous les achats `/buy` et `{PREFIX}buy`\n"
+                      f"• **Exemple:** Item à 100 → Tu paies {100+int(100*SHOP_TAX_RATE)} au total\n"
+                      f"• **Taxe collectée:** {int(100*SHOP_TAX_RATE)} PrissBucks vers le serveur\n"
                       f"• **Affichage:** Prix avec taxe visible dans `/shop`",
                 inline=False
             )
@@ -160,14 +163,14 @@ class Help(commands.Cog):
                 inline=False
             )
             
-            # Calculs rapides
+            # Calculs rapides CORRIGÉS
             embed.add_field(
                 name="🧮 **Calculateur rapide**",
-                value=f"• **Give 50** → Reçoit 47.5 (taxe: 2.5)\n"
-                      f"• **Give 100** → Reçoit 95 (taxe: 5)\n"
-                      f"• **Give 200** → Reçoit 190 (taxe: 10)\n"
-                      f"• **Buy 100** → Coûte 105 (taxe: 5)\n"
-                      f"• **Buy 500** → Coûte 525 (taxe: 25)",
+                value=f"• **Give 50** → Reçoit {50-int(50*TRANSFER_TAX_RATE)} (taxe: {int(50*TRANSFER_TAX_RATE)})\n"
+                      f"• **Give 100** → Reçoit {100-int(100*TRANSFER_TAX_RATE)} (taxe: {int(100*TRANSFER_TAX_RATE)})\n"
+                      f"• **Give 200** → Reçoit {200-int(200*TRANSFER_TAX_RATE)} (taxe: {int(200*TRANSFER_TAX_RATE)})\n"
+                      f"• **Buy 100** → Coûte {100+int(100*SHOP_TAX_RATE)} (taxe: {int(100*SHOP_TAX_RATE)})\n"
+                      f"• **Buy 500** → Coûte {500+int(500*SHOP_TAX_RATE)} (taxe: {int(500*SHOP_TAX_RATE)})",
                 inline=False
             )
             
@@ -218,8 +221,8 @@ class Help(commands.Cog):
             db_status = "🟢 Connectée" if hasattr(self.bot, 'database') and self.bot.database else "🔴 Déconnectée"
             embed.add_field(name="💾 Base de données", value=db_status, inline=True)
             
-            # Système de taxes
-            embed.add_field(name=f"{Emojis.TAX} Taxes", value=f"Transfer: {TRANSFER_TAX_RATE*100}% | Shop: {SHOP_TAX_RATE*100}%", inline=True)
+            # Système de taxes CORRIGÉ
+            embed.add_field(name=f"{Emojis.TAX} Taxes", value=f"Transfer: {TRANSFER_TAX_RATE*100:.0f}% | Shop: {SHOP_TAX_RATE*100:.0f}%", inline=True)
             
             embed.set_footer(text=f"Bot développé avec discord.py • Préfixe: {PREFIX}")
             
