@@ -29,13 +29,48 @@ def create_daily_embed(user: discord.Member, total_reward: int, bonus: int = 0) 
     return embed
 
 def create_transfer_embed(giver: discord.Member, receiver: discord.Member, amount: int, new_balance: int) -> discord.Embed:
-    """Créer un embed pour les transferts"""
+    """Créer un embed pour les transferts classiques (sans taxe)"""
     embed = discord.Embed(
         title=f"{Emojis.TRANSFER} Transfert réussi !",
         description=f"**{giver.display_name}** a donné **{amount:,}** PrissBucks à **{receiver.display_name}**",
         color=Colors.SUCCESS
     )
     embed.set_footer(text=f"Nouveau solde de {giver.display_name}: {new_balance:,} PrissBucks")
+    return embed
+
+def create_transfer_with_tax_embed(giver: discord.Member, receiver: discord.Member, tax_info: dict, new_balance: int) -> discord.Embed:
+    """Créer un embed pour les transferts avec taxe"""
+    embed = discord.Embed(
+        title=f"{Emojis.TRANSFER} Transfert avec taxe réussi !",
+        description=f"**{giver.display_name}** a transféré **{tax_info['gross_amount']:,}** PrissBucks à **{receiver.display_name}**",
+        color=Colors.SUCCESS
+    )
+    
+    embed.add_field(
+        name="💰 Montant demandé",
+        value=f"{tax_info['gross_amount']:,} PrissBucks",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="💸 Reçu par le destinataire",
+        value=f"{tax_info['net_amount']:,} PrissBucks",
+        inline=True
+    )
+    
+    embed.add_field(
+        name=f"{Emojis.TAX} Taxe prélevée",
+        value=f"{tax_info['tax_amount']:,} PrissBucks ({tax_info['tax_rate']:.0f}%)",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="📊 Ton nouveau solde",
+        value=f"{new_balance:,} PrissBucks",
+        inline=False
+    )
+    
+    embed.set_footer(text="Les taxes contribuent au développement du serveur !")
     return embed
 
 def create_leaderboard_embed(top_users: list, bot, limit: int) -> discord.Embed:
@@ -69,10 +104,14 @@ def create_leaderboard_embed(top_users: list, bot, limit: int) -> discord.Embed:
     return embed
 
 def create_shop_embed(items: list, page: int, total_pages: int) -> discord.Embed:
-    """Créer un embed pour la boutique"""
+    """Créer un embed pour la boutique (sans taxes - deprecated)"""
+    return create_shop_embed_with_tax(items, page, total_pages, 0.0)
+
+def create_shop_embed_with_tax(items: list, page: int, total_pages: int, tax_rate: float) -> discord.Embed:
+    """Créer un embed pour la boutique avec affichage des taxes"""
     embed = discord.Embed(
         title=f"{Emojis.SHOP} Boutique PrissBucks",
-        description="Dépense tes PrissBucks pour des récompenses exclusives !",
+        description=f"Dépense tes PrissBucks pour des récompenses exclusives !\n{Emojis.TAX} **Taxe de {tax_rate*100:.0f}% incluse dans les prix affichés**",
         color=Colors.PREMIUM
     )
     
@@ -85,18 +124,28 @@ def create_shop_embed(items: list, page: int, total_pages: int) -> discord.Embed
         else:
             icon = Emojis.SHOP
         
+        # Prix avec et sans taxe
+        base_price = item['price']
+        total_price = item.get('total_price', base_price)
+        tax_amount = item.get('tax_amount', 0)
+        
         # Description enrichie pour les items spéciaux
         description = item['description']
         if item["type"] == "cooldown_reset":
             description += "\n💫 **Usage immédiat** - Se déclenche automatiquement à l'achat !"
         
+        # Affichage du prix avec détail de la taxe
+        price_display = f"**{total_price:,}** {Emojis.MONEY}"
+        if tax_amount > 0:
+            price_display += f" *(base: {base_price:,} + taxe: {tax_amount:,})*"
+        
         embed.add_field(
-            name=f"{icon} **{item['name']}** - {item['price']:,} {Emojis.MONEY}",
+            name=f"{icon} **{item['name']}** - {price_display}",
             value=f"{description}\n`{PREFIX}buy {item['id']}` ou `/buy {item['id']}` pour acheter",
             inline=False
         )
     
-    embed.set_footer(text=f"Page {page}/{total_pages} • {len(items)} item(s) sur cette page")
+    embed.set_footer(text=f"Page {page}/{total_pages} • {len(items)} item(s) • Taxes: {tax_rate*100:.0f}%")
     
     # Ajouter des boutons de navigation si nécessaire
     if total_pages > 1:
@@ -110,19 +159,64 @@ def create_shop_embed(items: list, page: int, total_pages: int) -> discord.Embed
     return embed
 
 def create_purchase_embed(user: discord.Member, item: dict, new_balance: int, role_granted: bool = False, role_name: str = None, special_effect: str = None) -> discord.Embed:
-    """Créer un embed pour les achats"""
+    """Créer un embed pour les achats (sans taxe - deprecated)"""
+    tax_info = {
+        'base_price': item['price'],
+        'total_price': item['price'],
+        'tax_amount': 0,
+        'tax_rate': 0
+    }
+    return create_purchase_embed_with_tax(user, item, tax_info, new_balance, role_granted, role_name, special_effect)
+
+def create_purchase_embed_with_tax(user: discord.Member, item: dict, tax_info: dict, new_balance: int, role_granted: bool = False, role_name: str = None, special_effect: str = None) -> discord.Embed:
+    """Créer un embed pour les achats avec taxes"""
     embed = discord.Embed(
         title=f"{Emojis.SUCCESS} Achat réussi !",
-        description=f"**{user.display_name}** a acheté **{item['name']}** pour **{item['price']:,}** PrissBucks !",
+        description=f"**{user.display_name}** a acheté **{item['name']}** !",
         color=Colors.SUCCESS
     )
     
+    # Détails financiers avec taxe
+    embed.add_field(
+        name="💰 Prix de base",
+        value=f"{tax_info['base_price']:,} PrissBucks",
+        inline=True
+    )
+    
+    if tax_info['tax_amount'] > 0:
+        embed.add_field(
+            name=f"{Emojis.TAX} Taxe",
+            value=f"{tax_info['tax_amount']:,} PrissBucks ({tax_info['tax_rate']:.0f}%)",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="💸 Total payé",
+            value=f"**{tax_info['total_price']:,}** PrissBucks",
+            inline=True
+        )
+    else:
+        embed.add_field(
+            name="💸 Total payé",
+            value=f"**{tax_info['total_price']:,}** PrissBucks",
+            inline=True
+        )
+        embed.add_field(name="\u200b", value="\u200b", inline=True)  # Espace vide
+    
     # Ajouter les effets selon le type d'item
     if role_granted and role_name:
-        embed.description += f"\n{Emojis.ROLE} **Rôle {role_name} attribué !**"
+        embed.add_field(
+            name="🎭 Rôle attribué",
+            value=f"**{role_name}** ✅",
+            inline=False
+        )
     
     if special_effect:
-        embed.description += f"\n{special_effect}"
+        embed.add_field(
+            name="✨ Effet spécial",
+            value=special_effect,
+            inline=False
+        )
     
     # Footer avec le nouveau solde
     embed.set_footer(text=f"Nouveau solde: {new_balance:,} PrissBucks")
@@ -131,7 +225,7 @@ def create_purchase_embed(user: discord.Member, item: dict, new_balance: int, ro
     # Ajouter un field spécial pour les cooldown resets
     if item["type"] == "cooldown_reset":
         embed.add_field(
-            name="✨ Effet immédiat",
+            name="⚡ Effet immédiat",
             value="Tous tes cooldowns ont été supprimés !\nTu peux maintenant utiliser toutes tes commandes.",
             inline=False
         )
@@ -160,6 +254,7 @@ def create_inventory_embed(user: discord.Member, purchases: list) -> discord.Emb
     )
     
     total_spent = 0
+    total_taxes = 0
     for purchase in purchases[:10]:  # Limiter à 10 items
         # Icône selon le type
         if purchase["type"] == "role":
@@ -171,8 +266,13 @@ def create_inventory_embed(user: discord.Member, purchases: list) -> discord.Emb
             
         date = purchase["purchase_date"].strftime("%d/%m/%Y")
         
-        # Description spéciale pour les items consommables
-        item_desc = f"{Emojis.MONEY} **{purchase['price_paid']:,}** PrissBucks\n📅 Acheté le {date}"
+        # Description avec détails de prix et taxe
+        item_desc = f"{Emojis.MONEY} **{purchase['price_paid']:,}** PrissBucks"
+        if purchase.get('tax_paid', 0) > 0:
+            base_price = purchase['price_paid'] - purchase['tax_paid']
+            item_desc += f" *(base: {base_price:,} + taxe: {purchase['tax_paid']:,})*"
+        item_desc += f"\n📅 Acheté le {date}"
+        
         if purchase["type"] == "cooldown_reset":
             item_desc += "\n💫 *Item consommable utilisé*"
         
@@ -182,6 +282,7 @@ def create_inventory_embed(user: discord.Member, purchases: list) -> discord.Emb
             inline=True
         )
         total_spent += purchase["price_paid"]
+        total_taxes += purchase.get("tax_paid", 0)
     
     if len(purchases) > 10:
         embed.add_field(
@@ -190,7 +291,11 @@ def create_inventory_embed(user: discord.Member, purchases: list) -> discord.Emb
             inline=True
         )
     
-    embed.set_footer(text=f"Total dépensé: {total_spent:,} PrissBucks")
+    # Footer avec statistiques détaillées
+    footer_text = f"Total dépensé: {total_spent:,} PrissBucks"
+    if total_taxes > 0:
+        footer_text += f" (dont {total_taxes:,} de taxes)"
+    embed.set_footer(text=footer_text)
     embed.set_thumbnail(url=user.display_avatar.url)
     return embed
 
@@ -259,7 +364,7 @@ def create_cooldown_embed(command: str, retry_after: float) -> discord.Embed:
     return embed
 
 def create_shop_stats_embed(stats: dict) -> discord.Embed:
-    """Créer un embed pour les statistiques du shop"""
+    """Créer un embed pour les statistiques du shop avec taxes"""
     embed = discord.Embed(
         title="📊 Statistiques de la boutique",
         color=Colors.INFO
@@ -282,12 +387,30 @@ def create_shop_stats_embed(stats: dict) -> discord.Embed:
         inline=True
     )
     
+    # Statistiques sur les taxes
+    embed.add_field(
+        name=f"{Emojis.TAX} Taxes collectées", 
+        value=f"**{stats.get('total_taxes', 0):,}** PrissBucks", 
+        inline=True
+    )
+    
+    if stats['total_revenue'] > 0:
+        tax_percentage = (stats.get('total_taxes', 0) / stats['total_revenue'] * 100)
+        embed.add_field(
+            name="📈 % Taxes", 
+            value=f"**{tax_percentage:.1f}%** du CA", 
+            inline=True
+        )
+    
     # Top des items
-    if stats['top_items']:
+    if stats.get('top_items'):
         top_text = ""
         for i, item in enumerate(stats['top_items'][:5], 1):
             emoji = ["🥇", "🥈", "🥉", "🏅", "🏅"][i-1]
-            top_text += f"{emoji} **{item['name']}** - {item['purchases']} vente(s)\n"
+            revenue_text = f"{item.get('revenue', 0):,} PB"
+            if item.get('taxes_collected', 0) > 0:
+                revenue_text += f" (dont {item['taxes_collected']:,} taxes)"
+            top_text += f"{emoji} **{item['name']}** - {item['purchases']} vente(s) ({revenue_text})\n"
         
         embed.add_field(
             name="🏆 Top des ventes",
@@ -298,27 +421,29 @@ def create_shop_stats_embed(stats: dict) -> discord.Embed:
     return embed
 
 def create_help_embed(user_permissions: dict) -> discord.Embed:
-    """Créer un embed d'aide"""
+    """Créer un embed d'aide avec informations sur les taxes"""
+    from config import TRANSFER_TAX_RATE, SHOP_TAX_RATE
+    
     embed = discord.Embed(
         title="🤖 Bot Économie - Aide",
         description="Voici toutes les commandes disponibles :",
         color=Colors.INFO
     )
 
-    # Commandes principales
+    # Commandes principales avec taxes
     embed.add_field(
         name=f"{Emojis.MONEY} Commandes Économie",
         value=f"`{PREFIX}balance [@user]` - Affiche le solde\n"
-              f"`{PREFIX}give <@user> <montant>` - Donne des pièces\n"
+              f"`{PREFIX}give <@user> <montant>` - Donne des pièces ({TRANSFER_TAX_RATE*100:.0f}% de taxe)\n"
               f"`{PREFIX}daily` - Daily spin (récupère tes pièces quotidiennes)\n"
               f"`{PREFIX}leaderboard [limite]` - Top des plus riches",
         inline=False
     )
     
-    # Commandes shop
+    # Commandes shop avec taxes
     embed.add_field(
         name=f"{Emojis.SHOP} Commandes Boutique",
-        value=f"`{PREFIX}shop [page]` - Affiche la boutique\n"
+        value=f"`{PREFIX}shop [page]` - Affiche la boutique (prix avec taxe {SHOP_TAX_RATE*100:.0f}%)\n"
               f"`{PREFIX}buy <id>` - Achète un item\n"
               f"`{PREFIX}inventory [@user]` - Affiche l'inventaire",
         inline=False
@@ -333,37 +458,37 @@ def create_help_embed(user_permissions: dict) -> discord.Embed:
         inline=False
     )
     
+    # Système de taxes
+    embed.add_field(
+        name=f"{Emojis.TAX} Système de Taxes",
+        value=f"• **Transferts:** {TRANSFER_TAX_RATE*100:.0f}% de taxe sur `give`\n"
+              f"• **Boutique:** {SHOP_TAX_RATE*100:.0f}% de taxe sur tous les achats\n"
+              f"• **Exemptions:** Daily, messages, mini-jeux, ajouts admin\n"
+              f"• **Utilité:** Financement du développement du serveur",
+        inline=False
+    )
+    
     # Commandes admin si permissions
     if user_permissions.get('administrator'):
         embed.add_field(
             name="👑 Commandes Admin",
             value=f"`{PREFIX}addpb <@user> <montant>` - Ajoute des PrissBucks\n"
-                  f"`{PREFIX}resetcd [@user]` - Reset les cooldowns d'un utilisateur",
+                  f"`{PREFIX}additem <prix> <@role> <nom>` - Ajoute un item au shop\n"
+                  f"`{PREFIX}shopstats` - Statistiques de la boutique",
             inline=False
         )
 
     # Nouveautés
     embed.add_field(
         name="✨ Nouveautés",
-        value="🔸 **Item Reset Cooldowns** - Supprime tous tes cooldowns pour 200 PrissBucks !\n"
-              "🔸 **Messages récompensés** - +1 PrissBuck par message (CD: 20s)\n"
-              "🔸 **Système de vol** - Risque/récompense avec 50% de chances",
+        value=f"🔸 **Système de taxes** - {TRANSFER_TAX_RATE*100:.0f}%/{SHOP_TAX_RATE*100:.0f}% sur transferts/achats\n"
+              f"🔸 **Item Reset Cooldowns** - Supprime tous tes cooldowns (200 PB)\n"
+              f"🔸 **Messages récompensés** - +1 PrissBuck par message (CD: 20s)\n"
+              f"🔸 **Système de vol amélioré** - Configuration depuis config.py",
         inline=False
     )
 
-    # Aliases
-    embed.add_field(
-        name="🔄 Aliases populaires",
-        value="`balance` → `bal`, `money`\n"
-              "`give` → `pay`, `transfer`\n"
-              "`daily` → `dailyspin`, `spin`\n"
-              "`leaderboard` → `top`, `rich`, `lb`\n"
-              "`inventory` → `inv`\n"
-              "`cooldowns` → `cd`, `mycooldowns`",
-        inline=False
-    )
-
-    embed.set_footer(text=f"Préfixe: {PREFIX} | Système Reset Cooldowns disponible !")
+    embed.set_footer(text=f"Préfixe: {PREFIX} | Taxes: {TRANSFER_TAX_RATE*100:.0f}%/{SHOP_TAX_RATE*100:.0f}% | Items spéciaux disponibles !")
     return embed
 
 def create_cooldowns_status_embed(user: discord.Member, active_cooldowns: list) -> discord.Embed:
