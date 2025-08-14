@@ -7,7 +7,7 @@ import logging
 
 from config import (
     DAILY_MIN, DAILY_MAX, DAILY_BONUS_CHANCE, DAILY_BONUS_MIN, DAILY_BONUS_MAX,
-    DAILY_COOLDOWN, TRANSFER_COOLDOWN, TRANSFER_TAX_RATE, OWNER_ID, Colors, Emojis
+    DAILY_COOLDOWN, TRANSFER_COOLDOWN, Colors, Emojis
 )
 from utils.embeds import (
     create_balance_embed, create_daily_embed, create_transfer_embed,
@@ -17,53 +17,29 @@ from utils.embeds import (
 logger = logging.getLogger(__name__)
 
 class Economy(commands.Cog):
-    """Commandes économie essentielles avec taxes 5% : balance, daily, give"""
+    """Commandes économie essentielles : balance, daily, give"""
     
     def __init__(self, bot):
         self.bot = bot
         self.db = None
+        # Dictionnaire pour gérer les cooldowns manuellement des slash commands
+        self.give_cooldowns = {}
     
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info(f"✅ Cog Economy initialisé avec taxes transfert {TRANSFER_TAX_RATE*100}% et slash commands")
-
-    def create_transfer_embed_with_tax(self, giver: discord.Member, receiver: discord.Member, tax_info: dict, new_balance: int) -> discord.Embed:
-        """Créer un embed pour les transferts avec détails de la taxe"""
-        embed = discord.Embed(
-            title=f"{Emojis.TRANSFER} Transfert réussi !",
-            color=Colors.SUCCESS
-        )
-        
-        gross_amount = tax_info['gross_amount']
-        net_amount = tax_info['net_amount'] 
-        tax_amount = tax_info['tax_amount']
-        tax_rate = tax_info['tax_rate']
-        
-        embed.add_field(
-            name="👤 De → Vers",
-            value=f"**{giver.display_name}** → **{receiver.display_name}**",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="💰 Détail du transfert",
-            value=f"**Montant demandé:** {gross_amount:,} {Emojis.MONEY}\n"
-                  f"**Taxe ({tax_rate}%):** -{tax_amount:,} {Emojis.MONEY}\n"
-                  f"**Reçu par {receiver.display_name}:** {net_amount:,} {Emojis.MONEY}",
-            inline=True
-        )
-        
-        embed.add_field(
-            name="💳 Nouveau solde",
-            value=f"**{giver.display_name}:** {new_balance:,} {Emojis.MONEY}",
-            inline=True
-        )
-        
-        if tax_amount > 0:
-            embed.set_footer(text=f"Taxe de {tax_amount:,} {Emojis.MONEY} collectée pour le serveur")
-        
-        return embed
+        logger.info("✅ Cog Economy initialisé (simplifié) avec slash commands")
+    
+    def _check_give_cooldown(self, user_id: int) -> float:
+        """Vérifie et retourne le cooldown restant pour give"""
+        import time
+        now = time.time()
+        if user_id in self.give_cooldowns:
+            elapsed = now - self.give_cooldowns[user_id]
+            if elapsed < TRANSFER_COOLDOWN:
+                return TRANSFER_COOLDOWN - elapsed
+        self.give_cooldowns[user_id] = now
+        return 0
 
     @commands.command(name='balance', aliases=['bal', 'money'])
     async def balance_cmd(self, ctx, member: discord.Member = None):
@@ -80,14 +56,64 @@ class Economy(commands.Cog):
             embed = create_error_embed("Erreur", "Erreur lors de la récupération du solde.")
             await ctx.send(embed=embed)
 
+    @app_commands.command(name="balance", description="Affiche le solde d'un utilisateur")
+    @app_commands.describe(utilisateur="L'utilisateur dont voir le solde (optionnel)")
+    async def balance_slash(self, interaction: discord.Interaction, utilisateur: discord.Member = None):
+        """Slash command pour voir le solde"""
+        target = utilisateur or interaction.user
+        
+        try:
+            balance = await self.db.get_balance(target.id)
+            embed = create_balance_embed(target, balance)
+            await interaction.response.send_message(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Erreur balance pour {target.id}: {e}")
+            embed = create_error_embed("Erreur", "Erreur lors de la récupération du solde.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @commands.command(name='addpb', aliases=['addprissbucks', 'give_admin'])
     @commands.has_permissions(administrator=True)
     async def addpb_cmd(self, ctx, member: discord.Member, amount: int):
         """[ADMIN] Ajoute des PrissBucks à un utilisateur"""
+        await self._execute_addpb(ctx, member, amount)
+
+    @app_commands.command(name="addpb", description="[ADMIN] Ajoute des PrissBucks à un utilisateur")
+    @app_commands.describe(
+        utilisateur="L'utilisateur à qui ajouter des PrissBucks",
+        montant="Le montant de PrissBucks à ajouter"
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def addpb_slash(self, interaction: discord.Interaction, utilisateur: discord.Member, montant: int):
+        """Slash command pour ajouter des PrissBucks (admin seulement)"""
+        # Vérifier les permissions
+        if not interaction.user.guild_permissions.administrator:
+            embed = create_error_embed(
+                "Permission refusée", 
+                "Seuls les administrateurs peuvent utiliser cette commande."
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        await self._execute_addpb(interaction, utilisateur, montant, is_slash=True)
+
+    async def _execute_addpb(self, ctx_or_interaction, member, amount, is_slash=False):
+        """Logique commune pour addpb (prefix et slash)"""
+        if is_slash:
+            admin = ctx_or_interaction.user
+            send_func = ctx_or_interaction.followup.send
+        else:
+            admin = ctx_or_interaction.author
+            send_func = ctx_or_interaction.send
+
         # Validation du montant
         if amount <= 0:
             embed = create_error_embed("Montant invalide", "Le montant doit être positif !")
-            await ctx.send(embed=embed)
+            if is_slash:
+                await send_func(embed=embed, ephemeral=True)
+            else:
+                await send_func(embed=embed)
             return
 
         if amount > 1000000:  # Limite de sécurité
@@ -95,7 +121,10 @@ class Economy(commands.Cog):
                 "Montant trop élevé", 
                 "Le montant maximum est de 1,000,000 PrissBucks par ajout."
             )
-            await ctx.send(embed=embed)
+            if is_slash:
+                await send_func(embed=embed, ephemeral=True)
+            else:
+                await send_func(embed=embed)
             return
 
         try:
@@ -135,22 +164,25 @@ class Economy(commands.Cog):
             
             embed.add_field(
                 name="👮‍♂️ Administrateur",
-                value=ctx.author.display_name,
+                value=admin.display_name,
                 inline=False
             )
             
             embed.set_thumbnail(url=member.display_avatar.url)
             embed.set_footer(text="Action administrative - PrissBucks ajoutés")
             
-            await ctx.send(embed=embed)
+            await send_func(embed=embed)
             
             # Log de l'action
-            logger.info(f"ADMIN: {ctx.author} a ajouté {amount} PrissBucks à {member} (nouveau solde: {new_balance})")
+            logger.info(f"ADMIN: {admin} a ajouté {amount} PrissBucks à {member} (nouveau solde: {new_balance})")
             
         except Exception as e:
-            logger.error(f"Erreur addpb {ctx.author.id} -> {member.id}: {e}")
+            logger.error(f"Erreur addpb {admin.id} -> {member.id}: {e}")
             embed = create_error_embed("Erreur", "Erreur lors de l'ajout des PrissBucks.")
-            await ctx.send(embed=embed)
+            if is_slash:
+                await send_func(embed=embed, ephemeral=True)
+            else:
+                await send_func(embed=embed)
 
     @addpb_cmd.error
     async def addpb_error(self, ctx, error):
@@ -168,125 +200,28 @@ class Economy(commands.Cog):
     @commands.command(name='give', aliases=['pay', 'transfer'])
     @commands.cooldown(1, TRANSFER_COOLDOWN, commands.BucketType.user)
     async def give_cmd(self, ctx, member: discord.Member, amount: int):
-        """Donne des pièces à un autre utilisateur (taxe 5%)"""
+        """Donne des pièces à un autre utilisateur"""
         await self._execute_give(ctx, member, amount)
 
-    @app_commands.command(name="addpb", description="[ADMIN] Ajoute des PrissBucks à un utilisateur")
-    @app_commands.describe(
-        utilisateur="L'utilisateur à qui ajouter des PrissBucks",
-        montant="Le montant de PrissBucks à ajouter"
-    )
-    @app_commands.default_permissions(administrator=True)
-    async def addpb_slash(self, interaction: discord.Interaction, utilisateur: discord.Member, montant: int):
-        """Slash command pour ajouter des PrissBucks (admin seulement)"""
-        # Vérifier les permissions
-        if not interaction.user.guild_permissions.administrator:
-            embed = create_error_embed(
-                "Permission refusée", 
-                "Seuls les administrateurs peuvent utiliser cette commande."
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Validation du montant
-        if montant <= 0:
-            embed = create_error_embed("Montant invalide", "Le montant doit être positif !")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        if montant > 1000000:  # Limite de sécurité
-            embed = create_error_embed(
-                "Montant trop élevé", 
-                "Le montant maximum est de 1,000,000 PrissBucks par ajout."
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        await interaction.response.defer()
-
-        try:
-            # Récupérer le solde actuel
-            old_balance = await self.db.get_balance(utilisateur.id)
-            
-            # Ajouter les PrissBucks
-            await self.db.update_balance(utilisateur.id, montant)
-            
-            # Récupérer le nouveau solde
-            new_balance = await self.db.get_balance(utilisateur.id)
-            
-            # Créer l'embed de confirmation
-            embed = discord.Embed(
-                title="💰 PrissBucks ajoutés !",
-                description=f"**{montant:,}** PrissBucks ont été ajoutés à {utilisateur.display_name}",
-                color=Colors.SUCCESS
-            )
-            
-            embed.add_field(
-                name="👤 Utilisateur",
-                value=utilisateur.display_name,
-                inline=True
-            )
-            
-            embed.add_field(
-                name="💵 Montant ajouté",
-                value=f"+{montant:,} PrissBucks",
-                inline=True
-            )
-            
-            embed.add_field(
-                name="📊 Soldes",
-                value=f"**Avant:** {old_balance:,}\n**Après:** {new_balance:,}",
-                inline=True
-            )
-            
-            embed.add_field(
-                name="👮‍♂️ Administrateur",
-                value=interaction.user.display_name,
-                inline=False
-            )
-            
-            embed.set_thumbnail(url=utilisateur.display_avatar.url)
-            embed.set_footer(text="Action administrative - PrissBucks ajoutés")
-            
-            await interaction.followup.send(embed=embed)
-            
-            # Log de l'action
-            logger.info(f"ADMIN: {interaction.user} a ajouté {montant} PrissBucks à {utilisateur} (nouveau solde: {new_balance})")
-            
-        except Exception as e:
-            logger.error(f"Erreur addpb {interaction.user.id} -> {utilisateur.id}: {e}")
-            embed = create_error_embed("Erreur", "Erreur lors de l'ajout des PrissBucks.")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="give", description="Donne des PrissBucks à un autre utilisateur (taxe 5%)")
+    @app_commands.command(name="give", description="Donne des PrissBucks à un autre utilisateur")
     @app_commands.describe(
         utilisateur="L'utilisateur à qui donner des PrissBucks",
-        montant="Le montant de PrissBucks à donner (avant taxe)"
+        montant="Le montant de PrissBucks à donner"
     )
     async def give_slash(self, interaction: discord.Interaction, utilisateur: discord.Member, montant: int):
         """Slash command pour donner des PrissBucks"""
-        # Créer un contexte fictif pour réutiliser la logique
-        ctx = await self.bot.get_context(interaction)
-        ctx.author = interaction.user
-        
         # Vérifier le cooldown manuellement pour les slash commands
-        bucket = self.give_cmd._buckets.get_bucket(interaction.user.id)
-        if bucket and bucket.tokens == 0:
-            retry_after = bucket.get_retry_after()
-            embed = create_cooldown_embed("give", retry_after)
+        cooldown_remaining = self._check_give_cooldown(interaction.user.id)
+        if cooldown_remaining > 0:
+            embed = create_cooldown_embed("give", cooldown_remaining)
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
         await interaction.response.defer()
-        
-        # Appliquer le cooldown
-        if bucket:
-            bucket.update_rate_limit()
-            
         await self._execute_give(interaction, utilisateur, montant, is_slash=True)
 
     async def _execute_give(self, ctx_or_interaction, member, amount, is_slash=False):
-        """Logique commune pour give (prefix et slash) avec taxes"""
+        """Logique commune pour give (prefix et slash)"""
         if is_slash:
             giver = ctx_or_interaction.user
             send_func = ctx_or_interaction.followup.send
@@ -312,39 +247,26 @@ class Economy(commands.Cog):
             await send_func(embed=embed)
             return
 
-        # Calculer le montant avec taxe pour la vérification
-        tax_amount = int(amount * TRANSFER_TAX_RATE)
-        total_cost = amount  # Le montant demandé reste le coût total
-
         try:
-            # Vérifier le solde du donneur (il doit avoir le montant total demandé)
+            # Vérifier le solde du donneur
             giver_balance = await self.db.get_balance(giver.id)
             if giver_balance < amount:
                 embed = create_error_embed(
                     "Solde insuffisant",
-                    f"**Montant à donner:** {amount:,} {Emojis.MONEY}\n"
-                    f"**Ton solde:** {giver_balance:,} {Emojis.MONEY}\n"
-                    f"**Manque:** {amount - giver_balance:,} {Emojis.MONEY}\n\n"
-                    f"ℹ️ *Taxe de {TRANSFER_TAX_RATE*100}% incluse dans le calcul*"
+                    f"Tu as {giver_balance:,} PrissBucks mais tu essaies de donner {amount:,} PrissBucks."
                 )
                 await send_func(embed=embed)
                 return
 
-            # Effectuer le transfert avec taxe
-            success, tax_info = await self.db.transfer_with_tax(
-                giver.id, receiver.id, amount, TRANSFER_TAX_RATE, OWNER_ID
-            )
+            # Effectuer le transfert
+            success = await self.db.transfer(giver.id, receiver.id, amount)
             
             if success:
                 new_balance = giver_balance - amount
-                embed = self.create_transfer_embed_with_tax(giver, receiver, tax_info, new_balance)
+                embed = create_transfer_embed(giver, receiver, amount, new_balance)
                 await send_func(embed=embed)
-                
-                # Log du transfert
-                logger.info(f"Transfert avec taxe: {giver} → {receiver}, montant: {amount}, taxe: {tax_info['tax_amount']}")
             else:
-                error_msg = tax_info.get("error", "Erreur inconnue lors du transfert")
-                embed = create_error_embed("Échec du transfert", error_msg)
+                embed = create_error_embed("Échec du transfert", "Solde insuffisant.")
                 await send_func(embed=embed)
                 
         except Exception as e:
@@ -356,11 +278,18 @@ class Economy(commands.Cog):
     @commands.cooldown(1, DAILY_COOLDOWN, commands.BucketType.user)
     async def daily_cmd(self, ctx):
         """Récupère tes pièces quotidiennes"""
-        user_id = ctx.author.id
+        await self._execute_daily(ctx)
+
+    @app_commands.command(name="daily", description="Récupère tes pièces quotidiennes")
+    async def daily_slash(self, interaction: discord.Interaction):
+        """Slash command pour le daily"""
+        await interaction.response.defer()
+        
+        # Vérifier le cooldown manuellement
+        user_id = interaction.user.id
         now = datetime.now(timezone.utc)
 
         try:
-            # Vérifier le dernier daily
             last_daily = await self.db.get_last_daily(user_id)
             
             if last_daily:
@@ -368,8 +297,40 @@ class Economy(commands.Cog):
                 if delta.total_seconds() < DAILY_COOLDOWN:
                     remaining = DAILY_COOLDOWN - delta.total_seconds()
                     embed = create_cooldown_embed("daily", remaining)
-                    await ctx.send(embed=embed)
+                    await interaction.followup.send(embed=embed, ephemeral=True)
                     return
+
+            await self._execute_daily(interaction, is_slash=True)
+            
+        except Exception as e:
+            logger.error(f"Erreur daily pour {user_id}: {e}")
+            embed = create_error_embed("Erreur", "Erreur lors du daily spin.")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def _execute_daily(self, ctx_or_interaction, is_slash=False):
+        """Logique commune pour daily (prefix et slash)"""
+        if is_slash:
+            user = ctx_or_interaction.user
+            send_func = ctx_or_interaction.followup.send
+        else:
+            user = ctx_or_interaction.author
+            send_func = ctx_or_interaction.send
+
+        user_id = user.id
+        now = datetime.now(timezone.utc)
+
+        try:
+            # Vérifier le dernier daily (pour prefix command seulement, slash l'a déjà vérifié)
+            if not is_slash:
+                last_daily = await self.db.get_last_daily(user_id)
+                
+                if last_daily:
+                    delta = now - last_daily
+                    if delta.total_seconds() < DAILY_COOLDOWN:
+                        remaining = DAILY_COOLDOWN - delta.total_seconds()
+                        embed = create_cooldown_embed("daily", remaining)
+                        await send_func(embed=embed)
+                        return
 
             # Calculer la récompense
             base_reward = random.randint(DAILY_MIN, DAILY_MAX)
@@ -386,13 +347,13 @@ class Economy(commands.Cog):
             await self.db.set_last_daily(user_id, now)
 
             # Envoyer l'embed
-            embed = create_daily_embed(ctx.author, total_reward, bonus)
-            await ctx.send(embed=embed)
+            embed = create_daily_embed(user, total_reward, bonus)
+            await send_func(embed=embed)
             
         except Exception as e:
             logger.error(f"Erreur daily pour {user_id}: {e}")
             embed = create_error_embed("Erreur", "Erreur lors du daily spin.")
-            await ctx.send(embed=embed)
+            await send_func(embed=embed)
 
     # Gestion d'erreur spécifique pour ce cog
     @commands.Cog.listener()
@@ -408,6 +369,9 @@ class Economy(commands.Cog):
             else:
                 # Laisser la gestion globale s'en occuper
                 raise error
+        else:
+            # Laisser la gestion globale s'en occuper
+            raise error
 
 async def setup(bot):
     """Fonction appelée pour charger le cog"""
