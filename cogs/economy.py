@@ -43,11 +43,183 @@ class Economy(commands.Cog):
             embed = create_error_embed("Erreur", "Erreur lors de la récupération du solde.")
             await ctx.send(embed=embed)
 
+    @commands.command(name='addpb', aliases=['addprissbucks', 'give_admin'])
+    @commands.has_permissions(administrator=True)
+    async def addpb_cmd(self, ctx, member: discord.Member, amount: int):
+        """[ADMIN] Ajoute des PrissBucks à un utilisateur"""
+        # Validation du montant
+        if amount <= 0:
+            embed = create_error_embed("Montant invalide", "Le montant doit être positif !")
+            await ctx.send(embed=embed)
+            return
+
+        if amount > 1000000:  # Limite de sécurité
+            embed = create_error_embed(
+                "Montant trop élevé", 
+                "Le montant maximum est de 1,000,000 PrissBucks par ajout."
+            )
+            await ctx.send(embed=embed)
+            return
+
+        try:
+            # Récupérer le solde actuel
+            old_balance = await self.db.get_balance(member.id)
+            
+            # Ajouter les PrissBucks
+            await self.db.update_balance(member.id, amount)
+            
+            # Récupérer le nouveau solde
+            new_balance = await self.db.get_balance(member.id)
+            
+            # Créer l'embed de confirmation
+            embed = discord.Embed(
+                title="💰 PrissBucks ajoutés !",
+                description=f"**{amount:,}** PrissBucks ont été ajoutés à {member.display_name}",
+                color=Colors.SUCCESS
+            )
+            
+            embed.add_field(
+                name="👤 Utilisateur",
+                value=member.display_name,
+                inline=True
+            )
+            
+            embed.add_field(
+                name="💵 Montant ajouté",
+                value=f"+{amount:,} PrissBucks",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="📊 Soldes",
+                value=f"**Avant:** {old_balance:,}\n**Après:** {new_balance:,}",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="👮‍♂️ Administrateur",
+                value=ctx.author.display_name,
+                inline=False
+            )
+            
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.set_footer(text="Action administrative - PrissBucks ajoutés")
+            
+            await ctx.send(embed=embed)
+            
+            # Log de l'action
+            logger.info(f"ADMIN: {ctx.author} a ajouté {amount} PrissBucks à {member} (nouveau solde: {new_balance})")
+            
+        except Exception as e:
+            logger.error(f"Erreur addpb {ctx.author.id} -> {member.id}: {e}")
+            embed = create_error_embed("Erreur", "Erreur lors de l'ajout des PrissBucks.")
+            await ctx.send(embed=embed)
+
+    @addpb_cmd.error
+    async def addpb_error(self, ctx, error):
+        """Gestion d'erreurs pour la commande addpb"""
+        if isinstance(error, commands.MissingPermissions):
+            embed = create_error_embed(
+                "Permission refusée",
+                "Seuls les administrateurs peuvent utiliser cette commande."
+            )
+            await ctx.send(embed=embed)
+        else:
+            # Laisser la gestion globale s'occuper des autres erreurs
+            raise error
+
     @commands.command(name='give', aliases=['pay', 'transfer'])
     @commands.cooldown(1, TRANSFER_COOLDOWN, commands.BucketType.user)
     async def give_cmd(self, ctx, member: discord.Member, amount: int):
         """Donne des pièces à un autre utilisateur"""
         await self._execute_give(ctx, member, amount)
+
+    @app_commands.command(name="addpb", description="[ADMIN] Ajoute des PrissBucks à un utilisateur")
+    @app_commands.describe(
+        utilisateur="L'utilisateur à qui ajouter des PrissBucks",
+        montant="Le montant de PrissBucks à ajouter"
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def addpb_slash(self, interaction: discord.Interaction, utilisateur: discord.Member, montant: int):
+        """Slash command pour ajouter des PrissBucks (admin seulement)"""
+        # Vérifier les permissions
+        if not interaction.user.guild_permissions.administrator:
+            embed = create_error_embed(
+                "Permission refusée", 
+                "Seuls les administrateurs peuvent utiliser cette commande."
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # Validation du montant
+        if montant <= 0:
+            embed = create_error_embed("Montant invalide", "Le montant doit être positif !")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        if montant > 1000000:  # Limite de sécurité
+            embed = create_error_embed(
+                "Montant trop élevé", 
+                "Le montant maximum est de 1,000,000 PrissBucks par ajout."
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        await interaction.response.defer()
+
+        try:
+            # Récupérer le solde actuel
+            old_balance = await self.db.get_balance(utilisateur.id)
+            
+            # Ajouter les PrissBucks
+            await self.db.update_balance(utilisateur.id, montant)
+            
+            # Récupérer le nouveau solde
+            new_balance = await self.db.get_balance(utilisateur.id)
+            
+            # Créer l'embed de confirmation
+            embed = discord.Embed(
+                title="💰 PrissBucks ajoutés !",
+                description=f"**{montant:,}** PrissBucks ont été ajoutés à {utilisateur.display_name}",
+                color=Colors.SUCCESS
+            )
+            
+            embed.add_field(
+                name="👤 Utilisateur",
+                value=utilisateur.display_name,
+                inline=True
+            )
+            
+            embed.add_field(
+                name="💵 Montant ajouté",
+                value=f"+{montant:,} PrissBucks",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="📊 Soldes",
+                value=f"**Avant:** {old_balance:,}\n**Après:** {new_balance:,}",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="👮‍♂️ Administrateur",
+                value=interaction.user.display_name,
+                inline=False
+            )
+            
+            embed.set_thumbnail(url=utilisateur.display_avatar.url)
+            embed.set_footer(text="Action administrative - PrissBucks ajoutés")
+            
+            await interaction.followup.send(embed=embed)
+            
+            # Log de l'action
+            logger.info(f"ADMIN: {interaction.user} a ajouté {montant} PrissBucks à {utilisateur} (nouveau solde: {new_balance})")
+            
+        except Exception as e:
+            logger.error(f"Erreur addpb {interaction.user.id} -> {utilisateur.id}: {e}")
+            embed = create_error_embed("Erreur", "Erreur lors de l'ajout des PrissBucks.")
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="give", description="Donne des PrissBucks à un autre utilisateur")
     @app_commands.describe(
