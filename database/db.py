@@ -34,16 +34,26 @@ async def init_db(pool):
             )
         ''')
         
-        # Nouvelle table pour les achats des utilisateurs
+        # Nouvelle table pour les achats des utilisateurs (mise à jour avec taxe)
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS user_purchases (
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT NOT NULL,
                 item_id INTEGER REFERENCES shop_items(id),
                 purchase_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                price_paid BIGINT NOT NULL
+                price_paid BIGINT NOT NULL,
+                tax_paid BIGINT DEFAULT 0
             )
         ''')
+        
+        # Ajouter la colonne tax_paid si elle n'existe pas (migration)
+        try:
+            await conn.execute('''
+                ALTER TABLE user_purchases 
+                ADD COLUMN IF NOT EXISTS tax_paid BIGINT DEFAULT 0
+            ''')
+        except:
+            pass  # La colonne existe déjà
         
         # Index pour optimiser les requêtes
         await conn.execute('''
@@ -53,7 +63,7 @@ async def init_db(pool):
             CREATE INDEX IF NOT EXISTS idx_user_purchases_item_id ON user_purchases(item_id)
         ''')
         
-        print("✅ Tables créées/vérifiées (avec système shop)")
+        print("✅ Tables créées/vérifiées (avec système shop et taxes)")
 
 class Database:
     def __init__(self, dsn: str):
@@ -209,7 +219,7 @@ class Database:
             """, limit)
             return [(row["user_id"], row["balance"]) for row in rows]
 
-    # ==================== NOUVELLES MÉTHODES SHOP ====================
+    # ==================== NOUVELLES MÉTHODES SHOP AVEC TAXES ====================
 
     async def get_shop_items(self, active_only: bool = True) -> List[Dict]:
         """Récupère la liste des items du shop"""
@@ -315,8 +325,8 @@ class Database:
             """, user_id, item_id)
             return row is not None
 
-    async def purchase_item(self, user_id: int, item_id: int) -> Tuple[bool, str]:
-        """Effectue l'achat d'un item (transaction atomique)"""
+    async def purchase_item_with_tax(self, user_id: int, item_id: int, tax_rate: float, owner_id: int) -> Tuple[bool, str, Dict]:
+        """Effectue l'achat d'un item avec taxe (transaction atomique)"""
         if not self.pool:
             raise RuntimeError("Database not connected")
             
@@ -331,7 +341,7 @@ class Database:
                 """, item_id)
                 
                 if not item_row:
-                    return False, "Item inexistant ou inactif"
+                    return False, "Item inexistant ou inactif", {}
                 
                 # Convertir les données en dictionnaire Python
                 item = dict(item_row)
@@ -348,27 +358,52 @@ class Database:
                         WHERE user_id = $1 AND item_id = $2
                     """, user_id, item_id)
                     if existing:
-                        return False, "Tu possèdes déjà cet item"
+                        return False, "Tu possèdes déjà cet item", {}
+                
+                # Calculer le prix avec taxe
+                base_price = item["price"]
+                tax_amount = int(base_price * tax_rate)
+                total_price = base_price + tax_amount
                 
                 # Vérifier le solde de l'utilisateur
                 user_balance = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
                 current_balance = user_balance["balance"] if user_balance else 0
                 
-                if current_balance < item["price"]:
-                    return False, f"Solde insuffisant (tu as {current_balance:,}, il faut {item['price']:,})"
+                if current_balance < total_price:
+                    return False, f"Solde insuffisant (tu as {current_balance:,}, il faut {total_price:,} avec taxe)", {}
                 
-                # Débiter le compte
+                # Débiter le compte utilisateur (prix total avec taxe)
                 await conn.execute("""
                     UPDATE users SET balance = balance - $1 WHERE user_id = $2
-                """, item["price"], user_id)
+                """, total_price, user_id)
                 
-                # Enregistrer l'achat
+                # Créditer la taxe à l'owner
+                if tax_amount > 0 and owner_id:
+                    await conn.execute("""
+                        INSERT INTO users (user_id, balance)
+                        VALUES ($1, $2)
+                        ON CONFLICT (user_id) DO UPDATE SET balance = users.balance + EXCLUDED.balance
+                    """, owner_id, tax_amount)
+                
+                # Enregistrer l'achat avec les détails de la taxe
                 await conn.execute("""
-                    INSERT INTO user_purchases (user_id, item_id, price_paid)
-                    VALUES ($1, $2, $3)
-                """, user_id, item_id, item["price"])
+                    INSERT INTO user_purchases (user_id, item_id, price_paid, tax_paid)
+                    VALUES ($1, $2, $3, $4)
+                """, user_id, item_id, total_price, tax_amount)
                 
-                return True, f"Achat de '{item['name']}' réussi !"
+                tax_info = {
+                    "base_price": base_price,
+                    "tax_amount": tax_amount,
+                    "total_price": total_price,
+                    "tax_rate": tax_rate * 100
+                }
+                
+                return True, f"Achat de '{item['name']}' réussi !", tax_info
+
+    async def purchase_item(self, user_id: int, item_id: int) -> Tuple[bool, str]:
+        """Effectue l'achat d'un item sans taxe (méthode de compatibilité)"""
+        success, message, _ = await self.purchase_item_with_tax(user_id, item_id, 0.0, None)
+        return success, message
 
     async def get_user_purchases(self, user_id: int) -> List[Dict]:
         """Récupère la liste des achats d'un utilisateur"""
@@ -378,7 +413,7 @@ class Database:
         import json
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT up.id, up.purchase_date, up.price_paid,
+                SELECT up.id, up.purchase_date, up.price_paid, up.tax_paid,
                        si.name, si.description, si.type, si.data
                 FROM user_purchases up
                 JOIN shop_items si ON up.item_id = si.id
@@ -399,7 +434,7 @@ class Database:
             return purchases
 
     async def get_shop_stats(self) -> Dict:
-        """Récupère les statistiques du shop"""
+        """Récupère les statistiques du shop (incluant les taxes)"""
         if not self.pool:
             raise RuntimeError("Database not connected")
             
@@ -409,13 +444,16 @@ class Database:
                 SELECT 
                     COUNT(DISTINCT up.user_id) as unique_buyers,
                     COUNT(up.id) as total_purchases,
-                    COALESCE(SUM(up.price_paid), 0) as total_revenue
+                    COALESCE(SUM(up.price_paid), 0) as total_revenue,
+                    COALESCE(SUM(up.tax_paid), 0) as total_taxes
                 FROM user_purchases up
             """)
             
             # Top des items les plus vendus
             top_items = await conn.fetch("""
-                SELECT si.name, COUNT(up.id) as purchases, SUM(up.price_paid) as revenue
+                SELECT si.name, COUNT(up.id) as purchases, 
+                       SUM(up.price_paid) as revenue,
+                       SUM(up.tax_paid) as taxes_collected
                 FROM user_purchases up
                 JOIN shop_items si ON up.item_id = si.id
                 GROUP BY si.id, si.name
@@ -427,5 +465,6 @@ class Database:
                 "unique_buyers": stats["unique_buyers"],
                 "total_purchases": stats["total_purchases"],
                 "total_revenue": stats["total_revenue"],
+                "total_taxes": stats["total_taxes"],
                 "top_items": [dict(row) for row in top_items]
-          }
+            }
