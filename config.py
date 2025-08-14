@@ -28,11 +28,14 @@ DAILY_BONUS_MIN = 50
 DAILY_BONUS_MAX = 200
 DAILY_COOLDOWN = 86400  # 24 heures
 
-# Transfer limits
+# Transfer limits et taxes - CORRIGÉ
 TRANSFER_MIN = 1
-TRANSFER_MAX = 100000
+TRANSFER_MAX = 100000  # Limite maximale de transfert
 TRANSFER_COOLDOWN = 5  # secondes
-TRANSFER_TAX_RATE = 0.02  # 2% de taxe sur les transferts
+TRANSFER_TAX_RATE = 0.05  # 5% de taxe sur les transferts (CORRIGÉ: était 0.02)
+
+# Shop taxes - AJOUTÉ
+SHOP_TAX_RATE = 0.05  # 5% de taxe sur les achats (MANQUAIT)
 
 # Message rewards
 MESSAGE_REWARD_AMOUNT = 1
@@ -42,6 +45,13 @@ MESSAGE_REWARD_COOLDOWN = 20  # 20 secondes
 ITEMS_PER_PAGE = 5
 MAX_LEADERBOARD_LIMIT = 20
 DEFAULT_LEADERBOARD_LIMIT = 10
+
+# ==================== STEAL SETTINGS ====================
+STEAL_SUCCESS_RATE = 50  # 50% de chances de réussite
+STEAL_PERCENTAGE = 10  # Vol 10% des pièces
+STEAL_FAIL_PENALTY_PERCENTAGE = 40  # Perd 40% si échec
+STEAL_COOLDOWN_HOURS = 0.5  # Cooldown de 0.5 heure (CORRIGÉ: était 0,5)
+STEAL_COOLDOWN_SECONDS = int(STEAL_COOLDOWN_HOURS * 3600)  # 1800 secondes
 
 # ==================== HEALTH SERVER SETTINGS ====================
 HEALTH_PORT = int(os.getenv("PORT", 8000))
