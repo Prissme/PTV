@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 import logging
 
-from config import PREFIX, Colors, Emojis
+from config import PREFIX, Colors, Emojis, TRANSFER_TAX_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -14,12 +14,14 @@ class Help(commands.Cog):
     
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
-        logger.info("✅ Cog Help initialisé (simplifié)")
+        logger.info("✅ Cog Help initialisé (avec infos taxe)")
 
     @commands.command(name='help', aliases=['h', 'aide'])
     async def help_cmd(self, ctx):
         """Affiche l'aide complète du bot"""
         try:
+            tax_percentage = TRANSFER_TAX_RATE * 100
+            
             embed = discord.Embed(
                 title="🤖 Bot Économie - Aide Complète",
                 description="**Toutes les commandes disponibles :**",
@@ -30,7 +32,7 @@ class Help(commands.Cog):
             embed.add_field(
                 name=f"{Emojis.MONEY} **Économie**",
                 value=f"`{PREFIX}balance [@user]` - Voir le solde (aliases: `bal`, `money`)\n"
-                      f"`{PREFIX}give <@user> <montant>` - Donner des PrissBucks (aliases: `pay`, `transfer`)\n"
+                      f"`{PREFIX}give <@user> <montant>` - Donner des PrissBucks {Emojis.TAX} *Taxe {tax_percentage:.0f}%* (aliases: `pay`, `transfer`)\n"
                       f"`{PREFIX}daily` - Récompense quotidienne 24h (aliases: `dailyspin`, `spin`)\n"
                       f"`{PREFIX}leaderboard [limite]` - Top des plus riches (aliases: `top`, `lb`, `rich`)",
                 inline=False
@@ -49,24 +51,28 @@ class Help(commands.Cog):
             embed.add_field(
                 name="🎮 **Mini-jeux**",
                 value=f"`/ppc <@adversaire> <mise>` - Pierre-Papier-Ciseaux (Slash Command)\n"
-                      f"`{PREFIX}ppc_stats [@user]` - Statistiques PPC",
+                      f"`{PREFIX}ppc_stats [@user]` - Statistiques PPC\n"
+                      f"`{PREFIX}voler <@user>` - Tenter de voler des PrissBucks (aliases: `steal`, `rob`)",
                 inline=False
             )
             
             # Informations & Utilitaires
             embed.add_field(
                 name="ℹ️ **Utilitaires**",
-                value=f"`{PREFIX}ping` - Latence du bot et infos système",
+                value=f"`{PREFIX}ping` - Latence du bot et infos système\n"
+                      f"`{PREFIX}taxinfo` - Informations sur la taxe de transfert",
                 inline=False
             )
 
             # Détails sur les systèmes
             embed.add_field(
                 name="💡 **Détails importants**",
-                value="• **Daily:** 50-150 PrissBucks + 10% chance bonus (50-200)\n"
-                      "• **PPC:** Jeu avec mise, transfert automatique au gagnant\n"
-                      "• **Shop:** Rôles automatiquement attribués après achat\n"
-                      "• **Cooldowns:** Daily 24h, Give 5s, Buy 3s, PPC 60s timeout",
+                value=f"• **Daily:** 50-150 PrissBucks + 10% chance bonus (50-200)\n"
+                      f"• **Transferts:** Taxe de {tax_percentage:.0f}% appliquée automatiquement\n"
+                      f"• **Vol:** 50% réussite, 10% gain ou 40% perte, CD 1h\n"
+                      f"• **PPC:** Jeu avec mise, transfert automatique au gagnant\n"
+                      f"• **Shop:** Rôles automatiquement attribués après achat\n"
+                      f"• **Messages:** 1 PrissBuck toutes les 20s pour activité",
                 inline=False
             )
 
@@ -74,7 +80,7 @@ class Help(commands.Cog):
             guild_count = len(self.bot.guilds) if self.bot.guilds else 1
             slash_count = len(self.bot.tree.get_commands())
             embed.set_footer(
-                text=f"Préfixe: {PREFIX} • {guild_count} serveur(s) • {slash_count} slash command(s)"
+                text=f"Préfixe: {PREFIX} • {guild_count} serveur(s) • {slash_count} slash command(s) • Taxe: {tax_percentage:.0f}%"
             )
             embed.set_thumbnail(url=self.bot.user.display_avatar.url)
             
@@ -123,6 +129,10 @@ class Help(commands.Cog):
             # Base de données
             db_status = "🟢 Connectée" if hasattr(self.bot, 'database') and self.bot.database else "🔴 Déconnectée"
             embed.add_field(name="💾 Base de données", value=db_status, inline=True)
+            
+            # Taxe
+            tax_percentage = TRANSFER_TAX_RATE * 100
+            embed.add_field(name=f"{Emojis.TAX} Taxe transferts", value=f"{tax_percentage:.0f}%", inline=True)
             
             embed.set_footer(text=f"Bot développé avec discord.py • Préfixe: {PREFIX}")
             
