@@ -18,11 +18,25 @@ class Shop(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.db = None
+        # Dictionnaire pour gérer les cooldowns manuellement des slash commands
+        self.buy_cooldowns = {}
     
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
         logger.info("✅ Cog Shop initialisé (simplifié) avec slash commands")
+    
+    def _check_buy_cooldown(self, user_id: int) -> float:
+        """Vérifie et retourne le cooldown restant pour buy"""
+        import time
+        now = time.time()
+        cooldown_duration = 3  # 3 secondes de cooldown
+        if user_id in self.buy_cooldowns:
+            elapsed = now - self.buy_cooldowns[user_id]
+            if elapsed < cooldown_duration:
+                return cooldown_duration - elapsed
+        self.buy_cooldowns[user_id] = now
+        return 0
 
     @commands.command(name='shop', aliases=['boutique', 'store'])
     async def shop_cmd(self, ctx, page: int = 1):
@@ -90,23 +104,17 @@ class Shop(commands.Cog):
     async def buy_slash(self, interaction: discord.Interaction, item_id: int):
         """Slash command pour acheter un item"""
         # Vérifier le cooldown manuellement pour les slash commands
-        bucket = self.buy_cmd._buckets.get_bucket(interaction.user.id)
-        if bucket and bucket.tokens == 0:
-            retry_after = bucket.get_retry_after()
+        cooldown_remaining = self._check_buy_cooldown(interaction.user.id)
+        if cooldown_remaining > 0:
             embed = discord.Embed(
                 title=f"{Emojis.COOLDOWN} Cooldown actif !",
-                description=f"Tu pourras acheter un autre item dans **{retry_after:.1f}** secondes.",
+                description=f"Tu pourras acheter un autre item dans **{cooldown_remaining:.1f}** secondes.",
                 color=Colors.WARNING
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
         await interaction.response.defer()
-        
-        # Appliquer le cooldown
-        if bucket:
-            bucket.update_rate_limit()
-            
         await self._execute_buy(interaction, item_id, is_slash=True)
 
     async def _execute_buy(self, ctx_or_interaction, item_id, is_slash=False):
@@ -141,19 +149,17 @@ class Shop(commands.Cog):
                 await send_func(embed=embed)
                 return
             
-            # Variables pour le résultat
+            # Si c'est un rôle, l'attribuer
             role_granted = False
             role_name = None
-            special_effect = None
             
-            # Si c'est un rôle, l'attribuer
             if item["type"] == "role":
                 try:
                     role_id = item["data"].get("role_id")
                     if role_id:
                         role = guild.get_role(int(role_id))
                         if role:
-                            await author.add_roles(role)
+                            await author.add_roles(role, reason=f"Achat boutique: {item['name']}")
                             role_granted = True
                             role_name = role.name
                             logger.info(f"Rôle {role.name} attribué à {author} (achat item {item_id})")
@@ -167,7 +173,21 @@ class Shop(commands.Cog):
                             return
                     else:
                         logger.error(f"Pas de role_id dans les données de l'item {item_id}")
+                        embed = create_warning_embed(
+                            "Configuration invalide",
+                            f"L'item {item['name']} n'a pas de rôle configuré correctement. Contacte un administrateur."
+                        )
+                        await send_func(embed=embed)
+                        return
                         
+                except discord.HTTPException as e:
+                    logger.error(f"Erreur Discord lors de l'attribution du rôle {item_id}: {e}")
+                    embed = create_warning_embed(
+                        "Achat réussi mais...",
+                        f"L'item a été acheté mais il y a eu une erreur lors de l'attribution du rôle (permissions insuffisantes ?). Contacte un administrateur.\n\n**Item acheté :** {item['name']}\n**Prix payé :** {item['price']:,} PrissBucks"
+                    )
+                    await send_func(embed=embed)
+                    return
                 except Exception as e:
                     logger.error(f"Erreur attribution rôle {item_id}: {e}")
                     embed = create_warning_embed(
@@ -177,27 +197,11 @@ class Shop(commands.Cog):
                     await send_func(embed=embed)
                     return
             
-            # Si c'est un reset de cooldowns, l'appliquer immédiatement
-            elif item["type"] == "cooldown_reset":
-                try:
-                    # Utiliser le cog SpecialItems s'il existe
-                    special_items_cog = self.bot.get_cog('SpecialItems')
-                    if special_items_cog:
-                        cooldowns_cleared = await special_items_cog.reset_user_cooldowns(user_id)
-                    else:
-                        cooldowns_cleared = await self._reset_user_cooldowns(user_id)
-                    
-                    special_effect = f"🔄 **{cooldowns_cleared}** cooldown(s) désactivé(s) !"
-                    logger.info(f"Reset cooldowns pour {author}: {cooldowns_cleared} cooldown(s) supprimés")
-                except Exception as e:
-                    logger.error(f"Erreur reset cooldowns {user_id}: {e}")
-                    special_effect = "⚠️ Erreur lors du reset des cooldowns"
-            
             # Récupérer le nouveau solde
             new_balance = await self.db.get_balance(user_id)
             
             # Message de confirmation
-            embed = create_purchase_embed(author, item, new_balance, role_granted, role_name, special_effect)
+            embed = create_purchase_embed(author, item, new_balance, role_granted, role_name)
             await send_func(embed=embed)
             
         except Exception as e:
@@ -205,52 +209,38 @@ class Shop(commands.Cog):
             embed = create_error_embed("Erreur", "Erreur lors de l'achat.")
             await send_func(embed=embed)
 
-    async def _reset_user_cooldowns(self, user_id: int) -> int:
-        """Reset tous les cooldowns d'un utilisateur (méthode de fallback)"""
-        cooldowns_cleared = 0
-        
-        # Parcourir tous les cogs chargés et chercher des cooldowns
-        for cog_name, cog in self.bot.cogs.items():
-            try:
-                # Reset cooldowns dans MessageRewards, Steal, etc.
-                if hasattr(cog, 'cooldowns') and hasattr(cog, 'COOLDOWN_SECONDS'):
-                    if user_id in cog.cooldowns:
-                        del cog.cooldowns[user_id]
-                        cooldowns_cleared += 1
-                        logger.debug(f"Cooldown {cog_name} supprimé pour {user_id}")
-                
-                # Reset cooldowns Discord.py (daily, give, etc.)
-                for command in cog.get_commands():
-                    if hasattr(command, '_buckets') and command._buckets:
-                        bucket = command._buckets.get_bucket(user_id)
-                        if bucket and bucket.tokens == 0:
-                            bucket._tokens = bucket._per
-                            bucket._window = 0.0
-                            cooldowns_cleared += 1
-                            logger.debug(f"Cooldown Discord.py {command.name} supprimé pour {user_id}")
-                            
-            except Exception as e:
-                logger.error(f"Erreur reset cooldown cog {cog_name}: {e}")
-                continue
-        
-        return cooldowns_cleared
-
-    @commands.command(name='inventory', aliases=['inv'])
-    async def inventory_cmd(self, ctx, user: discord.Member = None):
+    @commands.command(name='inventory', aliases=['inv', 'inventaire'])
+    async def inventory_cmd(self, ctx, member: discord.Member = None):
         """Affiche l'inventaire d'un utilisateur"""
-        target = user or ctx.author
-        
+        await self._execute_inventory(ctx, member)
+
+    @app_commands.command(name="inventory", description="Affiche l'inventaire d'un utilisateur")
+    @app_commands.describe(utilisateur="L'utilisateur dont voir l'inventaire (optionnel)")
+    async def inventory_slash(self, interaction: discord.Interaction, utilisateur: discord.Member = None):
+        """Slash command pour voir l'inventaire"""
+        await interaction.response.defer()
+        await self._execute_inventory(interaction, utilisateur, is_slash=True)
+
+    async def _execute_inventory(self, ctx_or_interaction, member=None, is_slash=False):
+        """Logique commune pour inventory (prefix et slash)"""
+        if is_slash:
+            target = member or ctx_or_interaction.user
+            send_func = ctx_or_interaction.followup.send
+        else:
+            target = member or ctx_or_interaction.author
+            send_func = ctx_or_interaction.send
+
         try:
             purchases = await self.db.get_user_purchases(target.id)
             
             from utils.embeds import create_inventory_embed
             embed = create_inventory_embed(target, purchases)
-            await ctx.send(embed=embed)
+            await send_func(embed=embed)
             
         except Exception as e:
-            logger.error(f"Erreur inventory {target.id}: {e}")
-            embed = create_error_embed("Erreur", "Erreur lors de l'affichage de l'inventaire.")
-            await ctx.send(embed=embed)
+            logger.error(f"Erreur inventory pour {target.id}: {e}")
+            embed = create_error_embed("Erreur", "Erreur lors de la récupération de l'inventaire.")
+            await send_func(embed=embed)
 
 async def setup(bot):
     """Fonction appelée pour charger le cog"""
