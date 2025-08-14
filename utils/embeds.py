@@ -77,11 +77,22 @@ def create_shop_embed(items: list, page: int, total_pages: int) -> discord.Embed
     )
     
     for item in items:
-        icon = Emojis.ROLE if item["type"] == "role" else Emojis.SHOP
+        # Choisir l'icône selon le type d'item
+        if item["type"] == "role":
+            icon = Emojis.ROLE
+        elif item["type"] == "cooldown_reset":
+            icon = "⏰"
+        else:
+            icon = Emojis.SHOP
+        
+        # Description enrichie pour les items spéciaux
+        description = item['description']
+        if item["type"] == "cooldown_reset":
+            description += "\n💫 **Usage immédiat** - Se déclenche automatiquement à l'achat !"
         
         embed.add_field(
             name=f"{icon} **{item['name']}** - {item['price']:,} {Emojis.MONEY}",
-            value=f"{item['description']}\n`{PREFIX}buy {item['id']}` pour acheter",
+            value=f"{description}\n`{PREFIX}buy {item['id']}` ou `/buy {item['id']}` pour acheter",
             inline=False
         )
     
@@ -98,7 +109,7 @@ def create_shop_embed(items: list, page: int, total_pages: int) -> discord.Embed
     
     return embed
 
-def create_purchase_embed(user: discord.Member, item: dict, new_balance: int, role_granted: bool = False, role_name: str = None) -> discord.Embed:
+def create_purchase_embed(user: discord.Member, item: dict, new_balance: int, role_granted: bool = False, role_name: str = None, special_effect: str = None) -> discord.Embed:
     """Créer un embed pour les achats"""
     embed = discord.Embed(
         title=f"{Emojis.SUCCESS} Achat réussi !",
@@ -106,11 +117,25 @@ def create_purchase_embed(user: discord.Member, item: dict, new_balance: int, ro
         color=Colors.SUCCESS
     )
     
+    # Ajouter les effets selon le type d'item
     if role_granted and role_name:
         embed.description += f"\n{Emojis.ROLE} **Rôle {role_name} attribué !**"
     
+    if special_effect:
+        embed.description += f"\n{special_effect}"
+    
+    # Footer avec le nouveau solde
     embed.set_footer(text=f"Nouveau solde: {new_balance:,} PrissBucks")
     embed.set_thumbnail(url=user.display_avatar.url)
+    
+    # Ajouter un field spécial pour les cooldown resets
+    if item["type"] == "cooldown_reset":
+        embed.add_field(
+            name="✨ Effet immédiat",
+            value="Tous tes cooldowns ont été supprimés !\nTu peux maintenant utiliser toutes tes commandes.",
+            inline=False
+        )
+    
     return embed
 
 def create_inventory_embed(user: discord.Member, purchases: list) -> discord.Embed:
@@ -136,12 +161,24 @@ def create_inventory_embed(user: discord.Member, purchases: list) -> discord.Emb
     
     total_spent = 0
     for purchase in purchases[:10]:  # Limiter à 10 items
-        icon = Emojis.ROLE if purchase["type"] == "role" else Emojis.INVENTORY
+        # Icône selon le type
+        if purchase["type"] == "role":
+            icon = Emojis.ROLE
+        elif purchase["type"] == "cooldown_reset":
+            icon = "⏰"
+        else:
+            icon = Emojis.INVENTORY
+            
         date = purchase["purchase_date"].strftime("%d/%m/%Y")
+        
+        # Description spéciale pour les items consommables
+        item_desc = f"{Emojis.MONEY} **{purchase['price_paid']:,}** PrissBucks\n📅 Acheté le {date}"
+        if purchase["type"] == "cooldown_reset":
+            item_desc += "\n💫 *Item consommable utilisé*"
         
         embed.add_field(
             name=f"{icon} {purchase['name']}",
-            value=f"{Emojis.MONEY} **{purchase['price_paid']:,}** PrissBucks\n📅 Acheté le {date}",
+            value=item_desc,
             inline=True
         )
         total_spent += purchase["price_paid"]
@@ -211,6 +248,14 @@ def create_cooldown_embed(command: str, retry_after: float) -> discord.Embed:
         description=f"Tu pourras utiliser `{command}` dans {time_str}",
         color=Colors.WARNING
     )
+    
+    # Ajouter une mention de l'item Reset Cooldowns
+    embed.add_field(
+        name="💡 Astuce",
+        value="Tu peux acheter l'item **⏰ Reset Cooldowns** dans le shop pour supprimer tous tes cooldowns !",
+        inline=False
+    )
+    
     return embed
 
 def create_shop_stats_embed(stats: dict) -> discord.Embed:
@@ -279,16 +324,32 @@ def create_help_embed(user_permissions: dict) -> discord.Embed:
         inline=False
     )
     
+    # Mini-jeux et fonctions spéciales
+    embed.add_field(
+        name="🎮 Mini-jeux & Spécial",
+        value=f"`/ppc <@adversaire> <mise>` - Pierre-Papier-Ciseaux\n"
+              f"`{PREFIX}voler <@user>` - Tente de voler des PrissBucks\n"
+              f"`{PREFIX}cooldowns` - Vérifier tes cooldowns actifs",
+        inline=False
+    )
+    
     # Commandes admin si permissions
     if user_permissions.get('administrator'):
         embed.add_field(
             name="👑 Commandes Admin",
-            value=f"`{PREFIX}additem <prix> <@role> <nom>` - Ajoute un rôle au shop\n"
-                  f"`{PREFIX}removeitem <id>` - Retire un item\n"
-                  f"`{PREFIX}shopstats` - Statistiques du shop\n"
-                  f"`{PREFIX}listshop` - Liste tous les items",
+            value=f"`{PREFIX}addpb <@user> <montant>` - Ajoute des PrissBucks\n"
+                  f"`{PREFIX}resetcd [@user]` - Reset les cooldowns d'un utilisateur",
             inline=False
         )
+
+    # Nouveautés
+    embed.add_field(
+        name="✨ Nouveautés",
+        value="🔸 **Item Reset Cooldowns** - Supprime tous tes cooldowns pour 200 PrissBucks !\n"
+              "🔸 **Messages récompensés** - +1 PrissBuck par message (CD: 20s)\n"
+              "🔸 **Système de vol** - Risque/récompense avec 50% de chances",
+        inline=False
+    )
 
     # Aliases
     embed.add_field(
@@ -297,9 +358,43 @@ def create_help_embed(user_permissions: dict) -> discord.Embed:
               "`give` → `pay`, `transfer`\n"
               "`daily` → `dailyspin`, `spin`\n"
               "`leaderboard` → `top`, `rich`, `lb`\n"
-              "`inventory` → `inv`",
+              "`inventory` → `inv`\n"
+              "`cooldowns` → `cd`, `mycooldowns`",
         inline=False
     )
 
-    embed.set_footer(text=f"Préfixe: {PREFIX} | Développé avec discord.py")
+    embed.set_footer(text=f"Préfixe: {PREFIX} | Système Reset Cooldowns disponible !")
     return embed
+
+def create_cooldowns_status_embed(user: discord.Member, active_cooldowns: list) -> discord.Embed:
+    """Créer un embed pour l'état des cooldowns d'un utilisateur"""
+    if active_cooldowns:
+        embed = discord.Embed(
+            title=f"⏰ Cooldowns de {user.display_name}",
+            description="\n".join(active_cooldowns),
+            color=Colors.WARNING
+        )
+        embed.add_field(
+            name="💡 Astuce",
+            value="Tu peux acheter l'item **⏰ Reset Cooldowns** (200 PB) dans le shop pour supprimer tous tes cooldowns !",
+            inline=False
+        )
+        embed.add_field(
+            name="🛒 Comment faire",
+            value=f"1. `{PREFIX}shop` - Voir la boutique\n"
+                  f"2. `{PREFIX}buy <id>` - Acheter l'item Reset Cooldowns\n"
+                  f"3. Effet immédiat - Tous tes cooldowns sont supprimés !",
+            inline=False
+        )
+    else:
+        embed = discord.Embed(
+            title=f"✅ Aucun cooldown actif",
+            description=f"**{user.display_name}** peut utiliser toutes les commandes !",
+            color=Colors.SUCCESS
+        )
+        embed.add_field(
+            name="🚀 Tu es libre !",
+            value="Profite-en pour utiliser tes commandes préférées :\n"
+                  f"• `{PREFIX}daily` - Récupère tes pièces quotidiennes\n"
+                  f"• `{PREFIX}voler <@user>` - Tente ta chance au vol\n" 
+                  f"• `{PREFIX}give
