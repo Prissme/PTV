@@ -4,16 +4,17 @@ from discord import app_commands
 import math
 import logging
 
-from config import ITEMS_PER_PAGE, Colors, Emojis
+from config import ITEMS_PER_PAGE, SHOP_TAX_RATE, OWNER_ID, Colors, Emojis
 from utils.embeds import (
-    create_shop_embed, create_purchase_embed, create_inventory_embed,
-    create_error_embed, create_warning_embed, create_success_embed
+    create_shop_embed_with_tax, create_purchase_embed_with_tax, create_inventory_embed,
+    create_error_embed, create_warning_embed, create_success_embed,
+    create_special_item_effect_embed
 )
 
 logger = logging.getLogger(__name__)
 
 class Shop(commands.Cog):
-    """Système boutique complet : shop, buy, inventory"""
+    """Système boutique complet : shop, buy, inventory avec taxes et items spéciaux"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -24,7 +25,7 @@ class Shop(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info("✅ Cog Shop initialisé avec slash commands complets")
+        logger.info("✅ Cog Shop initialisé avec système de taxes et items spéciaux")
     
     def _check_buy_cooldown(self, user_id: int) -> float:
         """Vérifie et retourne le cooldown restant pour buy"""
@@ -38,14 +39,20 @@ class Shop(commands.Cog):
         self.buy_cooldowns[user_id] = now
         return 0
 
+    def _calculate_price_with_tax(self, base_price: int) -> tuple:
+        """Calcule le prix avec taxe et retourne (prix_total, taxe)"""
+        tax_amount = int(base_price * SHOP_TAX_RATE)
+        total_price = base_price + tax_amount
+        return total_price, tax_amount
+
     # ==================== SHOP COMMANDS ====================
 
     @commands.command(name='shop', aliases=['boutique', 'store'])
     async def shop_cmd(self, ctx, page: int = 1):
-        """Affiche la boutique avec pagination"""
+        """Affiche la boutique avec pagination et prix avec taxes"""
         await self._execute_shop(ctx, page)
 
-    @app_commands.command(name="shop", description="Affiche la boutique avec tous les items disponibles")
+    @app_commands.command(name="shop", description="Affiche la boutique avec tous les items disponibles (prix avec taxes)")
     @app_commands.describe(page="Numéro de la page à afficher (optionnel)")
     async def shop_slash(self, interaction: discord.Interaction, page: int = 1):
         """Slash command pour afficher la boutique"""
@@ -70,6 +77,12 @@ class Shop(commands.Cog):
                 await send_func(embed=embed)
                 return
             
+            # Ajouter le calcul des prix avec taxe pour chaque item
+            for item in items:
+                total_price, tax = self._calculate_price_with_tax(item['price'])
+                item['total_price'] = total_price
+                item['tax_amount'] = tax
+            
             # Pagination
             total_pages = math.ceil(len(items) / ITEMS_PER_PAGE)
             
@@ -86,8 +99,8 @@ class Shop(commands.Cog):
             end_idx = start_idx + ITEMS_PER_PAGE
             page_items = items[start_idx:end_idx]
             
-            # Créer l'embed
-            embed = create_shop_embed(page_items, page, total_pages)
+            # Créer l'embed avec les prix taxés
+            embed = create_shop_embed_with_tax(page_items, page, total_pages, SHOP_TAX_RATE)
             await send_func(embed=embed)
             
         except Exception as e:
@@ -95,15 +108,15 @@ class Shop(commands.Cog):
             embed = create_error_embed("Erreur", "Erreur lors de l'affichage de la boutique.")
             await send_func(embed=embed)
 
-    # ==================== BUY COMMANDS ====================
+    # ==================== BUY COMMANDS AVEC TAXES ====================
 
     @commands.command(name='buy', aliases=['acheter', 'purchase'])
     @commands.cooldown(1, 3, commands.BucketType.user)
     async def buy_cmd(self, ctx, item_id: int):
-        """Achète un item du shop"""
+        """Achète un item du shop (avec taxe de 5%)"""
         await self._execute_buy(ctx, item_id)
 
-    @app_commands.command(name="buy", description="Achète un item de la boutique")
+    @app_commands.command(name="buy", description="Achète un item de la boutique (avec taxe de 5%)")
     @app_commands.describe(item_id="L'ID de l'item à acheter (visible dans /shop)")
     async def buy_slash(self, interaction: discord.Interaction, item_id: int):
         """Slash command pour acheter un item"""
@@ -122,7 +135,7 @@ class Shop(commands.Cog):
         await self._execute_buy(interaction, item_id, is_slash=True)
 
     async def _execute_buy(self, ctx_or_interaction, item_id, is_slash=False):
-        """Logique commune pour buy (prefix et slash)"""
+        """Logique commune pour buy avec taxes et items spéciaux (prefix et slash)"""
         if is_slash:
             user_id = ctx_or_interaction.user.id
             author = ctx_or_interaction.user
@@ -145,13 +158,30 @@ class Shop(commands.Cog):
                 await send_func(embed=embed)
                 return
             
-            # Effectuer l'achat (transaction atomique)
-            success, message = await self.db.purchase_item(user_id, item_id)
+            # Effectuer l'achat avec taxe (transaction atomique)
+            success, message, tax_info = await self.db.purchase_item_with_tax(
+                user_id, item_id, SHOP_TAX_RATE, OWNER_ID
+            )
             
             if not success:
                 embed = create_error_embed("Achat échoué", message)
                 await send_func(embed=embed)
                 return
+            
+            # === TRAITEMENT DES EFFETS SPÉCIAUX ===
+            special_effect_message = None
+            cooldowns_cleared = 0
+            
+            # 1. ITEM COOLDOWN RESET
+            if item["type"] == "cooldown_reset":
+                # Déclencher l'effet de reset des cooldowns
+                special_items_cog = self.bot.get_cog('SpecialItems')
+                if special_items_cog:
+                    cooldowns_cleared = await special_items_cog.reset_user_cooldowns(user_id)
+                    special_effect_message = f"🔄 **{cooldowns_cleared}** cooldown(s) supprimé(s) !"
+                    logger.info(f"Cooldown reset: {author} - {cooldowns_cleared} cooldowns supprimés")
+                else:
+                    logger.error(f"SpecialItems cog non trouvé pour l'effet cooldown_reset")
             
             # Si c'est un rôle, l'attribuer
             role_granted = False
@@ -163,6 +193,25 @@ class Shop(commands.Cog):
                     if role_id:
                         role = guild.get_role(int(role_id))
                         if role:
+                            # Vérifier que le bot a les permissions
+                            bot_member = guild.get_member(self.bot.user.id)
+                            if not bot_member.guild_permissions.manage_roles:
+                                embed = create_warning_embed(
+                                    "Achat réussi mais...",
+                                    f"L'item a été acheté mais le bot n'a pas la permission `Gérer les rôles`. Contacte un administrateur.\n\n**Item acheté :** {item['name']}\n**Prix payé :** {tax_info['total_price']:,} PrissBucks"
+                                )
+                                await send_func(embed=embed)
+                                return
+                            
+                            # Vérifier que le rôle du bot est plus haut
+                            if role >= bot_member.top_role:
+                                embed = create_warning_embed(
+                                    "Achat réussi mais...",
+                                    f"L'item a été acheté mais le rôle `{role.name}` est trop haut dans la hiérarchie. Contacte un administrateur.\n\n**Item acheté :** {item['name']}\n**Prix payé :** {tax_info['total_price']:,} PrissBucks"
+                                )
+                                await send_func(embed=embed)
+                                return
+                            
                             await author.add_roles(role, reason=f"Achat boutique: {item['name']}")
                             role_granted = True
                             role_name = role.name
@@ -170,7 +219,7 @@ class Shop(commands.Cog):
                         else:
                             embed = create_warning_embed(
                                 "Achat réussi mais...",
-                                f"L'item a été acheté mais le rôle est introuvable. Contacte un administrateur.\n\n**Item acheté :** {item['name']}\n**Prix payé :** {item['price']:,} PrissBucks"
+                                f"L'item a été acheté mais le rôle est introuvable. Contacte un administrateur.\n\n**Item acheté :** {item['name']}\n**Prix payé :** {tax_info['total_price']:,} PrissBucks"
                             )
                             await send_func(embed=embed)
                             logger.error(f"Rôle {role_id} introuvable pour l'item {item_id}")
@@ -188,7 +237,7 @@ class Shop(commands.Cog):
                     logger.error(f"Erreur Discord lors de l'attribution du rôle {item_id}: {e}")
                     embed = create_warning_embed(
                         "Achat réussi mais...",
-                        f"L'item a été acheté mais il y a eu une erreur lors de l'attribution du rôle (permissions insuffisantes ?). Contacte un administrateur.\n\n**Item acheté :** {item['name']}\n**Prix payé :** {item['price']:,} PrissBucks"
+                        f"L'item a été acheté mais il y a eu une erreur lors de l'attribution du rôle (permissions insuffisantes ?). Contacte un administrateur.\n\n**Item acheté :** {item['name']}\n**Prix payé :** {tax_info['total_price']:,} PrissBucks"
                     )
                     await send_func(embed=embed)
                     return
@@ -196,7 +245,7 @@ class Shop(commands.Cog):
                     logger.error(f"Erreur attribution rôle {item_id}: {e}")
                     embed = create_warning_embed(
                         "Achat réussi mais...",
-                        f"L'item a été acheté mais il y a eu une erreur lors de l'attribution du rôle. Contacte un administrateur.\n\n**Item acheté :** {item['name']}\n**Prix payé :** {item['price']:,} PrissBucks"
+                        f"L'item a été acheté mais il y a eu une erreur lors de l'attribution du rôle. Contacte un administrateur.\n\n**Item acheté :** {item['name']}\n**Prix payé :** {tax_info['total_price']:,} PrissBucks"
                     )
                     await send_func(embed=embed)
                     return
@@ -204,9 +253,25 @@ class Shop(commands.Cog):
             # Récupérer le nouveau solde
             new_balance = await self.db.get_balance(user_id)
             
-            # Message de confirmation
-            embed = create_purchase_embed(author, item, new_balance, role_granted, role_name)
+            # Message de confirmation avec taxes et effets spéciaux
+            if item["type"] == "cooldown_reset" and cooldowns_cleared > 0:
+                # Embed spécial pour les effets des items
+                embed = create_special_item_effect_embed(
+                    author, item['name'], 
+                    "Tous tes cooldowns ont été immédiatement supprimés !",
+                    cooldowns_cleared
+                )
+            else:
+                # Embed normal avec taxes
+                embed = create_purchase_embed_with_tax(
+                    author, item, tax_info, new_balance, 
+                    role_granted, role_name, special_effect_message
+                )
+            
             await send_func(embed=embed)
+            
+            # Log de l'action avec taxes
+            logger.info(f"Achat avec taxe: {author} a acheté {item['name']} (ID: {item_id}) | Total: {tax_info['total_price']} | Taxe: {tax_info['tax_amount']}")
             
         except Exception as e:
             logger.error(f"Erreur buy {user_id} -> {item_id}: {e}")
@@ -256,7 +321,7 @@ class Shop(commands.Cog):
 
     @app_commands.command(name="additem", description="[ADMIN] Ajoute un rôle à la boutique")
     @app_commands.describe(
-        price="Prix de l'item en PrissBucks",
+        price="Prix de l'item en PrissBucks (sans taxe)",
         role="Le rôle à attribuer",
         name="Nom de l'item dans la boutique",
         description="Description de l'item (optionnel)"
@@ -310,11 +375,14 @@ class Shop(commands.Cog):
                 "role_id": role.id
             }
             
+            # Calculer le prix avec taxe pour l'affichage
+            total_price, tax = self._calculate_price_with_tax(price)
+            
             # Ajouter l'item à la base de données
             item_id = await self.db.add_shop_item(
                 name=name,
                 description=description,
-                price=price,
+                price=price,  # Prix de base (sans taxe)
                 item_type="role",
                 data=item_data
             )
@@ -325,9 +393,11 @@ class Shop(commands.Cog):
                 f"**{name}** a été ajouté à la boutique avec succès !"
             )
             
-            embed.add_field(name="💰 Prix", value=f"{price:,} PrissBucks", inline=True)
+            embed.add_field(name="💰 Prix de base", value=f"{price:,} PrissBucks", inline=True)
+            embed.add_field(name="🏛️ Prix avec taxe", value=f"{total_price:,} PrissBucks", inline=True)
             embed.add_field(name="🎭 Rôle", value=role.mention, inline=True)
             embed.add_field(name="🆔 ID", value=f"`{item_id}`", inline=True)
+            embed.add_field(name="📈 Taxe", value=f"{SHOP_TAX_RATE*100}% ({tax:,} PB)", inline=True)
             embed.add_field(name="📝 Description", value=description, inline=False)
             
             embed.set_footer(text=f"Ajouté par {admin.display_name}")
@@ -407,8 +477,56 @@ class Shop(commands.Cog):
         try:
             stats = await self.db.get_shop_stats()
             
-            from utils.embeds import create_shop_stats_embed
-            embed = create_shop_stats_embed(stats)
+            embed = discord.Embed(
+                title="📊 Statistiques de la boutique",
+                color=Colors.INFO
+            )
+            
+            # Statistiques générales avec taxes
+            embed.add_field(
+                name="👥 Acheteurs uniques", 
+                value=f"**{stats['unique_buyers']}** utilisateurs", 
+                inline=True
+            )
+            embed.add_field(
+                name="🛒 Total des achats", 
+                value=f"**{stats['total_purchases']}** achats", 
+                inline=True
+            )
+            embed.add_field(
+                name="💰 Revenus totaux", 
+                value=f"**{stats['total_revenue']:,}** PrissBucks", 
+                inline=True
+            )
+            
+            # Nouvelles statistiques sur les taxes
+            embed.add_field(
+                name="🏛️ Taxes collectées", 
+                value=f"**{stats['total_taxes']:,}** PrissBucks", 
+                inline=True
+            )
+            
+            tax_percentage = (stats['total_taxes'] / stats['total_revenue'] * 100) if stats['total_revenue'] > 0 else 0
+            embed.add_field(
+                name="📈 Pourcentage taxes", 
+                value=f"**{tax_percentage:.1f}%** du CA", 
+                inline=True
+            )
+            
+            # Top des items avec revenus et taxes
+            if stats['top_items']:
+                top_text = ""
+                for i, item in enumerate(stats['top_items'][:5], 1):
+                    emoji = ["🥇", "🥈", "🥉", "🏅", "🏅"][i-1]
+                    top_text += f"{emoji} **{item['name']}** - {item['purchases']} vente(s) ({item['revenue']:,} PB)\n"
+                
+                embed.add_field(
+                    name="🏆 Top des ventes",
+                    value=top_text,
+                    inline=False
+                )
+            
+            embed.set_footer(text=f"Taux de taxe actuel: {SHOP_TAX_RATE*100}%")
             await ctx.send(embed=embed)
             
         except Exception as e:
