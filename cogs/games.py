@@ -80,7 +80,6 @@ class PPCView(discord.ui.View):
 
         # Vérifier si les deux ont joué
         if self.challenger_choice and self.opponent_choice:
-            # Pas besoin de defer, on modifie directement le message
             await self.finish_game()
 
     async def finish_game(self):
@@ -227,7 +226,9 @@ class PierrepapierCiseaux(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info("✅ Cog Pierre-Papier-Ciseaux BO1 initialisé")
+        logger.info("✅ Cog Pierre-Papier-Ciseaux BO1 initialisé avec slash commands")
+
+    # ==================== PPC COMMANDS ====================
 
     @app_commands.command(name="ppc", description="Défie quelqu'un au Pierre-Papier-Ciseaux avec une mise")
     @app_commands.describe(
@@ -297,6 +298,8 @@ class PierrepapierCiseaux(commands.Cog):
             embed = create_error_embed("Erreur", "Erreur lors de la création du jeu.")
             await interaction.followup.send(embed=embed, ephemeral=True)
 
+    # ==================== STATS COMMANDS ====================
+
     @commands.command(name='ppc_stats')
     async def ppc_stats_cmd(self, ctx, user: discord.Member = None):
         """Affiche des statistiques PPC basiques"""
@@ -312,12 +315,60 @@ class PierrepapierCiseaux(commands.Cog):
                 color=Colors.INFO
             )
             embed.set_thumbnail(url=target.display_avatar.url)
+            embed.add_field(
+                name="🎯 Comment jouer",
+                value="Utilise `/ppc @adversaire <mise>` pour défier quelqu'un !",
+                inline=False
+            )
             await ctx.send(embed=embed)
             
         except Exception as e:
             logger.error(f"Erreur stats PPC: {e}")
             embed = create_error_embed("Erreur", "Erreur lors de la récupération des statistiques.")
             await ctx.send(embed=embed)
+
+    @app_commands.command(name="ppc_info", description="Affiche les informations sur le jeu Pierre-Papier-Ciseaux")
+    async def ppc_info_slash(self, interaction: discord.Interaction):
+        """Slash command pour les infos PPC"""
+        embed = discord.Embed(
+            title="🎮 Pierre-Papier-Ciseaux",
+            description="Défie d'autres utilisateurs dans un duel de PPC avec des mises en PrissBucks !",
+            color=Colors.PREMIUM
+        )
+        
+        embed.add_field(
+            name="🎯 Règles du jeu",
+            value="🗿 Pierre bat ✂️ Ciseaux\n"
+                  "📄 Papier bat 🗿 Pierre\n"
+                  "✂️ Ciseaux bat 📄 Papier",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="💰 Système de mise",
+            value="• Chaque joueur mise le même montant\n"
+                  "• Le gagnant remporte tout\n"
+                  "• En cas d'égalité, rien n'est transféré",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="⚡ Format BO1",
+            value="• Un seul round par partie\n"
+                  "• Rapide et efficace\n"
+                  "• 60 secondes pour choisir",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🚀 Comment jouer",
+            value="`/ppc @adversaire <mise>` - Lance un défi\n"
+                  "`ppc_stats [@user]` - Voir les statistiques",
+            inline=False
+        )
+        
+        embed.set_footer(text="Bonne chance dans tes duels !")
+        await interaction.response.send_message(embed=embed)
 
 async def setup(bot):
     """Fonction appelée pour charger le cog"""
