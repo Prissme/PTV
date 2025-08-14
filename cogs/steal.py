@@ -4,7 +4,10 @@ from datetime import datetime, timezone, timedelta
 import random
 import logging
 
-from config import Colors, Emojis
+from config import (
+    STEAL_SUCCESS_RATE, STEAL_PERCENTAGE, STEAL_FAIL_PENALTY_PERCENTAGE,
+    STEAL_COOLDOWN_HOURS, STEAL_COOLDOWN_SECONDS, Colors, Emojis
+)
 from utils.embeds import create_error_embed, create_success_embed
 
 logger = logging.getLogger(__name__)
@@ -20,17 +23,17 @@ class Steal(commands.Cog):
         # Format: {user_id: datetime_last_steal}
         self.cooldowns = {}
         
-        # Configuration
-        self.SUCCESS_RATE = 50  # 50% de chances de réussite
-        self.STEAL_PERCENTAGE = 10  # Vol 10% des pièces
-        self.FAIL_PENALTY_PERCENTAGE = 40  # Perd 40% si échec
-        self.COOLDOWN_HOURS = 0,5  # Cooldown de 1 heure
-        self.COOLDOWN_SECONDS = self.COOLDOWN_HOURS * 1800
+        # Configuration depuis config.py
+        self.SUCCESS_RATE = STEAL_SUCCESS_RATE
+        self.STEAL_PERCENTAGE = STEAL_PERCENTAGE
+        self.FAIL_PENALTY_PERCENTAGE = STEAL_FAIL_PENALTY_PERCENTAGE
+        self.COOLDOWN_HOURS = STEAL_COOLDOWN_HOURS
+        self.COOLDOWN_SECONDS = STEAL_COOLDOWN_SECONDS
         
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info(f"✅ Cog Steal initialisé (10% vol, 40% perte, 50% réussite, CD: {self.COOLDOWN_HOURS}h)")
+        logger.info(f"✅ Cog Steal initialisé ({self.STEAL_PERCENTAGE}% vol, {self.FAIL_PENALTY_PERCENTAGE}% perte, {self.SUCCESS_RATE}% réussite, CD: {self.COOLDOWN_HOURS}h)")
 
     def is_on_cooldown(self, user_id: int) -> bool:
         """Vérifie si l'utilisateur est en cooldown"""
@@ -78,7 +81,7 @@ class Steal(commands.Cog):
             return f"{secs}s"
 
     @commands.command(name='voler', aliases=['steal', 'rob'])
-    @commands.cooldown(1, 3600, commands.BucketType.user)  # Cooldown Discord en backup
+    @commands.cooldown(1, STEAL_COOLDOWN_SECONDS, commands.BucketType.user)  # Cooldown Discord en backup
     async def steal_cmd(self, ctx, target: discord.Member):
         """Tente de voler 10% des pièces d'un autre utilisateur"""
         thief = ctx.author
