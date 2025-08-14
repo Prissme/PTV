@@ -396,5 +396,45 @@ def create_cooldowns_status_embed(user: discord.Member, active_cooldowns: list) 
             name="🚀 Tu es libre !",
             value="Profite-en pour utiliser tes commandes préférées :\n"
                   f"• `{PREFIX}daily` - Récupère tes pièces quotidiennes\n"
-                  f"• `{PREFIX}voler <@user>` - Tente ta chance au vol\n" 
-                  f"• `{PREFIX}give
+                  f"• `{PREFIX}voler <@user>` - Tente ta chance au vol\n"
+                  f"• `{PREFIX}give <@user> <montant>` - Partage tes PrissBucks",
+            inline=False
+        )
+    
+    embed.set_thumbnail(url=user.display_avatar.url)
+    return embed
+
+def create_special_item_effect_embed(user: discord.Member, item_name: str, effect_description: str, cooldowns_cleared: int = 0) -> discord.Embed:
+    """Créer un embed pour les effets spéciaux des items"""
+    embed = discord.Embed(
+        title=f"✨ Effet spécial activé !",
+        description=f"**{user.display_name}** a utilisé **{item_name}**",
+        color=Colors.PREMIUM
+    )
+    
+    embed.add_field(
+        name="🎯 Effet",
+        value=effect_description,
+        inline=False
+    )
+    
+    if cooldowns_cleared > 0:
+        embed.add_field(
+            name="📊 Résultat",
+            value=f"🔄 **{cooldowns_cleared}** cooldown(s) supprimé(s) !\n"
+                  f"✅ Toutes tes commandes sont maintenant disponibles.",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="🚀 Tu peux maintenant utiliser",
+            value=f"• `{PREFIX}daily` - Si c'était en cooldown\n"
+                  f"• `{PREFIX}voler <@user>` - Si c'était en cooldown\n"
+                  f"• `{PREFIX}give <@user>` - Si c'était en cooldown\n"
+                  f"• Et toutes les autres commandes !",
+            inline=False
+        )
+    
+    embed.set_thumbnail(url=user.display_avatar.url)
+    embed.set_footer(text="Effet appliqué avec succès !")
+    return embed
