@@ -1,12 +1,13 @@
 import discord
 from discord.ext import commands
+from discord import app_commands
 from datetime import datetime, timezone
 import random
 import logging
 
 from config import (
     DAILY_MIN, DAILY_MAX, DAILY_BONUS_CHANCE, DAILY_BONUS_MIN, DAILY_BONUS_MAX,
-    DAILY_COOLDOWN, TRANSFER_COOLDOWN, TRANSFER_TAX_RATE, OWNER_ID, Colors, Emojis
+    DAILY_COOLDOWN, TRANSFER_COOLDOWN, Colors, Emojis
 )
 from utils.embeds import (
     create_balance_embed, create_daily_embed, create_transfer_embed,
@@ -15,37 +16,8 @@ from utils.embeds import (
 
 logger = logging.getLogger(__name__)
 
-def create_taxed_transfer_embed(giver: discord.Member, receiver: discord.Member, transfer_data: dict, new_balance: int) -> discord.Embed:
-    """Créer un embed pour les transferts avec taxe"""
-    embed = discord.Embed(
-        title=f"{Emojis.TRANSFER} Transfert réussi !",
-        description=f"**{giver.display_name}** a donné **{transfer_data['gross_amount']:,}** PrissBucks à **{receiver.display_name}**",
-        color=Colors.SUCCESS
-    )
-    
-    embed.add_field(
-        name="💰 Détail du transfert",
-        value=f"**Montant demandé :** {transfer_data['gross_amount']:,} PrissBucks\n"
-              f"**Reçu par {receiver.display_name} :** {transfer_data['net_amount']:,} PrissBucks\n"
-              f"**{Emojis.TAX} Taxe ({transfer_data['tax_rate']:.0f}%) :** {transfer_data['tax_amount']:,} PrissBucks",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="📊 Nouveau solde",
-        value=f"**{giver.display_name} :** {new_balance:,} PrissBucks",
-        inline=True
-    )
-    
-    if transfer_data['tax_amount'] > 0:
-        embed.set_footer(text=f"La taxe de {transfer_data['tax_amount']:,} PrissBucks est collectée par le bot")
-    else:
-        embed.set_footer(text="Aucune taxe appliquée sur ce montant")
-    
-    return embed
-
 class Economy(commands.Cog):
-    """Commandes économie essentielles : balance, daily, give (avec taxe)"""
+    """Commandes économie essentielles : balance, daily, give"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -54,7 +26,7 @@ class Economy(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info(f"✅ Cog Economy initialisé avec taxe {TRANSFER_TAX_RATE*100:.0f}% sur les transferts")
+        logger.info("✅ Cog Economy initialisé (simplifié) avec slash commands")
     
     @commands.command(name='balance', aliases=['bal', 'money'])
     async def balance_cmd(self, ctx, member: discord.Member = None):
@@ -74,24 +46,61 @@ class Economy(commands.Cog):
     @commands.command(name='give', aliases=['pay', 'transfer'])
     @commands.cooldown(1, TRANSFER_COOLDOWN, commands.BucketType.user)
     async def give_cmd(self, ctx, member: discord.Member, amount: int):
-        """Donne des pièces à un autre utilisateur (avec taxe de 2%)"""
-        giver = ctx.author
+        """Donne des pièces à un autre utilisateur"""
+        await self._execute_give(ctx, member, amount)
+
+    @app_commands.command(name="give", description="Donne des PrissBucks à un autre utilisateur")
+    @app_commands.describe(
+        utilisateur="L'utilisateur à qui donner des PrissBucks",
+        montant="Le montant de PrissBucks à donner"
+    )
+    async def give_slash(self, interaction: discord.Interaction, utilisateur: discord.Member, montant: int):
+        """Slash command pour donner des PrissBucks"""
+        # Créer un contexte fictif pour réutiliser la logique
+        ctx = await self.bot.get_context(interaction)
+        ctx.author = interaction.user
+        
+        # Vérifier le cooldown manuellement pour les slash commands
+        bucket = self.give_cmd._buckets.get_bucket(interaction.user.id)
+        if bucket and bucket.tokens == 0:
+            retry_after = bucket.get_retry_after()
+            embed = create_cooldown_embed("give", retry_after)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        await interaction.response.defer()
+        
+        # Appliquer le cooldown
+        if bucket:
+            bucket.update_rate_limit()
+            
+        await self._execute_give(interaction, utilisateur, montant, is_slash=True)
+
+    async def _execute_give(self, ctx_or_interaction, member, amount, is_slash=False):
+        """Logique commune pour give (prefix et slash)"""
+        if is_slash:
+            giver = ctx_or_interaction.user
+            send_func = ctx_or_interaction.followup.send
+        else:
+            giver = ctx_or_interaction.author
+            send_func = ctx_or_interaction.send
+            
         receiver = member
         
         # Validations
         if amount <= 0:
             embed = create_error_embed("Montant invalide", "Le montant doit être positif !")
-            await ctx.send(embed=embed)
+            await send_func(embed=embed)
             return
             
         if giver.id == receiver.id:
             embed = create_error_embed("Transfert impossible", "Tu ne peux pas te donner des pièces à toi-même !")
-            await ctx.send(embed=embed)
+            await send_func(embed=embed)
             return
             
         if receiver.bot:
             embed = create_error_embed("Transfert impossible", "Tu ne peux pas donner des pièces à un bot !")
-            await ctx.send(embed=embed)
+            await send_func(embed=embed)
             return
 
         try:
@@ -102,30 +111,24 @@ class Economy(commands.Cog):
                     "Solde insuffisant",
                     f"Tu as {giver_balance:,} PrissBucks mais tu essaies de donner {amount:,} PrissBucks."
                 )
-                await ctx.send(embed=embed)
+                await send_func(embed=embed)
                 return
 
-            # Effectuer le transfert avec taxe
-            success, result = await self.db.transfer_with_tax(
-                giver.id, receiver.id, amount, TRANSFER_TAX_RATE, OWNER_ID
-            )
+            # Effectuer le transfert
+            success = await self.db.transfer(giver.id, receiver.id, amount)
             
             if success:
                 new_balance = giver_balance - amount
-                embed = create_taxed_transfer_embed(giver, receiver, result, new_balance)
-                await ctx.send(embed=embed)
-                
-                # Log pour l'owner si une taxe a été collectée
-                if result['tax_amount'] > 0:
-                    logger.info(f"💰 Taxe collectée: {result['tax_amount']} PrissBucks de {giver} -> Owner ({result['gross_amount']} transfert)")
+                embed = create_transfer_embed(giver, receiver, amount, new_balance)
+                await send_func(embed=embed)
             else:
-                embed = create_error_embed("Échec du transfert", result.get('error', 'Erreur inconnue'))
-                await ctx.send(embed=embed)
+                embed = create_error_embed("Échec du transfert", "Solde insuffisant.")
+                await send_func(embed=embed)
                 
         except Exception as e:
             logger.error(f"Erreur give {giver.id} -> {receiver.id}: {e}")
             embed = create_error_embed("Erreur", "Erreur lors du transfert.")
-            await ctx.send(embed=embed)
+            await send_func(embed=embed)
 
     @commands.command(name='daily', aliases=['dailyspin', 'spin'])
     @commands.cooldown(1, DAILY_COOLDOWN, commands.BucketType.user)
@@ -168,44 +171,6 @@ class Economy(commands.Cog):
             logger.error(f"Erreur daily pour {user_id}: {e}")
             embed = create_error_embed("Erreur", "Erreur lors du daily spin.")
             await ctx.send(embed=embed)
-
-    @commands.command(name='taxinfo', aliases=['infoaxe', 'transfertax'])
-    async def tax_info_cmd(self, ctx):
-        """Affiche les informations sur la taxe de transfert"""
-        tax_percentage = TRANSFER_TAX_RATE * 100
-        
-        embed = discord.Embed(
-            title=f"{Emojis.TAX} Système de Taxe",
-            description=f"Une taxe de **{tax_percentage:.0f}%** est appliquée sur tous les transferts.",
-            color=Colors.INFO
-        )
-        
-        embed.add_field(
-            name="💡 Comment ça marche ?",
-            value=f"• Tu donnes **1000** PrissBucks à quelqu'un\n"
-                  f"• Il reçoit **{int(1000 * (1 - TRANSFER_TAX_RATE)):,}** PrissBucks\n"
-                  f"• Le bot collecte **{int(1000 * TRANSFER_TAX_RATE):,}** PrissBucks de taxe",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="📊 Exemples",
-            value=f"**100** PrissBucks → {int(100 * (1 - TRANSFER_TAX_RATE))} reçus, {int(100 * TRANSFER_TAX_RATE)} de taxe\n"
-                  f"**500** PrissBucks → {int(500 * (1 - TRANSFER_TAX_RATE))} reçus, {int(500 * TRANSFER_TAX_RATE)} de taxe\n"
-                  f"**1000** PrissBucks → {int(1000 * (1 - TRANSFER_TAX_RATE))} reçus, {int(1000 * TRANSFER_TAX_RATE)} de taxe",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="⚠️ Important",
-            value="• La taxe est automatiquement déduite du montant\n"
-                  f"• Les taxes financent le fonctionnement du bot\n"
-                  f"• Aucune taxe sur les autres commandes (daily, shop, etc.)",
-            inline=False
-        )
-        
-        embed.set_footer(text=f"Taux de taxe actuel: {tax_percentage:.0f}%")
-        await ctx.send(embed=embed)
 
     # Gestion d'erreur spécifique pour ce cog
     @commands.Cog.listener()
