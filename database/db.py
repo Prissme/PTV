@@ -20,7 +20,7 @@ async def init_db(pool):
             )
         ''')
         
-        # Nouvelle table pour les items du shop
+        # Table pour les items du shop
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS shop_items (
                 id SERIAL PRIMARY KEY,
@@ -34,7 +34,7 @@ async def init_db(pool):
             )
         ''')
         
-        # Nouvelle table pour les achats des utilisateurs (mise à jour avec taxe)
+        # Table pour les achats des utilisateurs (avec système de taxes)
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS user_purchases (
                 id SERIAL PRIMARY KEY,
@@ -80,7 +80,7 @@ class Database:
         if self.pool:
             await self.pool.close()
 
-    # ==================== MÉTHODES ÉCONOMIE EXISTANTES ====================
+    # ==================== MÉTHODES ÉCONOMIE ====================
 
     async def get_balance(self, user_id: int) -> int:
         """Récupère le solde d'un utilisateur"""
@@ -219,7 +219,7 @@ class Database:
             """, limit)
             return [(row["user_id"], row["balance"]) for row in rows]
 
-    # ==================== NOUVELLES MÉTHODES SHOP AVEC TAXES ====================
+    # ==================== MÉTHODES SHOP AVEC TAXES ====================
 
     async def get_shop_items(self, active_only: bool = True) -> List[Dict]:
         """Récupère la liste des items du shop"""
