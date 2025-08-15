@@ -45,69 +45,12 @@ class Shop(commands.Cog):
         total_price = base_price + tax_amount
         return total_price, tax_amount
 
-    async def _handle_special_item_effects(self, user, guild, item: dict, channel) -> tuple:
+    async def _handle_special_item_effects(self, user, guild, item: dict) -> tuple:
         """Gère les effets spéciaux des items après achat"""
         special_effect = None
         
-        # Gestion de l'XP Boost - Envoie la commande à Arcane
-        if item["type"] == "xp_boost":
-            try:
-                xp_amount = item["data"].get("xp_amount", 1000)
-                
-                # Envoyer la commande /xp add directement dans le canal
-                if channel and channel.permissions_for(guild.me).send_messages:
-                    try:
-                        # Envoyer la commande pour Arcane Premium
-                        xp_command = f"/xp add {user.mention} {xp_amount}"
-                        await channel.send(xp_command)
-                        
-                        special_effect = f"⚡ **Commande XP envoyée !**\n🤖 `/xp add {user.mention} {xp_amount}` envoyé à Arcane Premium\n💫 Tes {xp_amount} XP arrivent !"
-                        logger.info(f"XP Boost command sent: {xp_command} pour {user} dans {channel}")
-                        
-                    except discord.Forbidden:
-                        special_effect = f"⚡ **XP Boost acheté !**\n⚠️ Pas de permission pour envoyer la commande XP dans ce canal"
-                        logger.warning(f"Pas de permission pour envoyer commande XP dans {channel}")
-                        
-                    except Exception as e:
-                        logger.error(f"Erreur envoi commande XP: {e}")
-                        special_effect = f"⚡ **XP Boost acheté !**\n❌ Erreur lors de l'envoi de la commande XP"
-                else:
-                    special_effect = f"⚡ **XP Boost acheté !**\n⚠️ Impossible d'envoyer la commande XP (canal indisponible)"
-                    
-            except Exception as e:
-                logger.error(f"Erreur traitement XP Boost {item['id']}: {e}")
-                special_effect = f"⚡ **XP Boost acheté !**\n❌ Erreur lors du traitement"
-        
-        # Gestion du Reset Cooldowns
-        elif item["type"] == "cooldown_reset":
-            try:
-                # Reset des cooldowns dans tous les cogs
-                cooldowns_reset = []
-                
-                for cog_name, cog in self.bot.cogs.items():
-                    try:
-                        # Reset des cooldowns personnalisés
-                        if hasattr(cog, 'cooldowns') and user.id in cog.cooldowns:
-                            del cog.cooldowns[user.id]
-                            cooldowns_reset.append(cog_name)
-                        
-                        # Reset des cooldowns Discord.py
-                        for command in cog.get_commands():
-                            if hasattr(command, '_buckets') and command._buckets:
-                                bucket = command._buckets.get_bucket(type('MockMessage', (), {'author': user, 'guild': guild, 'channel': None})())
-                                if bucket:
-                                    bucket.reset()
-                                    
-                    except Exception as e:
-                        logger.error(f"Erreur reset cooldown {cog_name}: {e}")
-                        continue
-                
-                special_effect = f"⏰ **Tous tes cooldowns ont été supprimés !**\n✅ Tu peux maintenant utiliser toutes tes commandes !\n🔄 Cooldowns reset: {len(cooldowns_reset)} modules"
-                logger.info(f"Reset cooldowns: {user} a reset tous ses cooldowns (item {item['id']})")
-                
-            except Exception as e:
-                logger.error(f"Erreur reset cooldowns {item['id']}: {e}")
-                special_effect = f"⏰ **Reset Cooldowns acheté !**\n❌ Erreur lors du reset"
+        # Actuellement aucun effet spécial disponible
+        # Cette fonction est prête pour de futurs items spéciaux
         
         return special_effect
 
@@ -303,16 +246,9 @@ class Shop(commands.Cog):
                     return
             
             # ==================== GESTION DES ITEMS SPÉCIAUX ====================
-            elif item["type"] in ["xp_boost", "cooldown_reset"]:
-                # Pour XP Boost, on a besoin du canal pour envoyer la commande
-                channel = None
-                if item["type"] == "xp_boost":
-                    if is_slash:
-                        channel = ctx_or_interaction.channel
-                    else:
-                        channel = ctx_or_interaction.channel
-                
-                special_effect = await self._handle_special_item_effects(author, guild, item, channel)
+            # Actuellement aucun item spécial disponible
+            # Cette section est prête pour de futurs items spéciaux
+            special_effect = await self._handle_special_item_effects(author, guild, item)
             
             # Récupérer le nouveau solde
             new_balance = await self.db.get_balance(user_id)
@@ -593,115 +529,6 @@ class Shop(commands.Cog):
             logger.error(f"Erreur shopstats: {e}")
             embed = create_error_embed("Erreur", "Erreur lors de la récupération des statistiques.")
             await ctx.send(embed=embed)
-
-    # ==================== COMMANDES XP BOOST ADMIN ====================
-
-    @commands.command(name='addxpitem')
-    @commands.has_permissions(administrator=True)
-    async def add_xp_item_cmd(self, ctx, price: int, xp_amount: int, *, name: str = None):
-        """[ADMIN] Ajoute un item XP Boost à la boutique"""
-        await self._execute_add_xp_item(ctx, price, xp_amount, name)
-
-    @app_commands.command(name="addxpitem", description="[ADMIN] Ajoute un item XP Boost à la boutique")
-    @app_commands.describe(
-        price="Prix de l'item en PrissBucks (sans taxe)",
-        xp_amount="Quantité d'XP à donner",
-        name="Nom de l'item (optionnel, par défaut basé sur l'XP)"
-    )
-    @app_commands.default_permissions(administrator=True)
-    async def add_xp_item_slash(self, interaction: discord.Interaction, price: int, xp_amount: int, name: str = None):
-        """Slash command pour ajouter un XP Boost (admin seulement)"""
-        if not interaction.user.guild_permissions.administrator:
-            embed = create_error_embed(
-                "Permission refusée", 
-                "Seuls les administrateurs peuvent utiliser cette commande."
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        await interaction.response.defer()
-        await self._execute_add_xp_item(interaction, price, xp_amount, name, is_slash=True)
-
-    async def _execute_add_xp_item(self, ctx_or_interaction, price, xp_amount, name=None, is_slash=False):
-        """Logique commune pour add_xp_item (prefix et slash)"""
-        if is_slash:
-            admin = ctx_or_interaction.user
-            send_func = ctx_or_interaction.followup.send
-        else:
-            admin = ctx_or_interaction.author
-            send_func = ctx_or_interaction.send
-
-        # Validations
-        if price <= 0:
-            embed = create_error_embed("Prix invalide", "Le prix doit être positif !")
-            await send_func(embed=embed)
-            return
-
-        if xp_amount <= 0:
-            embed = create_error_embed("XP invalide", "La quantité d'XP doit être positive !")
-            await send_func(embed=embed)
-            return
-
-        if price > 10000000:
-            embed = create_error_embed("Prix trop élevé", "Le prix maximum est de 10,000,000 PrissBucks.")
-            await send_func(embed=embed)
-            return
-
-        if xp_amount > 100000:
-            embed = create_error_embed("XP trop élevé", "La quantité d'XP maximum est de 100,000.")
-            await send_func(embed=embed)
-            return
-
-        try:
-            # Nom par défaut si pas fourni
-            if not name:
-                name = f"⚡ XP Boost {xp_amount}"
-            
-            # Description automatique
-            description = f"Gagne instantanément {xp_amount:,} XP via Arcane Premium ! Le bot enverra automatiquement la commande `/xp add` dans le canal. - Usage immédiat à l'achat"
-            
-            # Données de l'XP Boost
-            item_data = {
-                "instant_use": True,
-                "effect": "send_xp_command",
-                "xp_amount": xp_amount
-            }
-            
-            # Calculer le prix avec taxe
-            total_price, tax = self._calculate_price_with_tax(price)
-            
-            # Ajouter l'item à la base de données
-            item_id = await self.db.add_shop_item(
-                name=name,
-                description=description,
-                price=price,
-                item_type="xp_boost",
-                data=item_data
-            )
-            
-            # Confirmation
-            embed = create_success_embed(
-                "XP Boost ajouté !",
-                f"**{name}** a été ajouté à la boutique avec succès !"
-            )
-            
-            embed.add_field(name="💰 Prix de base", value=f"{price:,} PrissBucks", inline=True)
-            embed.add_field(name="🏛️ Prix avec taxe", value=f"{total_price:,} PrissBucks", inline=True)
-            embed.add_field(name="⚡ XP donné", value=f"{xp_amount:,} XP", inline=True)
-            embed.add_field(name="🆔 ID", value=f"`{item_id}`", inline=True)
-            embed.add_field(name="📈 Taxe", value=f"{SHOP_TAX_RATE*100}% ({tax:,} PB)", inline=True)
-            embed.add_field(name="🎯 Type", value="XP Boost instantané", inline=True)
-            embed.add_field(name="📝 Description", value=description, inline=False)
-            
-            embed.set_footer(text=f"Ajouté par {admin.display_name}")
-            await send_func(embed=embed)
-            
-            logger.info(f"ADMIN: {admin} a ajouté l'XP Boost '{name}' (ID: {item_id}, Prix: {price}, XP: {xp_amount})")
-            
-        except Exception as e:
-            logger.error(f"Erreur add_xp_item: {e}")
-            embed = create_error_embed("Erreur", "Erreur lors de l'ajout de l'XP Boost.")
-            await send_func(embed=embed)
 
 async def setup(bot):
     """Fonction appelée pour charger le cog"""
