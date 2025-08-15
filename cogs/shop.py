@@ -14,7 +14,7 @@ from utils.embeds import (
 logger = logging.getLogger(__name__)
 
 class Shop(commands.Cog):
-    """Système boutique complet : shop, buy, inventory avec taxes"""
+    """Système boutique complet : shop, buy, inventory avec taxes et logs"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -25,7 +25,7 @@ class Shop(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info("✅ Cog Shop initialisé avec système de taxes")
+        logger.info("✅ Cog Shop initialisé avec système de taxes et logs")
     
     def _check_buy_cooldown(self, user_id: int) -> float:
         """Vérifie et retourne le cooldown restant pour buy"""
@@ -119,7 +119,7 @@ class Shop(commands.Cog):
             embed = create_error_embed("Erreur", f"Erreur lors de l'affichage de la boutique.")
             await send_func(embed=embed)
 
-    # ==================== BUY COMMANDS AVEC TAXES ====================
+    # ==================== BUY COMMANDS AVEC TAXES ET LOGS ====================
 
     @commands.command(name='buy', aliases=['acheter', 'purchase'])
     @commands.cooldown(1, 3, commands.BucketType.user)
@@ -146,7 +146,7 @@ class Shop(commands.Cog):
         await self._execute_buy(interaction, item_id, is_slash=True)
 
     async def _execute_buy(self, ctx_or_interaction, item_id, is_slash=False):
-        """Logique commune pour buy avec taxes (prefix et slash)"""
+        """Logique commune pour buy avec taxes et logs (prefix et slash)"""
         if is_slash:
             user_id = ctx_or_interaction.user.id
             author = ctx_or_interaction.user
@@ -159,7 +159,7 @@ class Shop(commands.Cog):
             send_func = ctx_or_interaction.send
         
         try:
-            # Récupérer les infos de l'item
+            # Récupérer les infos de l'item AVANT l'achat
             item = await self.db.get_shop_item(item_id)
             if not item or not item["is_active"]:
                 embed = create_error_embed(
@@ -168,6 +168,9 @@ class Shop(commands.Cog):
                 )
                 await send_func(embed=embed)
                 return
+            
+            # Récupérer le solde AVANT l'achat pour les logs
+            balance_before = await self.db.get_balance(user_id)
             
             # Effectuer l'achat avec taxe (transaction atomique)
             success, message, tax_info = await self.db.purchase_item_with_tax(
@@ -178,6 +181,18 @@ class Shop(commands.Cog):
                 embed = create_error_embed("Achat échoué", message)
                 await send_func(embed=embed)
                 return
+            
+            # Calculer le nouveau solde APRÈS l'achat et logger la transaction
+            balance_after = balance_before - tax_info['total_price']
+            if hasattr(self.bot, 'transaction_logs'):
+                await self.bot.transaction_logs.log_purchase(
+                    user_id=user_id,
+                    item_name=item['name'],
+                    price=tax_info['base_price'],
+                    tax=tax_info['tax_amount'],
+                    balance_before=balance_before,
+                    balance_after=balance_after
+                )
             
             # Variables pour les différents types d'items
             role_granted = False
@@ -212,7 +227,7 @@ class Shop(commands.Cog):
                             await author.add_roles(role, reason=f"Achat boutique: {item['name']}")
                             role_granted = True
                             role_name = role.name
-                            logger.info(f"Rôle {role.name} attribué à {author} (achat item {item_id})")
+                            logger.info(f"Rôle {role.name} attribué à {author} (achat item {item_id}) [LOGGED]")
                         else:
                             embed = create_warning_embed(
                                 "Achat réussi mais...",
@@ -250,7 +265,7 @@ class Shop(commands.Cog):
             # Cette section est prête pour de futurs items spéciaux
             special_effect = await self._handle_special_item_effects(author, guild, item)
             
-            # Récupérer le nouveau solde
+            # Récupérer le nouveau solde final (pour être sûr)
             new_balance = await self.db.get_balance(user_id)
             
             # Message de confirmation avec tous les effets
@@ -267,7 +282,7 @@ class Shop(commands.Cog):
             if special_effect:
                 effect_log += f" | Effet: {item['type']}"
                 
-            logger.info(f"Achat avec effets: {author} a acheté {item['name']} (ID: {item_id}) | Total: {tax_info['total_price']} | Taxe: {tax_info['tax_amount']}{effect_log}")
+            logger.info(f"Achat avec effets: {author} a acheté {item['name']} (ID: {item_id}) | Total: {tax_info['total_price']} | Taxe: {tax_info['tax_amount']}{effect_log} [LOGGED]")
             
         except Exception as e:
             logger.error(f"Erreur buy {user_id} -> {item_id}: {e}")
@@ -522,7 +537,7 @@ class Shop(commands.Cog):
                     inline=False
                 )
             
-            embed.set_footer(text=f"Taux de taxe actuel: {SHOP_TAX_RATE*100}%")
+            embed.set_footer(text=f"Taux de taxe actuel: {SHOP_TAX_RATE*100}% • Tous les achats sont enregistrés")
             await ctx.send(embed=embed)
             
         except Exception as e:
@@ -596,7 +611,7 @@ class Shop(commands.Cog):
                     inline=False
                 )
             
-            embed.set_footer(text=f"Taux de taxe actuel: {SHOP_TAX_RATE*100}%")
+            embed.set_footer(text=f"Taux de taxe actuel: {SHOP_TAX_RATE*100}% • Tous les achats sont enregistrés")
             await interaction.followup.send(embed=embed)
             
         except Exception as e:
