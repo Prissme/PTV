@@ -12,7 +12,7 @@ from utils.embeds import create_error_embed, create_success_embed
 logger = logging.getLogger(__name__)
 
 class RouletteEnhanced(commands.Cog):
-    """Mini-jeu de roulette européenne avec animations, expérience addictive et logs"""
+    """Mini-jeu de roulette européenne avec animations, expérience addictive et logs intégrés"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -42,7 +42,7 @@ class RouletteEnhanced(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info(f"✅ Cog Roulette Enhanced initialisé avec transfert CORRECT des pertes vers owner et logs")
+        logger.info(f"✅ Cog Roulette Enhanced initialisé avec transfert CORRECT des pertes vers owner et logs intégrés")
 
     def _check_roulette_cooldown(self, user_id: int) -> float:
         """Vérifie et retourne le cooldown restant pour la roulette"""
@@ -255,10 +255,10 @@ class RouletteEnhanced(commands.Cog):
 
         # Footer incitatif
         motivational_footers = [
-            "🎰 Rejoue dans 3 secondes ! • 💰 Mise min: 10 PB • 📊 Toutes les parties sont enregistrées !",
-            "🔥 La chance peut tourner à tout moment ! • ⚡ Action rapide ! • 📈 Historique dans /transactions",
-            "💎 Plus tu joues, plus tu gagnes ! • 🎯 Vise la lune ! • 📋 Logs automatiques activés",
-            "🚀 Chaque spin peut être LE bon ! • 💰 Fortune t'attend ! • 🏆 Statistiques sauvegardées"
+            "🎰 Rejoue dans 3 secondes ! • 💰 Mise min: 10 PB • 📊 Historique dans /transactions !",
+            "🔥 La chance peut tourner à tout moment ! • ⚡ Action rapide ! • 📈 Voir tes logs avec /transactions",
+            "💎 Plus tu joues, plus tu gagnes ! • 🎯 Vise la lune ! • 📋 Toutes les parties enregistrées",
+            "🚀 Chaque spin peut être LE bon ! • 💰 Fortune t'attend ! • 🏆 Logs automatiques activés"
         ]
         embed.set_footer(text=random.choice(motivational_footers))
         embed.set_thumbnail(url=user.display_avatar.url)
@@ -293,7 +293,7 @@ class RouletteEnhanced(commands.Cog):
         await self._execute_roulette_enhanced(ctx, bet_type, bet_amount)
 
     async def _execute_roulette_enhanced(self, ctx_or_interaction, bet_type: str, bet_amount: int, is_slash=False):
-        """Logique commune pour la roulette enhanced avec animations, transfert CORRECT des pertes et logs"""
+        """Logique commune pour la roulette enhanced avec animations, transfert CORRECT des pertes et logs intégrés"""
         if is_slash:
             user = ctx_or_interaction.user
             send_func = ctx_or_interaction.followup.send
