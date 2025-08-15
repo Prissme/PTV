@@ -48,7 +48,7 @@ class Economy(commands.Cog):
     
     @commands.command(name='balance', aliases=['bal', 'money'])
     async def balance_cmd(self, ctx, member: discord.Member = None):
-        """Affiche le solde d'un utilisateur"""
+        """e!balance [@utilisateur] - Affiche le solde d'un utilisateur"""
         target = member or ctx.author
         
         try:
@@ -64,7 +64,7 @@ class Economy(commands.Cog):
     @app_commands.command(name="balance", description="Affiche le solde d'un utilisateur")
     @app_commands.describe(utilisateur="L'utilisateur dont voir le solde (optionnel)")
     async def balance_slash(self, interaction: discord.Interaction, utilisateur: discord.Member = None):
-        """Slash command pour voir le solde"""
+        """/balance [utilisateur] - Affiche le solde"""
         target = utilisateur or interaction.user
         
         try:
@@ -82,7 +82,7 @@ class Economy(commands.Cog):
     @commands.command(name='addpb', aliases=['addprissbucks', 'give_admin'])
     @commands.has_permissions(administrator=True)
     async def addpb_cmd(self, ctx, member: discord.Member, amount: int):
-        """[ADMIN] Ajoute des PrissBucks à un utilisateur"""
+        """e!addpb <@utilisateur> <montant> - [ADMIN] Ajoute des PrissBucks à un utilisateur"""
         await self._execute_addpb(ctx, member, amount)
 
     @app_commands.command(name="addpb", description="[ADMIN] Ajoute des PrissBucks à un utilisateur")
@@ -92,7 +92,7 @@ class Economy(commands.Cog):
     )
     @app_commands.default_permissions(administrator=True)
     async def addpb_slash(self, interaction: discord.Interaction, utilisateur: discord.Member, montant: int):
-        """Slash command pour ajouter des PrissBucks (admin seulement)"""
+        """/addpb <utilisateur> <montant> - [ADMIN] Ajoute des PrissBucks"""
         # Vérifier les permissions
         if not interaction.user.guild_permissions.administrator:
             embed = create_error_embed(
@@ -209,7 +209,7 @@ class Economy(commands.Cog):
     @commands.command(name='give', aliases=['pay', 'transfer'])
     @commands.cooldown(1, TRANSFER_COOLDOWN, commands.BucketType.user)
     async def give_cmd(self, ctx, member: discord.Member, amount: int):
-        """Donne des pièces à un autre utilisateur (avec taxe de 5%)"""
+        """e!give <@utilisateur> <montant> - Donne des pièces à un autre utilisateur (avec taxe de 5%)"""
         await self._execute_give(ctx, member, amount)
 
     @app_commands.command(name="give", description="Donne des PrissBucks à un autre utilisateur (taxe de 5%)")
@@ -218,7 +218,7 @@ class Economy(commands.Cog):
         montant="Le montant de PrissBucks à donner (avant taxe)"
     )
     async def give_slash(self, interaction: discord.Interaction, utilisateur: discord.Member, montant: int):
-        """Slash command pour donner des PrissBucks"""
+        """/give <utilisateur> <montant> - Donne des PrissBucks"""
         # Vérifier le cooldown manuellement pour les slash commands
         cooldown_remaining = self._check_give_cooldown(interaction.user.id)
         if cooldown_remaining > 0:
@@ -298,12 +298,12 @@ class Economy(commands.Cog):
     @commands.command(name='daily', aliases=['dailyspin', 'spin'])
     @commands.cooldown(1, DAILY_COOLDOWN, commands.BucketType.user)
     async def daily_cmd(self, ctx):
-        """Récupère tes pièces quotidiennes"""
+        """e!daily - Récupère tes pièces quotidiennes"""
         await self._execute_daily(ctx)
 
     @app_commands.command(name="daily", description="Récupère tes pièces quotidiennes")
     async def daily_slash(self, interaction: discord.Interaction):
-        """Slash command pour le daily"""
+        """/daily - Récupère tes pièces quotidiennes"""
         await interaction.response.defer()
         
         # Vérifier le cooldown manuellement
