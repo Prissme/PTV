@@ -18,7 +18,7 @@ from utils.embeds import (
 logger = logging.getLogger(__name__)
 
 class Economy(commands.Cog):
-    """Commandes économie essentielles : balance, daily, give avec système de taxes"""
+    """Commandes économie essentielles : balance, daily, give avec système de taxes et logs"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -31,7 +31,7 @@ class Economy(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info("✅ Cog Economy initialisé avec système de taxes intégré")
+        logger.info("✅ Cog Economy initialisé avec système de taxes intégré et logs")
     
     def _check_give_cooldown(self, user_id: int) -> float:
         """Vérifie et retourne le cooldown restant pour give"""
@@ -106,7 +106,7 @@ class Economy(commands.Cog):
         await self._execute_addpb(interaction, utilisateur, montant, is_slash=True)
 
     async def _execute_addpb(self, ctx_or_interaction, member, amount, is_slash=False):
-        """Logique commune pour addpb (prefix et slash)"""
+        """Logique commune pour addpb (prefix et slash) avec logs"""
         if is_slash:
             admin = ctx_or_interaction.user
             send_func = ctx_or_interaction.followup.send
@@ -135,14 +135,24 @@ class Economy(commands.Cog):
             return
 
         try:
-            # Récupérer le solde actuel
+            # Récupérer le solde actuel AVANT la modification
             old_balance = await self.db.get_balance(member.id)
             
             # Ajouter les PrissBucks
             await self.db.update_balance(member.id, amount)
             
-            # Récupérer le nouveau solde
+            # Récupérer le nouveau solde APRÈS la modification
             new_balance = await self.db.get_balance(member.id)
+            
+            # Logger la transaction admin
+            if hasattr(self.bot, 'transaction_logs'):
+                await self.bot.transaction_logs.log_admin_add(
+                    user_id=member.id,
+                    amount=amount,
+                    balance_before=old_balance,
+                    balance_after=new_balance,
+                    admin_name=admin.display_name
+                )
             
             # Créer l'embed de confirmation
             embed = discord.Embed(
@@ -176,12 +186,12 @@ class Economy(commands.Cog):
             )
             
             embed.set_thumbnail(url=member.display_avatar.url)
-            embed.set_footer(text="Action administrative - PrissBucks ajoutés")
+            embed.set_footer(text="Action administrative - PrissBucks ajoutés et enregistrés")
             
             await send_func(embed=embed)
             
             # Log de l'action
-            logger.info(f"ADMIN: {admin} a ajouté {amount} PrissBucks à {member} (nouveau solde: {new_balance})")
+            logger.info(f"ADMIN: {admin} a ajouté {amount} PrissBucks à {member} (nouveau solde: {new_balance}) [LOGGED]")
             
         except Exception as e:
             logger.error(f"Erreur addpb {admin.id} -> {member.id}: {e}")
@@ -230,7 +240,7 @@ class Economy(commands.Cog):
         await self._execute_give(interaction, utilisateur, montant, is_slash=True)
 
     async def _execute_give(self, ctx_or_interaction, member, amount, is_slash=False):
-        """Logique commune pour give avec système de taxes (prefix et slash)"""
+        """Logique commune pour give avec système de taxes et logs (prefix et slash)"""
         if is_slash:
             giver = ctx_or_interaction.user
             send_func = ctx_or_interaction.followup.send
@@ -262,12 +272,15 @@ class Economy(commands.Cog):
             return
 
         try:
+            # Récupérer les soldes AVANT les transferts pour les logs
+            giver_balance_before = await self.db.get_balance(giver.id)
+            receiver_balance_before = await self.db.get_balance(receiver.id)
+            
             # Vérifier le solde du donneur
-            giver_balance = await self.db.get_balance(giver.id)
-            if giver_balance < amount:
+            if giver_balance_before < amount:
                 embed = create_error_embed(
                     "Solde insuffisant",
-                    f"Tu as {giver_balance:,} PrissBucks mais tu essaies de donner {amount:,} PrissBucks."
+                    f"Tu as {giver_balance_before:,} PrissBucks mais tu essaies de donner {amount:,} PrissBucks."
                 )
                 await send_func(embed=embed)
                 return
@@ -278,12 +291,30 @@ class Economy(commands.Cog):
             )
             
             if success:
-                new_balance = giver_balance - amount
+                # Calculer les nouveaux soldes pour les logs
+                giver_balance_after = giver_balance_before - amount
+                receiver_balance_after = receiver_balance_before + tax_info['net_amount']
+                
+                # Logger la transaction avec tous les détails
+                if hasattr(self.bot, 'transaction_logs'):
+                    await self.bot.transaction_logs.log_give_transaction(
+                        giver_id=giver.id,
+                        receiver_id=receiver.id,
+                        amount=amount,
+                        giver_balance_before=giver_balance_before,
+                        giver_balance_after=giver_balance_after,
+                        receiver_balance_before=receiver_balance_before,
+                        receiver_balance_after=receiver_balance_after,
+                        tax=tax_info['tax_amount']
+                    )
+                
+                # Afficher le résultat
+                new_balance = giver_balance_after
                 embed = create_transfer_with_tax_embed(giver, receiver, tax_info, new_balance)
                 await send_func(embed=embed)
                 
                 # Log de l'action
-                logger.info(f"Transfer avec taxe: {giver} → {receiver} | Montant: {amount} | Net: {tax_info['net_amount']} | Taxe: {tax_info['tax_amount']}")
+                logger.info(f"Transfer avec taxe: {giver} → {receiver} | Montant: {amount} | Net: {tax_info['net_amount']} | Taxe: {tax_info['tax_amount']} [LOGGED]")
             else:
                 embed = create_error_embed("Échec du transfert", tax_info.get("error", "Solde insuffisant."))
                 await send_func(embed=embed)
@@ -329,7 +360,7 @@ class Economy(commands.Cog):
             await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def _execute_daily(self, ctx_or_interaction, is_slash=False):
-        """Logique commune pour daily (prefix et slash)"""
+        """Logique commune pour daily avec logs (prefix et slash)"""
         if is_slash:
             user = ctx_or_interaction.user
             send_func = ctx_or_interaction.followup.send
@@ -363,16 +394,29 @@ class Economy(commands.Cog):
             
             total_reward = base_reward + bonus
 
+            # Récupérer le solde AVANT la mise à jour pour les logs
+            balance_before = await self.db.get_balance(user_id)
+
             # Mettre à jour la base de données
             await self.db.update_balance(user_id, total_reward)
             await self.db.set_last_daily(user_id, now)
+
+            # Calculer le nouveau solde et logger la transaction
+            balance_after = balance_before + total_reward
+            if hasattr(self.bot, 'transaction_logs'):
+                await self.bot.transaction_logs.log_daily_reward(
+                    user_id=user_id,
+                    amount=total_reward,
+                    balance_before=balance_before,
+                    balance_after=balance_after
+                )
 
             # Envoyer l'embed
             embed = create_daily_embed(user, total_reward, bonus)
             await send_func(embed=embed)
             
             # Log de l'action
-            logger.info(f"Daily: {user} a reçu {total_reward} PrissBucks (base: {base_reward}, bonus: {bonus})")
+            logger.info(f"Daily: {user} a reçu {total_reward} PrissBucks (base: {base_reward}, bonus: {bonus}) [LOGGED]")
             
         except Exception as e:
             logger.error(f"Erreur daily pour {user_id}: {e}")
