@@ -287,7 +287,7 @@ class RouletteEnhanced(commands.Cog):
         await interaction.response.defer()
         await self._execute_roulette_enhanced(interaction, pari, mise, is_slash=True)
 
-    @commands.command(name='roulette', aliases=['roul', 'casino', 'spin'])
+    @commands.command(name='roulette', aliases=['roul', 'casino', 'wheel'])
     async def roulette_cmd(self, ctx, bet_type: str, bet_amount: int):
         """Joue à la roulette européenne avec expérience addictive"""
         await self._execute_roulette_enhanced(ctx, bet_type, bet_amount)
