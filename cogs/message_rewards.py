@@ -9,7 +9,7 @@ from config import Colors, Emojis
 logger = logging.getLogger(__name__)
 
 class MessageRewards(commands.Cog):
-    """Système de récompenses automatiques pour les messages"""
+    """Système de récompenses automatiques pour les messages avec logs"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -32,7 +32,7 @@ class MessageRewards(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info(f"✅ Cog MessageRewards initialisé (1 msg = {self.REWARD_AMOUNT} PrissBuck, CD: {self.COOLDOWN_SECONDS}s)")
+        logger.info(f"✅ Cog MessageRewards initialisé (1 msg = {self.REWARD_AMOUNT} PrissBuck, CD: {self.COOLDOWN_SECONDS}s) avec logs")
 
     def is_on_cooldown(self, user_id: int) -> bool:
         """Vérifie si l'utilisateur est en cooldown"""
@@ -65,7 +65,7 @@ class MessageRewards(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        """Événement déclenché à chaque message"""
+        """Événement déclenché à chaque message avec logs intégrés"""
         # Ignorer les bots
         if message.author.bot:
             return
@@ -89,8 +89,21 @@ class MessageRewards(commands.Cog):
             return  # Pas de message d'erreur pour ne pas spammer
             
         try:
+            # Récupérer le solde AVANT la récompense pour les logs
+            balance_before = await self.db.get_balance(user_id)
+            
             # Donner la récompense
             await self.db.update_balance(user_id, self.REWARD_AMOUNT)
+            
+            # Calculer le nouveau solde et logger la transaction
+            balance_after = balance_before + self.REWARD_AMOUNT
+            if hasattr(self.bot, 'transaction_logs'):
+                await self.bot.transaction_logs.log_message_reward(
+                    user_id=user_id,
+                    amount=self.REWARD_AMOUNT,
+                    balance_before=balance_before,
+                    balance_after=balance_after
+                )
             
             # Mettre en cooldown
             self.set_cooldown(user_id)
@@ -100,12 +113,10 @@ class MessageRewards(commands.Cog):
             self.stats['total_rewards_given'] += self.REWARD_AMOUNT
             
             # Log pour debug (optionnel, peut être supprimé en production)
-            logger.debug(f"💰 {message.author} a reçu {self.REWARD_AMOUNT} PrissBuck pour un message")
+            logger.debug(f"💰 {message.author} a reçu {self.REWARD_AMOUNT} PrissBuck pour un message [LOGGED]")
             
         except Exception as e:
             logger.error(f"Erreur récompense message {user_id}: {e}")
-
-
 
     # Nettoyage automatique des anciens cooldowns (optionnel, pour optimiser la mémoire)
     async def cleanup_old_cooldowns(self):
@@ -142,7 +153,110 @@ class MessageRewards(commands.Cog):
             except Exception as e:
                 logger.error(f"Erreur nettoyage cooldowns: {e}")
 
+    # ==================== COMMANDES DE STATISTIQUES ====================
+
+    @commands.command(name='msgstats', aliases=['message_stats', 'rewardstats'])
+    async def message_stats_cmd(self, ctx):
+        """Affiche les statistiques des récompenses de messages"""
+        try:
+            embed = discord.Embed(
+                title="📊 Statistiques des récompenses de messages",
+                color=Colors.INFO
+            )
+            
+            embed.add_field(
+                name="💬 Messages récompensés",
+                value=f"**{self.stats['total_messages_rewarded']:,}** messages",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="💰 Total distribué",
+                value=f"**{self.stats['total_rewards_given']:,}** PrissBucks",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="⏱️ Cooldown actuel",
+                value=f"**{self.COOLDOWN_SECONDS}** secondes",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="💎 Récompense par message",
+                value=f"**{self.REWARD_AMOUNT}** PrissBuck",
+                inline=True
+            )
+            
+            # Statut personnel
+            user_remaining = self.get_cooldown_remaining(ctx.author.id)
+            if user_remaining > 0:
+                status = f"**{user_remaining}s** restantes"
+                color_status = "🔴"
+            else:
+                status = "**Disponible**"
+                color_status = "🟢"
+                
+            embed.add_field(
+                name=f"{color_status} Ton statut",
+                value=status,
+                inline=True
+            )
+            
+            embed.add_field(
+                name="📈 Comment ça marche",
+                value=f"• Écris un message de 3+ caractères\n"
+                      f"• Attends {self.COOLDOWN_SECONDS}s entre chaque récompense\n"
+                      f"• Pas de récompense pour les commandes\n"
+                      f"• Fonctionne uniquement dans les serveurs",
+                inline=False
+            )
+            
+            embed.set_footer(text="Toutes les récompenses sont automatiquement enregistrées !")
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Erreur msgstats: {e}")
+            embed = discord.Embed(
+                title="❌ Erreur",
+                description="Impossible d'afficher les statistiques des messages.",
+                color=Colors.ERROR
+            )
+            await ctx.send(embed=embed)
+
+    @commands.command(name='msgcd', aliases=['message_cooldown', 'rewardcd'])
+    async def message_cooldown_cmd(self, ctx):
+        """Vérifie le cooldown personnel pour les récompenses de messages"""
+        user_id = ctx.author.id
+        remaining = self.get_cooldown_remaining(user_id)
+        
+        if remaining <= 0:
+            embed = discord.Embed(
+                title="✅ Récompenses de messages disponibles !",
+                description=f"Tu peux gagner **{self.REWARD_AMOUNT} PrissBuck** en écrivant un message !",
+                color=Colors.SUCCESS
+            )
+            embed.add_field(
+                name="💡 Astuce",
+                value="Écris un message de 3+ caractères pour recevoir ta récompense !",
+                inline=False
+            )
+        else:
+            embed = discord.Embed(
+                title="⏰ Cooldown des récompenses de messages",
+                description=f"Tu pourras gagner des PrissBucks dans **{remaining}** secondes.",
+                color=Colors.WARNING
+            )
+            embed.add_field(
+                name="📊 Récompense suivante",
+                value=f"**{self.REWARD_AMOUNT} PrissBuck** pour ton prochain message",
+                inline=True
+            )
+        
+        embed.set_thumbnail(url=ctx.author.display_avatar.url)
+        embed.set_footer(text=f"Cooldown: {self.COOLDOWN_SECONDS}s • Récompense: {self.REWARD_AMOUNT} PB")
+        await ctx.send(embed=embed)
+
 async def setup(bot):
     """Fonction appelée pour charger le cog"""
     await bot.add_cog(MessageRewards(bot))
-
