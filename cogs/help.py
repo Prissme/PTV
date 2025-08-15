@@ -52,6 +52,7 @@ class Help(commands.Cog):
                 name="🎮 **Mini-jeux**",
                 value=f"`/ppc <@adversaire> <mise>` - Pierre-Papier-Ciseaux (Slash Command)\n"
                       f"`{PREFIX}ppc_stats [@user]` - Statistiques PPC\n"
+                      f"`/roulette <pari> <mise>` ou `{PREFIX}roulette` - Roulette casino\n"
                       f"`{PREFIX}voler <@utilisateur>` - Tenter de voler (risqué !)",
                 inline=False
             )
@@ -60,8 +61,7 @@ class Help(commands.Cog):
             embed.add_field(
                 name="ℹ️ **Utilitaires**",
                 value=f"`{PREFIX}ping` - Latence du bot et infos système\n"
-                      f"`{PREFIX}rank [@user]` - Position dans le classement\n"
-                      f"`{PREFIX}cooldowns` - Vérifier tes cooldowns actifs",
+                      f"`{PREFIX}rank [@user]` - Position dans le classement",
                 inline=False
             )
 
@@ -89,9 +89,10 @@ class Help(commands.Cog):
                 name="💡 **Détails importants**",
                 value="• **Daily:** 50-150 PrissBucks + 10% chance bonus (50-200)\n"
                       "• **PPC:** Jeu avec mise, transfert automatique au gagnant\n"
-                      "• **Vol:** 50% réussite (vole 10%), 50% échec (perd 40%)\n"
+                      "• **Roulette:** Casino avec différents types de paris\n"
+                      "• **Vol:** 70% réussite (vole 30%), 30% échec (perd 40%)\n"
                       "• **Shop:** Rôles automatiquement attribués après achat\n"
-                      "• **Cooldowns:** Daily 24h, Give 5s, Buy 3s, Vol 0.5h, PPC 60s timeout\n"
+                      "• **Cooldowns:** Daily 24h, Give 5s, Buy 3s, Vol 0.5h, Roulette 3s\n"
                       "• **Messages:** +1 PrissBuck par message (CD: 20s)",
                 inline=False
             )
@@ -147,7 +148,7 @@ class Help(commands.Cog):
                 name="✅ **Activités sans taxe**",
                 value="• **Daily rewards** - Aucune taxe\n"
                       "• **Récompenses de messages** - Aucune taxe\n"
-                      "• **Gains de mini-jeux** (PPC, vol) - Aucune taxe\n"
+                      "• **Gains de mini-jeux** (PPC, vol, roulette) - Aucune taxe\n"
                       "• **Ajouts admin** (`addpb`) - Aucune taxe",
                 inline=False
             )
