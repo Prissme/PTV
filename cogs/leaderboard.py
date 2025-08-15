@@ -24,13 +24,13 @@ class Leaderboard(commands.Cog):
 
     @commands.command(name='leaderboard', aliases=['top', 'lb', 'rich', 'classement'])
     async def leaderboard_cmd(self, ctx, limit: int = DEFAULT_LEADERBOARD_LIMIT):
-        """Affiche le classement des plus riches"""
+        """e!leaderboard [limite] - Affiche le classement des plus riches"""
         await self._execute_leaderboard(ctx, limit)
 
     @app_commands.command(name="leaderboard", description="Affiche le classement des utilisateurs les plus riches")
     @app_commands.describe(limit="Nombre d'utilisateurs à afficher (max 20)")
     async def leaderboard_slash(self, interaction: discord.Interaction, limit: int = DEFAULT_LEADERBOARD_LIMIT):
-        """Slash command pour afficher le leaderboard"""
+        """/leaderboard [limit] - Affiche le classement"""
         await interaction.response.defer()
         await self._execute_leaderboard(interaction, limit, is_slash=True)
 
@@ -111,13 +111,13 @@ class Leaderboard(commands.Cog):
 
     @commands.command(name='rank', aliases=['rang', 'position'])
     async def rank_cmd(self, ctx, user: discord.Member = None):
-        """Affiche le rang d'un utilisateur dans le classement"""
+        """e!rank [@utilisateur] - Affiche le rang d'un utilisateur dans le classement"""
         await self._execute_rank(ctx, user)
 
     @app_commands.command(name="rank", description="Affiche le rang d'un utilisateur dans le classement")
     @app_commands.describe(utilisateur="L'utilisateur dont voir le rang (optionnel)")
     async def rank_slash(self, interaction: discord.Interaction, utilisateur: discord.Member = None):
-        """Slash command pour voir le rang"""
+        """/rank [utilisateur] - Affiche le rang"""
         await interaction.response.defer()
         await self._execute_rank(interaction, utilisateur, is_slash=True)
 
@@ -193,7 +193,7 @@ class Leaderboard(commands.Cog):
                 )
             
             embed.set_thumbnail(url=target.display_avatar.url)
-            embed.set_footer(text="Utilise 'leaderboard' pour voir le classement complet")
+            embed.set_footer(text="Utilise '/leaderboard' ou 'e!leaderboard' pour voir le classement complet")
             
             await send_func(embed=embed)
             
@@ -206,7 +206,7 @@ class Leaderboard(commands.Cog):
 
     @commands.command(name='richest')
     async def richest_cmd(self, ctx):
-        """Affiche l'utilisateur le plus riche"""
+        """e!richest - Affiche l'utilisateur le plus riche"""
         try:
             top_users = await self.db.get_top_users(1)
             
@@ -242,9 +242,49 @@ class Leaderboard(commands.Cog):
             embed = create_error_embed("Erreur", "Erreur lors de la recherche de l'utilisateur le plus riche.")
             await ctx.send(embed=embed)
 
+    @app_commands.command(name="richest", description="Affiche l'utilisateur le plus riche")
+    async def richest_slash(self, interaction: discord.Interaction):
+        """/richest - Affiche l'utilisateur le plus riche"""
+        await interaction.response.defer()
+        
+        try:
+            top_users = await self.db.get_top_users(1)
+            
+            if not top_users:
+                embed = create_error_embed("Aucun utilisateur", "Personne n'a encore de PrissBucks.")
+                await interaction.followup.send(embed=embed)
+                return
+                
+            user_id, balance = top_users[0]
+            
+            try:
+                user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
+                username = user.display_name
+                avatar_url = user.display_avatar.url
+            except:
+                username = f"Utilisateur {user_id}"
+                avatar_url = None
+            
+            embed = discord.Embed(
+                title="🥇 Utilisateur le plus riche",
+                description=f"**{username}** détient **{balance:,}** PrissBucks !",
+                color=Colors.GOLD
+            )
+            
+            if avatar_url:
+                embed.set_thumbnail(url=avatar_url)
+                
+            embed.set_footer(text="Félicitations pour cette fortune !")
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Erreur richest: {e}")
+            embed = create_error_embed("Erreur", "Erreur lors de la recherche de l'utilisateur le plus riche.")
+            await interaction.followup.send(embed=embed)
+
     @commands.command(name='poorest')
     async def poorest_cmd(self, ctx):
-        """Affiche les utilisateurs avec le moins de PrissBucks"""
+        """e!poorest - Affiche les utilisateurs avec le moins de PrissBucks"""
         try:
             # Récupérer tous les utilisateurs et les trier par balance croissante
             all_users = await self.db.get_top_users(1000)
@@ -285,6 +325,52 @@ class Leaderboard(commands.Cog):
             logger.error(f"Erreur poorest: {e}")
             embed = create_error_embed("Erreur", "Erreur lors de la recherche des utilisateurs les moins riches.")
             await ctx.send(embed=embed)
+
+    @app_commands.command(name="poorest", description="Affiche les utilisateurs avec le moins de PrissBucks")
+    async def poorest_slash(self, interaction: discord.Interaction):
+        """/poorest - Affiche les utilisateurs les moins riches"""
+        await interaction.response.defer()
+        
+        try:
+            # Récupérer tous les utilisateurs et les trier par balance croissante
+            all_users = await self.db.get_top_users(1000)
+            
+            if not all_users:
+                embed = create_error_embed("Aucun utilisateur", "Personne n'a encore de PrissBucks.")
+                await interaction.followup.send(embed=embed)
+                return
+            
+            # Prendre les 5 plus pauvres (en ordre inverse)
+            poorest_users = sorted(all_users, key=lambda x: x[1])[:5]
+            
+            embed = discord.Embed(
+                title="💸 Utilisateurs les moins riches",
+                color=Colors.WARNING
+            )
+            
+            description = ""
+            for i, (user_id, balance) in enumerate(poorest_users, 1):
+                try:
+                    user = self.bot.get_user(user_id)
+                    if user:
+                        username = user.display_name
+                    else:
+                        user = await self.bot.fetch_user(user_id)
+                        username = user.display_name
+                except:
+                    username = f"Utilisateur {user_id}"
+                
+                description += f"`{i:2d}.` **{username}** — {balance:,} PrissBucks\n"
+            
+            embed.description = description
+            embed.set_footer(text="Aidez-les à s'enrichir ! 💰")
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Erreur poorest: {e}")
+            embed = create_error_embed("Erreur", "Erreur lors de la recherche des utilisateurs les moins riches.")
+            await interaction.followup.send(embed=embed)
 
 async def setup(bot):
     """Fonction appelée pour charger le cog"""
