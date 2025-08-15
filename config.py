@@ -9,6 +9,9 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 PREFIX = os.getenv("PREFIX", "e!")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
+# NOUVEAU: ID spécial pour la banque publique (virtuel)
+PUBLIC_BANK_ID = -1  # ID virtuel pour identifier la banque publique dans les logs
+
 # Vérification des variables critiques
 if not TOKEN:
     raise ValueError("❌ DISCORD_TOKEN manquant dans le fichier .env")
@@ -40,6 +43,13 @@ SHOP_TAX_RATE = 0.05  # 5% de taxe sur les achats (MANQUAIT)
 # Message rewards
 MESSAGE_REWARD_AMOUNT = 1
 MESSAGE_REWARD_COOLDOWN = 20  # 20 secondes
+
+# ==================== PUBLIC BANK SETTINGS - NOUVEAU ====================
+# Configuration de la banque publique
+PUBLIC_BANK_MIN_WITHDRAW = 50      # Montant minimum de retrait
+PUBLIC_BANK_MAX_WITHDRAW = 1000    # Montant maximum par retrait
+PUBLIC_BANK_DAILY_LIMIT = 2000     # Limite quotidienne par utilisateur
+PUBLIC_BANK_COOLDOWN = 1800        # Cooldown entre retraits (30 minutes)
 
 # ==================== SHOP SETTINGS ====================
 ITEMS_PER_PAGE = 5
@@ -84,3 +94,4 @@ class Emojis:
     INVENTORY = "📦"
     PREMIUM = "🌟"
     TAX = "🏛️"
+    PUBLIC_BANK = "🏛️"  # NOUVEAU: Emoji pour la banque publique
