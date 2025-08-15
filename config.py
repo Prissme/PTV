@@ -47,9 +47,9 @@ MAX_LEADERBOARD_LIMIT = 20
 DEFAULT_LEADERBOARD_LIMIT = 10
 
 # ==================== STEAL SETTINGS ====================
-STEAL_SUCCESS_RATE = 70  # 50% de chances de réussite
-STEAL_PERCENTAGE = 30  # Vol 10% des pièces
-STEAL_FAIL_PENALTY_PERCENTAGE = 40  # Perd 50% si échec
+STEAL_SUCCESS_RATE = 50  # 50% de chances de réussite
+STEAL_PERCENTAGE = 25  # Vol 10% des pièces
+STEAL_FAIL_PENALTY_PERCENTAGE = 50  # Perd 50% si échec
 STEAL_COOLDOWN_HOURS = 0.5  # Cooldown de 0.5 heure (CORRIGÉ: était 0,5)
 STEAL_COOLDOWN_SECONDS = int(STEAL_COOLDOWN_HOURS * 3600)  # 1800 secondes
 
