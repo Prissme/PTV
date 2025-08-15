@@ -14,7 +14,7 @@ from utils.embeds import (
 logger = logging.getLogger(__name__)
 
 class Shop(commands.Cog):
-    """Système boutique complet : shop, buy, inventory avec taxes et items spéciaux"""
+    """Système boutique complet : shop, buy, inventory avec taxes"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -25,7 +25,7 @@ class Shop(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info("✅ Cog Shop initialisé avec système de taxes et items spéciaux")
+        logger.info("✅ Cog Shop initialisé avec système de taxes")
     
     def _check_buy_cooldown(self, user_id: int) -> float:
         """Vérifie et retourne le cooldown restant pour buy"""
@@ -58,13 +58,13 @@ class Shop(commands.Cog):
 
     @commands.command(name='shop', aliases=['boutique', 'store'])
     async def shop_cmd(self, ctx, page: int = 1):
-        """Affiche la boutique avec pagination et prix avec taxes"""
+        """e!shop [page] - Affiche la boutique avec pagination et prix avec taxes"""
         await self._execute_shop(ctx, page)
 
     @app_commands.command(name="shop", description="Affiche la boutique avec tous les items disponibles (prix avec taxes)")
     @app_commands.describe(page="Numéro de la page à afficher (optionnel)")
     async def shop_slash(self, interaction: discord.Interaction, page: int = 1):
-        """Slash command pour afficher la boutique"""
+        """/shop [page] - Affiche la boutique"""
         await interaction.response.defer()
         await self._execute_shop(interaction, page, is_slash=True)
 
@@ -119,18 +119,18 @@ class Shop(commands.Cog):
             embed = create_error_embed("Erreur", f"Erreur lors de l'affichage de la boutique.")
             await send_func(embed=embed)
 
-    # ==================== BUY COMMANDS AVEC TAXES ET EFFETS SPÉCIAUX ====================
+    # ==================== BUY COMMANDS AVEC TAXES ====================
 
     @commands.command(name='buy', aliases=['acheter', 'purchase'])
     @commands.cooldown(1, 3, commands.BucketType.user)
     async def buy_cmd(self, ctx, item_id: int):
-        """Achète un item du shop (avec taxe de 5% et effets spéciaux)"""
+        """e!buy <item_id> - Achète un item du shop (avec taxe de 5%)"""
         await self._execute_buy(ctx, item_id)
 
-    @app_commands.command(name="buy", description="Achète un item de la boutique (avec taxe de 5% et effets spéciaux)")
+    @app_commands.command(name="buy", description="Achète un item de la boutique (avec taxe de 5%)")
     @app_commands.describe(item_id="L'ID de l'item à acheter (visible dans /shop)")
     async def buy_slash(self, interaction: discord.Interaction, item_id: int):
-        """Slash command pour acheter un item"""
+        """/buy <item_id> - Achète un item"""
         # Vérifier le cooldown manuellement pour les slash commands
         cooldown_remaining = self._check_buy_cooldown(interaction.user.id)
         if cooldown_remaining > 0:
@@ -146,7 +146,7 @@ class Shop(commands.Cog):
         await self._execute_buy(interaction, item_id, is_slash=True)
 
     async def _execute_buy(self, ctx_or_interaction, item_id, is_slash=False):
-        """Logique commune pour buy avec taxes et effets spéciaux (prefix et slash)"""
+        """Logique commune pour buy avec taxes (prefix et slash)"""
         if is_slash:
             user_id = ctx_or_interaction.user.id
             author = ctx_or_interaction.user
@@ -278,13 +278,13 @@ class Shop(commands.Cog):
 
     @commands.command(name='inventory', aliases=['inv', 'inventaire'])
     async def inventory_cmd(self, ctx, member: discord.Member = None):
-        """Affiche l'inventaire d'un utilisateur"""
+        """e!inventory [@utilisateur] - Affiche l'inventaire d'un utilisateur"""
         await self._execute_inventory(ctx, member)
 
     @app_commands.command(name="inventory", description="Affiche l'inventaire d'un utilisateur")
     @app_commands.describe(utilisateur="L'utilisateur dont voir l'inventaire (optionnel)")
     async def inventory_slash(self, interaction: discord.Interaction, utilisateur: discord.Member = None):
-        """Slash command pour voir l'inventaire"""
+        """/inventory [utilisateur] - Affiche l'inventaire"""
         await interaction.response.defer()
         await self._execute_inventory(interaction, utilisateur, is_slash=True)
 
@@ -312,7 +312,7 @@ class Shop(commands.Cog):
     @commands.command(name='additem')
     @commands.has_permissions(administrator=True)
     async def add_item_cmd(self, ctx, price: int, role: discord.Role, *, name: str):
-        """[ADMIN] Ajoute un rôle à la boutique"""
+        """e!additem <prix> <@role> <nom> - [ADMIN] Ajoute un rôle à la boutique"""
         await self._execute_add_item(ctx, price, role, name)
 
     @app_commands.command(name="additem", description="[ADMIN] Ajoute un rôle à la boutique")
@@ -324,7 +324,7 @@ class Shop(commands.Cog):
     )
     @app_commands.default_permissions(administrator=True)
     async def add_item_slash(self, interaction: discord.Interaction, price: int, role: discord.Role, name: str, description: str = None):
-        """Slash command pour ajouter un item (admin seulement)"""
+        """/additem <price> <role> <name> [description] - [ADMIN] Ajoute un item"""
         if not interaction.user.guild_permissions.administrator:
             embed = create_error_embed(
                 "Permission refusée", 
@@ -409,14 +409,14 @@ class Shop(commands.Cog):
     @commands.command(name='removeitem')
     @commands.has_permissions(administrator=True)
     async def remove_item_cmd(self, ctx, item_id: int):
-        """[ADMIN] Désactive un item de la boutique"""
+        """e!removeitem <item_id> - [ADMIN] Désactive un item de la boutique"""
         await self._execute_remove_item(ctx, item_id)
 
     @app_commands.command(name="removeitem", description="[ADMIN] Désactive un item de la boutique")
     @app_commands.describe(item_id="L'ID de l'item à désactiver")
     @app_commands.default_permissions(administrator=True)
     async def remove_item_slash(self, interaction: discord.Interaction, item_id: int):
-        """Slash command pour désactiver un item (admin seulement)"""
+        """/removeitem <item_id> - [ADMIN] Désactive un item"""
         if not interaction.user.guild_permissions.administrator:
             embed = create_error_embed(
                 "Permission refusée", 
@@ -469,7 +469,7 @@ class Shop(commands.Cog):
     @commands.command(name='shopstats')
     @commands.has_permissions(administrator=True)
     async def shop_stats_cmd(self, ctx):
-        """[ADMIN] Affiche les statistiques de la boutique"""
+        """e!shopstats - [ADMIN] Affiche les statistiques de la boutique"""
         try:
             stats = await self.db.get_shop_stats()
             
@@ -529,6 +529,80 @@ class Shop(commands.Cog):
             logger.error(f"Erreur shopstats: {e}")
             embed = create_error_embed("Erreur", "Erreur lors de la récupération des statistiques.")
             await ctx.send(embed=embed)
+
+    @app_commands.command(name="shopstats", description="[ADMIN] Affiche les statistiques de la boutique")
+    @app_commands.default_permissions(administrator=True)
+    async def shop_stats_slash(self, interaction: discord.Interaction):
+        """/shopstats - [ADMIN] Statistiques de la boutique"""
+        if not interaction.user.guild_permissions.administrator:
+            embed = create_error_embed(
+                "Permission refusée", 
+                "Seuls les administrateurs peuvent utiliser cette commande."
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        
+        try:
+            stats = await self.db.get_shop_stats()
+            
+            embed = discord.Embed(
+                title="📊 Statistiques de la boutique",
+                color=Colors.INFO
+            )
+            
+            # Statistiques générales avec taxes
+            embed.add_field(
+                name="👥 Acheteurs uniques", 
+                value=f"**{stats['unique_buyers']}** utilisateurs", 
+                inline=True
+            )
+            embed.add_field(
+                name="🛒 Total des achats", 
+                value=f"**{stats['total_purchases']}** achats", 
+                inline=True
+            )
+            embed.add_field(
+                name="💰 Revenus totaux", 
+                value=f"**{stats['total_revenue']:,}** PrissBucks", 
+                inline=True
+            )
+            
+            # Nouvelles statistiques sur les taxes
+            embed.add_field(
+                name="🏛️ Taxes collectées", 
+                value=f"**{stats['total_taxes']:,}** PrissBucks", 
+                inline=True
+            )
+            
+            tax_percentage = (stats['total_taxes'] / stats['total_revenue'] * 100) if stats['total_revenue'] > 0 else 0
+            embed.add_field(
+                name="📈 Pourcentage taxes", 
+                value=f"**{tax_percentage:.1f}%** du CA", 
+                inline=True
+            )
+            
+            # Top des items avec revenus et taxes
+            if stats['top_items']:
+                top_text = ""
+                for i, item in enumerate(stats['top_items'][:5], 1):
+                    emoji = ["🥇", "🥈", "🥉", "🏅", "🏅"][i-1]
+                    top_text += f"{emoji} **{item['name']}** - {item['purchases']} vente(s) ({item['revenue']:,} PB)\n"
+                
+                embed.add_field(
+                    name="🏆 Top des ventes",
+                    value=top_text,
+                    inline=False
+                )
+            
+            embed.set_footer(text=f"Taux de taxe actuel: {SHOP_TAX_RATE*100}%")
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Erreur shopstats: {e}")
+            embed = create_error_embed("Erreur", "Erreur lors de la récupération des statistiques.")
+            await interaction.followup.send(embed=embed)
 
 async def setup(bot):
     """Fonction appelée pour charger le cog"""
