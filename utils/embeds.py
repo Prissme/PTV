@@ -429,8 +429,8 @@ def create_help_embed(user_permissions: dict) -> discord.Embed:
     embed.add_field(
         name="🎮 Mini-jeux & Spécial",
         value=f"`/ppc <@adversaire> <mise>` - Pierre-Papier-Ciseaux\n"
-              f"`{PREFIX}voler <@user>` - Tente de voler des PrissBucks\n"
-              f"`{PREFIX}cooldowns` - Vérifier tes cooldowns actifs",
+              f"`/roulette <pari> <mise>` - Roulette casino\n"
+              f"`{PREFIX}voler <@user>` - Tente de voler des PrissBucks",
         inline=False
     )
     
