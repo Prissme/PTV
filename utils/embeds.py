@@ -119,8 +119,6 @@ def create_shop_embed_with_tax(items: list, page: int, total_pages: int, tax_rat
         # Choisir l'icône selon le type d'item
         if item["type"] == "role":
             icon = Emojis.ROLE
-        elif item["type"] == "cooldown_reset":
-            icon = "⏰"
         else:
             icon = Emojis.SHOP
         
@@ -129,10 +127,8 @@ def create_shop_embed_with_tax(items: list, page: int, total_pages: int, tax_rat
         total_price = item.get('total_price', base_price)
         tax_amount = item.get('tax_amount', 0)
         
-        # Description enrichie pour les items spéciaux
+        # Description de l'item
         description = item['description']
-        if item["type"] == "cooldown_reset":
-            description += "\n💫 **Usage immédiat** - Se déclenche automatiquement à l'achat !"
         
         # Affichage du prix avec détail de la taxe
         price_display = f"**{total_price:,}** {Emojis.MONEY}"
@@ -222,14 +218,6 @@ def create_purchase_embed_with_tax(user: discord.Member, item: dict, tax_info: d
     embed.set_footer(text=f"Nouveau solde: {new_balance:,} PrissBucks")
     embed.set_thumbnail(url=user.display_avatar.url)
     
-    # Ajouter un field spécial pour les cooldown resets
-    if item["type"] == "cooldown_reset":
-        embed.add_field(
-            name="⚡ Effet immédiat",
-            value="Tous tes cooldowns ont été supprimés !\nTu peux maintenant utiliser toutes tes commandes.",
-            inline=False
-        )
-    
     return embed
 
 def create_inventory_embed(user: discord.Member, purchases: list) -> discord.Embed:
@@ -259,8 +247,6 @@ def create_inventory_embed(user: discord.Member, purchases: list) -> discord.Emb
         # Icône selon le type
         if purchase["type"] == "role":
             icon = Emojis.ROLE
-        elif purchase["type"] == "cooldown_reset":
-            icon = "⏰"
         else:
             icon = Emojis.INVENTORY
             
@@ -272,9 +258,6 @@ def create_inventory_embed(user: discord.Member, purchases: list) -> discord.Emb
             base_price = purchase['price_paid'] - purchase['tax_paid']
             item_desc += f" *(base: {base_price:,} + taxe: {purchase['tax_paid']:,})*"
         item_desc += f"\n📅 Acheté le {date}"
-        
-        if purchase["type"] == "cooldown_reset":
-            item_desc += "\n💫 *Item consommable utilisé*"
         
         embed.add_field(
             name=f"{icon} {purchase['name']}",
@@ -352,13 +335,6 @@ def create_cooldown_embed(command: str, retry_after: float) -> discord.Embed:
         title=f"{Emojis.COOLDOWN} Cooldown actif !",
         description=f"Tu pourras utiliser `{command}` dans {time_str}",
         color=Colors.WARNING
-    )
-    
-    # Ajouter une mention de l'item Reset Cooldowns
-    embed.add_field(
-        name="💡 Astuce",
-        value="Tu peux acheter l'item **⏰ Reset Cooldowns** dans le shop pour supprimer tous tes cooldowns !",
-        inline=False
     )
     
     return embed
@@ -478,17 +454,7 @@ def create_help_embed(user_permissions: dict) -> discord.Embed:
             inline=False
         )
 
-    # Nouveautés
-    embed.add_field(
-        name="✨ Nouveautés",
-        value=f"🔸 **Système de taxes** - {TRANSFER_TAX_RATE*100:.0f}%/{SHOP_TAX_RATE*100:.0f}% sur transferts/achats\n"
-              f"🔸 **Item Reset Cooldowns** - Supprime tous tes cooldowns (200 PB)\n"
-              f"🔸 **Messages récompensés** - +1 PrissBuck par message (CD: 20s)\n"
-              f"🔸 **Système de vol amélioré** - Configuration depuis config.py",
-        inline=False
-    )
-
-    embed.set_footer(text=f"Préfixe: {PREFIX} | Taxes: {TRANSFER_TAX_RATE*100:.0f}%/{SHOP_TAX_RATE*100:.0f}% | Items spéciaux disponibles !")
+    embed.set_footer(text=f"Préfixe: {PREFIX} | Taxes: {TRANSFER_TAX_RATE*100:.0f}%/{SHOP_TAX_RATE*100:.0f}%")
     return embed
 
 def create_cooldowns_status_embed(user: discord.Member, active_cooldowns: list) -> discord.Embed:
@@ -498,18 +464,6 @@ def create_cooldowns_status_embed(user: discord.Member, active_cooldowns: list) 
             title=f"⏰ Cooldowns de {user.display_name}",
             description="\n".join(active_cooldowns),
             color=Colors.WARNING
-        )
-        embed.add_field(
-            name="💡 Astuce",
-            value="Tu peux acheter l'item **⏰ Reset Cooldowns** (200 PB) dans le shop pour supprimer tous tes cooldowns !",
-            inline=False
-        )
-        embed.add_field(
-            name="🛒 Comment faire",
-            value=f"1. `{PREFIX}shop` - Voir la boutique\n"
-                  f"2. `{PREFIX}buy <id>` - Acheter l'item Reset Cooldowns\n"
-                  f"3. Effet immédiat - Tous tes cooldowns sont supprimés !",
-            inline=False
         )
     else:
         embed = discord.Embed(
@@ -527,39 +481,4 @@ def create_cooldowns_status_embed(user: discord.Member, active_cooldowns: list) 
         )
     
     embed.set_thumbnail(url=user.display_avatar.url)
-    return embed
-
-def create_special_item_effect_embed(user: discord.Member, item_name: str, effect_description: str, cooldowns_cleared: int = 0) -> discord.Embed:
-    """Créer un embed pour les effets spéciaux des items"""
-    embed = discord.Embed(
-        title=f"✨ Effet spécial activé !",
-        description=f"**{user.display_name}** a utilisé **{item_name}**",
-        color=Colors.PREMIUM
-    )
-    
-    embed.add_field(
-        name="🎯 Effet",
-        value=effect_description,
-        inline=False
-    )
-    
-    if cooldowns_cleared > 0:
-        embed.add_field(
-            name="📊 Résultat",
-            value=f"🔄 **{cooldowns_cleared}** cooldown(s) supprimé(s) !\n"
-                  f"✅ Toutes tes commandes sont maintenant disponibles.",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="🚀 Tu peux maintenant utiliser",
-            value=f"• `{PREFIX}daily` - Si c'était en cooldown\n"
-                  f"• `{PREFIX}voler <@user>` - Si c'était en cooldown\n"
-                  f"• `{PREFIX}give <@user>` - Si c'était en cooldown\n"
-                  f"• Et toutes les autres commandes !",
-            inline=False
-        )
-    
-    embed.set_thumbnail(url=user.display_avatar.url)
-    embed.set_footer(text="Effet appliqué avec succès !")
     return embed
