@@ -12,7 +12,7 @@ from utils.embeds import create_error_embed, create_success_embed
 logger = logging.getLogger(__name__)
 
 class RouletteEnhanced(commands.Cog):
-    """Mini-jeu de roulette européenne avec animations et expérience addictive"""
+    """Mini-jeu de roulette européenne avec animations, expérience addictive et logs"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -42,7 +42,7 @@ class RouletteEnhanced(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info(f"✅ Cog Roulette Enhanced initialisé avec transfert CORRECT des pertes vers owner")
+        logger.info(f"✅ Cog Roulette Enhanced initialisé avec transfert CORRECT des pertes vers owner et logs")
 
     def _check_roulette_cooldown(self, user_id: int) -> float:
         """Vérifie et retourne le cooldown restant pour la roulette"""
@@ -255,10 +255,10 @@ class RouletteEnhanced(commands.Cog):
 
         # Footer incitatif
         motivational_footers = [
-            "🎰 Rejoue dans 3 secondes ! • 💰 Mise min: 10 PB",
-            "🔥 La chance peut tourner à tout moment ! • ⚡ Action rapide !",
-            "💎 Plus tu joues, plus tu gagnes ! • 🎯 Vise la lune !",
-            "🚀 Chaque spin peut être LE bon ! • 💰 Fortune t'attend !"
+            "🎰 Rejoue dans 3 secondes ! • 💰 Mise min: 10 PB • 📊 Toutes les parties sont enregistrées !",
+            "🔥 La chance peut tourner à tout moment ! • ⚡ Action rapide ! • 📈 Historique dans /transactions",
+            "💎 Plus tu joues, plus tu gagnes ! • 🎯 Vise la lune ! • 📋 Logs automatiques activés",
+            "🚀 Chaque spin peut être LE bon ! • 💰 Fortune t'attend ! • 🏆 Statistiques sauvegardées"
         ]
         embed.set_footer(text=random.choice(motivational_footers))
         embed.set_thumbnail(url=user.display_avatar.url)
@@ -277,7 +277,7 @@ class RouletteEnhanced(commands.Cog):
 
     # ==================== COMMANDES ROULETTE ENHANCED ====================
 
-    @app_commands.command(name="roulette", description="🎰 Roulette ULTRA addictive ! Animations, streaks, victoires épiques !")
+    @app_commands.command(name="roulette", description="🎰 Roulette ULTRA addictive ! Animations, streaks, victoires épiques avec logs !")
     @app_commands.describe(
         pari="Type de pari: red, black, even, odd, low (1-18), high (19-36), ou un numéro (0-36)",
         mise="Montant à miser en PrissBucks (minimum 10)"
@@ -289,11 +289,11 @@ class RouletteEnhanced(commands.Cog):
 
     @commands.command(name='roulette', aliases=['roul', 'casino', 'wheel'])
     async def roulette_cmd(self, ctx, bet_type: str, bet_amount: int):
-        """Joue à la roulette européenne avec expérience addictive"""
+        """Joue à la roulette européenne avec expérience addictive et logs"""
         await self._execute_roulette_enhanced(ctx, bet_type, bet_amount)
 
     async def _execute_roulette_enhanced(self, ctx_or_interaction, bet_type: str, bet_amount: int, is_slash=False):
-        """Logique commune pour la roulette enhanced avec animations ET transfert CORRECT des pertes"""
+        """Logique commune pour la roulette enhanced avec animations, transfert CORRECT des pertes et logs"""
         if is_slash:
             user = ctx_or_interaction.user
             send_func = ctx_or_interaction.followup.send
@@ -334,18 +334,20 @@ class RouletteEnhanced(commands.Cog):
             return
 
         try:
-            current_balance = await self.db.get_balance(user_id)
-            if current_balance < bet_amount:
+            # Récupérer le solde AVANT les transferts pour les logs
+            balance_before = await self.db.get_balance(user_id)
+            
+            if balance_before < bet_amount:
                 embed = discord.Embed(
                     title="💸 Solde insuffisant - MAIS NE RENONCE PAS !",
-                    description=f"💰 **Ton solde:** {current_balance:,} PrissBucks\n"
+                    description=f"💰 **Ton solde:** {balance_before:,} PrissBucks\n"
                                f"🎯 **Mise souhaitée:** {bet_amount:,} PrissBucks\n\n"
                                f"💡 **Astuce:** Commence plus petit et monte progressivement !\n"
                                f"🔥 **Les petites victoires mènent aux JACKPOTS !**",
                     color=Colors.ERROR
                 )
                 # Suggestion de mise adaptée
-                suggested_bet = min(current_balance, max(self.MIN_BET, current_balance // 2))
+                suggested_bet = min(balance_before, max(self.MIN_BET, balance_before // 2))
                 if suggested_bet >= self.MIN_BET:
                     embed.add_field(
                         name="💡 SUGGESTION STRATÉGIQUE",
@@ -404,7 +406,7 @@ class RouletteEnhanced(commands.Cog):
             # Calculer les gains AVANT de toucher aux soldes
             winnings = self.calculate_winnings(bet_type, bet_amount, winning_number)
 
-            # ==================== LOGIQUE CORRIGÉE DES TRANSFERTS ====================
+            # ==================== LOGIQUE CORRIGÉE DES TRANSFERTS AVEC LOGS ====================
             
             if winnings > 0:
                 # VICTOIRE DU JOUEUR
@@ -429,7 +431,7 @@ class RouletteEnhanced(commands.Cog):
                 logger.info(f"Roulette WIN: {user} récupère {winnings} PB, taxe: {tax}")
                 
             else:
-                # PERTE DU JOUEUR - L'ARGENT VA DIRECTEMENT CHEZ VOUS !
+                # PERTE DU JOUEUR - L'ARGENT VA DIRECTEMENT CHEZ L'OWNER !
                 logger.info(f"Roulette: {user} PERD - Transfert de {bet_amount} PB vers owner")
                 
                 if OWNER_ID:
@@ -452,6 +454,17 @@ class RouletteEnhanced(commands.Cog):
             session_data = self.get_user_session_data(user_id)
             self.update_session_stats(user_id, bet_amount, winnings)
 
+            # Logger la transaction pour l'historique
+            if hasattr(self.bot, 'transaction_logs'):
+                await self.bot.transaction_logs.log_roulette_result(
+                    user_id=user_id,
+                    bet=bet_amount,
+                    winnings=winnings,
+                    balance_before=balance_before,
+                    balance_after=new_balance,
+                    number=winning_number
+                )
+
             # Créer l'embed de résultat ultra-visuel
             result_embed = self.create_result_embed(
                 user, bet_type, bet_amount, winning_number, 
@@ -460,6 +473,9 @@ class RouletteEnhanced(commands.Cog):
 
             # Envoyer le résultat final
             await edit_func(embed=result_embed)
+
+            # Log final avec statut
+            logger.info(f"Roulette: {user} {'GAGNE' if winnings > 0 else 'PERD'} {bet_amount} PB sur #{winning_number} [LOGGED]")
 
         except Exception as e:
             logger.error(f"Erreur roulette enhanced {user_id}: {e}")
