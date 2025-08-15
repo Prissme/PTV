@@ -42,7 +42,7 @@ class RouletteEnhanced(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info(f"✅ Cog Roulette Enhanced initialisé avec transfert des pertes vers owner")
+        logger.info(f"✅ Cog Roulette Enhanced initialisé avec transfert CORRECT des pertes vers owner")
 
     def _check_roulette_cooldown(self, user_id: int) -> float:
         """Vérifie et retourne le cooldown restant pour la roulette"""
@@ -94,23 +94,6 @@ class RouletteEnhanced(commands.Cog):
         else:
             session['win_streak'] = 0
             session['loss_streak'] += 1
-
-    async def transfer_loss_to_owner(self, amount: int):
-        """Transfère les mises perdues à l'owner"""
-        if amount > 0 and OWNER_ID:
-            try:
-                await self.db.update_balance(OWNER_ID, amount)
-                logger.info(f"Roulette: {amount} PrissBucks transférés à l'owner (perte joueur)")
-            except Exception as e:
-                logger.error(f"Erreur transfert perte roulette vers owner: {e}")
-
-    async def transfer_tax_to_owner(self, amount: int):
-        """Transfère la taxe à l'owner (silencieusement)"""
-        if amount > 0 and OWNER_ID:
-            try:
-                await self.db.update_balance(OWNER_ID, amount)
-            except Exception as e:
-                logger.error(f"Erreur transfert taxe roulette: {e}")
 
     async def create_animated_spin_sequence(self, ctx_or_interaction, winning_number: int, is_slash=False):
         """Crée une séquence d'animation pour le spin de la roulette"""
@@ -310,7 +293,7 @@ class RouletteEnhanced(commands.Cog):
         await self._execute_roulette_enhanced(ctx, bet_type, bet_amount)
 
     async def _execute_roulette_enhanced(self, ctx_or_interaction, bet_type: str, bet_amount: int, is_slash=False):
-        """Logique commune pour la roulette enhanced avec animations ET transfert des pertes"""
+        """Logique commune pour la roulette enhanced avec animations ET transfert CORRECT des pertes"""
         if is_slash:
             user = ctx_or_interaction.user
             send_func = ctx_or_interaction.followup.send
@@ -412,37 +395,57 @@ class RouletteEnhanced(commands.Cog):
                 await send_func(embed=embed)
                 return
 
-            # Débiter la mise (l'argent sort du compte du joueur)
-            await self.db.update_balance(user_id, -bet_amount)
-
             # Faire tourner la roulette avec animation
             winning_number = random.randint(0, 36)
             
             # Animation du spin
             edit_func = await self.create_animated_spin_sequence(ctx_or_interaction, winning_number, is_slash)
 
-            # Calculer les gains
+            # Calculer les gains AVANT de toucher aux soldes
             winnings = self.calculate_winnings(bet_type, bet_amount, winning_number)
 
-            # Traitement des gains et pertes
+            # ==================== LOGIQUE CORRIGÉE DES TRANSFERTS ====================
+            
             if winnings > 0:
-                # VICTOIRE: Le joueur récupère ses gains
+                # VICTOIRE DU JOUEUR
+                logger.info(f"Roulette: {user} GAGNE - Mise: {bet_amount}, Gains: {winnings}")
+                
+                # 1. Débiter la mise du joueur
+                await self.db.update_balance(user_id, -bet_amount)
+                # 2. Créditer les gains au joueur
                 await self.db.update_balance(user_id, winnings)
                 
-                # Taxe sur les gains (va vers l'owner)
+                # 3. Taxe sur les gains va à l'owner (discrètement)
                 if bet_type.startswith("number_"):
-                    gross_winnings = bet_amount * 35
+                    gross_profit = bet_amount * 35  # Profit brut sur numéro
                 else:
-                    gross_winnings = bet_amount * 2
+                    gross_profit = bet_amount  # Profit brut sur couleur/pair/etc
                 
-                tax = int(gross_winnings * self.TAX_RATE)
-                await self.transfer_tax_to_owner(tax)
+                tax = int(gross_profit * self.TAX_RATE)
+                if tax > 0 and OWNER_ID:
+                    await self.db.update_balance(OWNER_ID, tax)
+                    logger.info(f"Roulette: Taxe {tax} PB → owner (victoire joueur)")
                 
-                logger.info(f"Roulette WIN: {user} gagne {winnings}, taxe {tax} → owner")
+                logger.info(f"Roulette WIN: {user} récupère {winnings} PB, taxe: {tax}")
+                
             else:
-                # PERTE: La mise va entièrement à l'owner
-                await self.transfer_loss_to_owner(bet_amount)
-                logger.info(f"Roulette LOSS: {user} perd {bet_amount} → owner")
+                # PERTE DU JOUEUR - L'ARGENT VA DIRECTEMENT CHEZ VOUS !
+                logger.info(f"Roulette: {user} PERD - Transfert de {bet_amount} PB vers owner")
+                
+                if OWNER_ID:
+                    # Transférer directement la mise du joueur vers l'owner
+                    transfer_success = await self.db.transfer(user_id, OWNER_ID, bet_amount)
+                    
+                    if transfer_success:
+                        logger.info(f"🏦 Roulette LOSS: {bet_amount} PB transférés de {user} vers OWNER !")
+                    else:
+                        # Si le transfert échoue, débiter quand même le joueur
+                        await self.db.update_balance(user_id, -bet_amount)
+                        logger.error(f"Roulette: Transfert échoué, {bet_amount} PB perdus dans le vide")
+                else:
+                    # Pas d'owner configuré, l'argent disparaît
+                    await self.db.update_balance(user_id, -bet_amount)
+                    logger.warning("Roulette: Pas d'OWNER_ID configuré, argent perdu")
 
             # Récupérer le nouveau solde et les stats
             new_balance = await self.db.get_balance(user_id)
@@ -469,62 +472,29 @@ class RouletteEnhanced(commands.Cog):
     def calculate_winnings(self, bet_type: str, bet_amount: int, winning_number: int) -> int:
         """Calcule les gains selon le type de pari et le numéro gagnant"""
         
-        # Pari sur un numéro spécifique (35:1)
+        # Pari sur un numéro spécifique (35:1 + remboursement de la mise)
         if bet_type.startswith("number_"):
             bet_number = int(bet_type.split("_")[1])
             if winning_number == bet_number:
-                gross_winnings = bet_amount * 35  # 35:1 payout
+                gross_winnings = bet_amount * 36  # 35:1 + mise remboursée
                 tax = int(gross_winnings * self.TAX_RATE)
                 return gross_winnings - tax
             return 0
         
-        # Pari sur Rouge (1:1)
-        elif bet_type == "red":
-            if winning_number in self.RED_NUMBERS:
-                gross_winnings = bet_amount * 2  # 1:1 payout (mise + gain)
-                tax = int(gross_winnings * self.TAX_RATE)
-                return gross_winnings - tax
-            return 0
+        # Paris simples (1:1 + remboursement de la mise)
+        winning_conditions = {
+            "red": winning_number in self.RED_NUMBERS,
+            "black": winning_number in self.BLACK_NUMBERS,
+            "even": winning_number != 0 and winning_number % 2 == 0,
+            "odd": winning_number != 0 and winning_number % 2 == 1,
+            "low": 1 <= winning_number <= 18,
+            "high": 19 <= winning_number <= 36
+        }
         
-        # Pari sur Noir (1:1) 
-        elif bet_type == "black":
-            if winning_number in self.BLACK_NUMBERS:
-                gross_winnings = bet_amount * 2  # 1:1 payout (mise + gain)
-                tax = int(gross_winnings * self.TAX_RATE)
-                return gross_winnings - tax
-            return 0
-            
-        # Pari sur Pair (1:1)
-        elif bet_type == "even":
-            if winning_number != 0 and winning_number % 2 == 0:
-                gross_winnings = bet_amount * 2
-                tax = int(gross_winnings * self.TAX_RATE)
-                return gross_winnings - tax
-            return 0
-            
-        # Pari sur Impair (1:1)
-        elif bet_type == "odd":
-            if winning_number != 0 and winning_number % 2 == 1:
-                gross_winnings = bet_amount * 2
-                tax = int(gross_winnings * self.TAX_RATE)
-                return gross_winnings - tax
-            return 0
-            
-        # Pari sur 1-18 (Manque) (1:1)
-        elif bet_type == "low":
-            if 1 <= winning_number <= 18:
-                gross_winnings = bet_amount * 2
-                tax = int(gross_winnings * self.TAX_RATE)
-                return gross_winnings - tax
-            return 0
-            
-        # Pari sur 19-36 (Passe) (1:1)
-        elif bet_type == "high":
-            if 19 <= winning_number <= 36:
-                gross_winnings = bet_amount * 2
-                tax = int(gross_winnings * self.TAX_RATE)
-                return gross_winnings - tax
-            return 0
+        if winning_conditions.get(bet_type, False):
+            gross_winnings = bet_amount * 2  # 1:1 + mise remboursée
+            tax = int(gross_winnings * self.TAX_RATE)
+            return gross_winnings - tax
         
         return 0
 
