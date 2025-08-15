@@ -12,7 +12,7 @@ from utils.embeds import create_error_embed, create_success_embed, create_info_e
 logger = logging.getLogger(__name__)
 
 class PPCView(discord.ui.View):
-    """Vue pour le jeu Pierre-Papier-Ciseaux en BO1 avec transfert des pertes à l'owner"""
+    """Vue pour le jeu Pierre-Papier-Ciseaux en BO1 avec transfert CORRECT des pertes à l'owner"""
     
     def __init__(self, challenger, opponent, bet_amount, db):
         super().__init__(timeout=60.0)  # 1 minute pour un BO1
@@ -36,15 +36,6 @@ class PPCView(discord.ui.View):
             )
             return False
         return True
-
-    async def transfer_loss_to_owner(self, amount: int):
-        """Transfère les pertes à l'owner en cas d'égalité ou d'abandon"""
-        if amount > 0 and OWNER_ID:
-            try:
-                await self.db.update_balance(OWNER_ID, amount)
-                logger.info(f"PPC: {amount} PrissBucks transférés à l'owner (perte/égalité)")
-            except Exception as e:
-                logger.error(f"Erreur transfert perte PPC vers owner: {e}")
 
     @discord.ui.button(label='🗿 Pierre', style=discord.ButtonStyle.secondary)
     async def pierre_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -92,7 +83,7 @@ class PPCView(discord.ui.View):
             await self.finish_game()
 
     async def finish_game(self):
-        """Termine le jeu et détermine le gagnant avec transfert des pertes"""
+        """Termine le jeu et détermine le gagnant avec transfert CORRECT des pertes"""
         self.game_finished = True
         
         # Déterminer le gagnant
@@ -103,17 +94,35 @@ class PPCView(discord.ui.View):
         o_emoji = {'pierre': '🗿', 'papier': '📄', 'ciseaux': '✂️'}[self.opponent_choice]
         
         if winner == 'tie':
-            # EN CAS D'ÉGALITÉ: Les mises vont à l'owner
-            total_lost = self.bet_amount * 2  # Les deux mises
-            await self.transfer_loss_to_owner(total_lost)
+            # EN CAS D'ÉGALITÉ: Les mises vont DIRECTEMENT à l'owner
+            logger.info(f"PPC: Égalité - Transfert de {self.bet_amount * 2} PB vers owner")
+            
+            if OWNER_ID:
+                # Transférer les deux mises vers l'owner
+                transfer1 = await self.db.transfer(self.challenger.id, OWNER_ID, self.bet_amount)
+                transfer2 = await self.db.transfer(self.opponent.id, OWNER_ID, self.bet_amount)
+                
+                if transfer1 and transfer2:
+                    logger.info(f"🏦 PPC TIE: {self.bet_amount * 2} PB transférés vers OWNER !")
+                    transfer_msg = f"🏛️ **{self.bet_amount * 2:,}** PrissBucks transférés au casino."
+                else:
+                    # Si les transferts échouent, débiter quand même
+                    await self.db.update_balance(self.challenger.id, -self.bet_amount)
+                    await self.db.update_balance(self.opponent.id, -self.bet_amount)
+                    logger.error("PPC: Transferts égalité échoués, argent perdu")
+                    transfer_msg = f"💸 **{self.bet_amount * 2:,}** PrissBucks perdus dans l'égalité."
+            else:
+                # Pas d'owner, débiter les joueurs
+                await self.db.update_balance(self.challenger.id, -self.bet_amount)
+                await self.db.update_balance(self.opponent.id, -self.bet_amount)
+                transfer_msg = f"💸 **{self.bet_amount * 2:,}** PrissBucks perdus dans l'égalité."
             
             embed = discord.Embed(
                 title="🤝 Égalité !",
                 description=f"**{c_emoji} vs {o_emoji}**\n\n"
                            f"{self.challenger.display_name}: **{self.challenger_choice.capitalize()}**\n"
                            f"{self.opponent.display_name}: **{self.opponent_choice.capitalize()}**\n\n"
-                           f"💸 **{total_lost:,}** PrissBucks perdus dans l'égalité.\n"
-                           f"🏛️ Argent transféré vers le casino.",
+                           f"{transfer_msg}",
                 color=Colors.WARNING
             )
         else:
@@ -121,16 +130,29 @@ class PPCView(discord.ui.View):
             
             # Le gagnant récupère les deux mises (winner takes all)
             total_winnings = self.bet_amount * 2
-            transfer_msg = ""
-            try:
-                await self.db.update_balance(winner.id, total_winnings)
+            logger.info(f"PPC: {winner.display_name} GAGNE - Transfert de {total_winnings} PB")
+            
+            # ==================== TRANSFERT CORRECT ====================
+            if OWNER_ID:
+                # 1. Transférer la mise du perdant vers le gagnant
+                transfer1 = await self.db.transfer(loser.id, winner.id, self.bet_amount)
+                # 2. Le gagnant récupère sa propre mise (pas de transfert, juste pas de débit)
+                # 3. Pas de débit pour le gagnant car il récupère sa mise
+                
+                if transfer1:
+                    logger.info(f"🏆 PPC WIN: {winner.display_name} récupère {total_winnings} PB")
+                    transfer_msg = f"💰 **{total_winnings:,}** PrissBucks transférés vers {winner.display_name} !"
+                else:
+                    # Si le transfert échoue, le perdant perd quand même sa mise (vers owner)
+                    await self.db.update_balance(loser.id, -self.bet_amount)
+                    await self.db.update_balance(OWNER_ID, self.bet_amount)
+                    logger.error(f"PPC: Transfert échoué, mise du perdant va à l'owner")
+                    transfer_msg = f"⚠️ Erreur transfert - {winner.display_name} gagne mais la mise du perdant va au casino"
+            else:
+                # Pas d'owner configuré
+                await self.db.update_balance(loser.id, -self.bet_amount)
+                await self.db.update_balance(winner.id, self.bet_amount)
                 transfer_msg = f"💰 **{total_winnings:,}** PrissBucks transférés vers {winner.display_name} !"
-                logger.info(f"PPC WIN: {winner} récupère {total_winnings} PrissBucks")
-            except Exception as e:
-                logger.error(f"Erreur transfert PPC: {e}")
-                # Si le transfert échoue, la mise va à l'owner
-                await self.transfer_loss_to_owner(total_winnings)
-                transfer_msg = f"⚠️ Erreur transfert - Mise transférée au casino"
             
             embed = discord.Embed(
                 title=f"🏆 {winner.display_name} gagne !",
@@ -172,7 +194,7 @@ class PPCView(discord.ui.View):
                        f"💰 **Mise:** {self.bet_amount:,} PrissBucks par joueur\n"
                        f"🏆 **Pot total:** {self.bet_amount * 2:,} PrissBucks\n"
                        f"👥 **Joueurs:** {self.challenger.display_name} vs {self.opponent.display_name}\n\n"
-                       f"⚠️ **Les mises ont été débitées !**\n"
+                       f"⚠️ **Les mises seront débitées selon le résultat !**\n"
                        f"Faites vos choix en cliquant sur les boutons ci-dessous !",
             color=Colors.PREMIUM
         )
@@ -190,12 +212,12 @@ class PPCView(discord.ui.View):
         )
         
         embed.add_field(
-            name="💸 Système",
-            value="• Victoire = Pot complet\n• Égalité = Casino gagne\n• Abandon = Casino gagne",
+            name="💸 Système CORRIGÉ",
+            value="• Victoire = Pot complet au gagnant\n• Égalité = Casino gagne\n• Abandon = Casino gagne",
             inline=False
         )
         
-        embed.set_footer(text="Mises déjà débitées ! Le gagnant remporte tout.")
+        embed.set_footer(text="Argent transféré selon le résultat !")
         
         return embed
 
@@ -220,8 +242,25 @@ class PPCView(discord.ui.View):
 
     async def on_timeout(self):
         """En cas de timeout, les mises vont à l'owner"""
-        total_bets = self.bet_amount * 2  # Les deux mises vont à l'owner
-        await self.transfer_loss_to_owner(total_bets)
+        if OWNER_ID:
+            # Transférer les mises des deux joueurs vers l'owner
+            transfer1 = await self.db.transfer(self.challenger.id, OWNER_ID, self.bet_amount)
+            transfer2 = await self.db.transfer(self.opponent.id, OWNER_ID, self.bet_amount)
+            
+            if transfer1 and transfer2:
+                logger.info(f"🏦 PPC TIMEOUT: {self.bet_amount * 2} PB transférés vers OWNER !")
+                timeout_msg = f"💸 **{self.bet_amount * 2:,}** PrissBucks transférés au casino par abandon."
+            else:
+                # Si les transferts échouent, débiter quand même
+                await self.db.update_balance(self.challenger.id, -self.bet_amount)
+                await self.db.update_balance(self.opponent.id, -self.bet_amount)
+                logger.error("PPC: Transferts timeout échoués")
+                timeout_msg = f"💸 **{self.bet_amount * 2:,}** PrissBucks perdus par abandon."
+        else:
+            # Pas d'owner
+            await self.db.update_balance(self.challenger.id, -self.bet_amount)
+            await self.db.update_balance(self.opponent.id, -self.bet_amount)
+            timeout_msg = f"💸 **{self.bet_amount * 2:,}** PrissBucks perdus par abandon."
 
         embed = discord.Embed(
             title="⏰ Temps écoulé !",
@@ -229,7 +268,7 @@ class PPCView(discord.ui.View):
                        f"**Choix faits:**\n"
                        f"{self.challenger.display_name}: {self.challenger_choice or 'Aucun'}\n"
                        f"{self.opponent.display_name}: {self.opponent_choice or 'Aucun'}\n\n"
-                       f"💸 **{total_bets:,}** PrissBucks transférés au casino par abandon.\n"
+                       f"{timeout_msg}\n"
                        f"🏛️ Les mises non jouées profitent à la maison !",
             color=Colors.ERROR
         )
@@ -244,7 +283,7 @@ class PPCView(discord.ui.View):
             pass
 
 class PierrepapierCiseaux(commands.Cog):
-    """Mini-jeu Pierre-Papier-Ciseaux avec mises en BO1 et transfert des pertes vers owner"""
+    """Mini-jeu Pierre-Papier-Ciseaux avec mises en BO1 et transfert CORRECT des pertes vers owner"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -253,7 +292,7 @@ class PierrepapierCiseaux(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info("✅ Cog Pierre-Papier-Ciseaux BO1 initialisé avec transfert pertes vers owner")
+        logger.info("✅ Cog Pierre-Papier-Ciseaux BO1 initialisé avec transfert CORRECT des pertes vers owner")
 
     # ==================== PPC COMMANDS ====================
 
@@ -263,7 +302,7 @@ class PierrepapierCiseaux(commands.Cog):
         mise="Montant à miser (en PrissBucks)"
     )
     async def ppc_command(self, interaction: discord.Interaction, adversaire: discord.Member, mise: int):
-        """Lance un défi Pierre-Papier-Ciseaux en BO1 avec prélèvement des mises"""
+        """Lance un défi Pierre-Papier-Ciseaux en BO1 avec prélèvement CORRECT des mises"""
         # Répondre immédiatement pour éviter le timeout
         await interaction.response.defer()
         
@@ -288,7 +327,7 @@ class PierrepapierCiseaux(commands.Cog):
             return
 
         try:
-            # Vérifier ET DÉBITER les soldes immédiatement
+            # Vérifier les soldes (mais NE PAS débiter maintenant !)
             challenger_balance = await self.db.get_balance(challenger.id)
             opponent_balance = await self.db.get_balance(opponent.id)
             
@@ -308,11 +347,8 @@ class PierrepapierCiseaux(commands.Cog):
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
 
-            # DÉBITER LES MISES IMMÉDIATEMENT (l'argent sort des comptes)
-            await self.db.update_balance(challenger.id, -bet_amount)
-            await self.db.update_balance(opponent.id, -bet_amount)
-            
-            logger.info(f"PPC: Mises débitées - {challenger} et {opponent} perdent {bet_amount} PB chacun")
+            # PAS DE DÉBIT ICI ! Les transferts se feront selon le résultat
+            logger.info(f"PPC: Défi lancé - {challenger} vs {opponent} pour {bet_amount} PB chacun")
 
             # Créer la vue avec les boutons
             view = PPCView(challenger, opponent, bet_amount, self.db)
@@ -356,7 +392,7 @@ class PierrepapierCiseaux(commands.Cog):
             )
             embed.add_field(
                 name="⚠️ Règles importantes",
-                value="• Mises débitées immédiatement\n• Égalité = Casino gagne\n• Abandon = Casino gagne",
+                value="• Argent transféré selon résultat\n• Égalité = Casino gagne\n• Abandon = Casino gagne",
                 inline=False
             )
             await ctx.send(embed=embed)
@@ -385,8 +421,8 @@ class PierrepapierCiseaux(commands.Cog):
         )
         
         embed.add_field(
-            name="💰 Système de mise CASINO",
-            value="• Mises débitées immédiatement\n"
+            name="💰 Système de mise CORRIGÉ",
+            value="• Transferts selon résultat\n"
                   "• Gagnant = Récupère tout le pot\n"
                   "• **Égalité = Casino gagne**\n"
                   "• **Abandon = Casino gagne**",
@@ -398,7 +434,7 @@ class PierrepapierCiseaux(commands.Cog):
             value="• Un seul round par partie\n"
                   "• Rapide et efficace\n"
                   "• 60 secondes pour choisir\n"
-                  "• **Pas de remboursement**",
+                  "• **Transferts intelligents**",
             inline=True
         )
         
@@ -416,7 +452,7 @@ class PierrepapierCiseaux(commands.Cog):
             inline=False
         )
         
-        embed.set_footer(text="Système casino actif ! Bonne chance dans tes duels !")
+        embed.set_footer(text="Système casino avec transferts corrects ! Bonne chance !")
         await interaction.response.send_message(embed=embed)
 
 async def setup(bot):
