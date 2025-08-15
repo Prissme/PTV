@@ -14,7 +14,7 @@ class Help(commands.Cog):
     
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
-        logger.info("✅ Cog Help initialisé avec informations taxes corrigées")
+        logger.info("✅ Cog Help initialisé avec informations taxes")
 
     @commands.command(name='help', aliases=['h', 'aide'])
     async def help_cmd(self, ctx):
@@ -26,7 +26,7 @@ class Help(commands.Cog):
                 color=Colors.INFO
             )
 
-            # Commandes Économie avec taxes CORRIGÉES
+            # Commandes Économie avec taxes
             embed.add_field(
                 name=f"{Emojis.MONEY} **Économie**",
                 value=f"`{PREFIX}balance [@user]` - Voir le solde (aliases: `bal`, `money`)\n"
@@ -37,7 +37,7 @@ class Help(commands.Cog):
                 inline=False
             )
             
-            # Commandes Shop avec taxes CORRIGÉES
+            # Commandes Shop avec taxes
             embed.add_field(
                 name=f"{Emojis.SHOP} **Boutique**",
                 value=f"`/shop [page]` ou `{PREFIX}shop [page]` - Voir la boutique\n"
@@ -74,7 +74,7 @@ class Help(commands.Cog):
                 inline=False
             )
 
-            # Section spéciale sur le système de taxes CORRIGÉE
+            # Section spéciale sur le système de taxes
             embed.add_field(
                 name=f"{Emojis.TAX} **Système de Taxes**",
                 value=f"• **Transferts:** {TRANSFER_TAX_RATE*100:.0f}% de taxe sur `/give` et `{PREFIX}give`\n"
@@ -90,10 +90,9 @@ class Help(commands.Cog):
                 value="• **Daily:** 50-150 PrissBucks + 10% chance bonus (50-200)\n"
                       "• **PPC:** Jeu avec mise, transfert automatique au gagnant\n"
                       "• **Vol:** 50% réussite (vole 10%), 50% échec (perd 40%)\n"
-                      "• **Shop:** Rôles automatiquement attribués après achat + items spéciaux\n"
+                      "• **Shop:** Rôles automatiquement attribués après achat\n"
                       "• **Cooldowns:** Daily 24h, Give 5s, Buy 3s, Vol 0.5h, PPC 60s timeout\n"
-                      "• **Messages:** +1 PrissBuck par message (CD: 20s)\n"
-                      "• **Reset CD:** Item spécial (200 PB) pour supprimer tous les cooldowns",
+                      "• **Messages:** +1 PrissBuck par message (CD: 20s)",
                 inline=False
             )
 
@@ -123,7 +122,7 @@ class Help(commands.Cog):
                 color=Colors.WARNING
             )
             
-            # Taxes sur les transferts CORRIGÉES
+            # Taxes sur les transferts
             embed.add_field(
                 name="💸 **Transferts de PrissBucks**",
                 value=f"• **Taux:** {TRANSFER_TAX_RATE*100:.0f}% sur tous les `/give` et `{PREFIX}give`\n"
@@ -133,7 +132,7 @@ class Help(commands.Cog):
                 inline=False
             )
             
-            # Taxes sur la boutique CORRIGÉES
+            # Taxes sur la boutique
             embed.add_field(
                 name=f"{Emojis.SHOP} **Achats en Boutique**",
                 value=f"• **Taux:** {SHOP_TAX_RATE*100:.0f}% sur tous les achats `/buy` et `{PREFIX}buy`\n"
@@ -163,7 +162,7 @@ class Help(commands.Cog):
                 inline=False
             )
             
-            # Calculs rapides CORRIGÉS
+            # Calculs rapides
             embed.add_field(
                 name="🧮 **Calculateur rapide**",
                 value=f"• **Give 50** → Reçoit {50-int(50*TRANSFER_TAX_RATE)} (taxe: {int(50*TRANSFER_TAX_RATE)})\n"
@@ -221,7 +220,7 @@ class Help(commands.Cog):
             db_status = "🟢 Connectée" if hasattr(self.bot, 'database') and self.bot.database else "🔴 Déconnectée"
             embed.add_field(name="💾 Base de données", value=db_status, inline=True)
             
-            # Système de taxes CORRIGÉ
+            # Système de taxes
             embed.add_field(name=f"{Emojis.TAX} Taxes", value=f"Transfer: {TRANSFER_TAX_RATE*100:.0f}% | Shop: {SHOP_TAX_RATE*100:.0f}%", inline=True)
             
             embed.set_footer(text=f"Bot développé avec discord.py • Préfixe: {PREFIX}")
