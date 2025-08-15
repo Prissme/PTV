@@ -42,7 +42,7 @@ class RouletteEnhanced(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info(f"✅ Cog Roulette Enhanced initialisé")
+        logger.info(f"✅ Cog Roulette Enhanced initialisé avec transfert des pertes vers owner")
 
     def _check_roulette_cooldown(self, user_id: int) -> float:
         """Vérifie et retourne le cooldown restant pour la roulette"""
@@ -94,6 +94,23 @@ class RouletteEnhanced(commands.Cog):
         else:
             session['win_streak'] = 0
             session['loss_streak'] += 1
+
+    async def transfer_loss_to_owner(self, amount: int):
+        """Transfère les mises perdues à l'owner"""
+        if amount > 0 and OWNER_ID:
+            try:
+                await self.db.update_balance(OWNER_ID, amount)
+                logger.info(f"Roulette: {amount} PrissBucks transférés à l'owner (perte joueur)")
+            except Exception as e:
+                logger.error(f"Erreur transfert perte roulette vers owner: {e}")
+
+    async def transfer_tax_to_owner(self, amount: int):
+        """Transfère la taxe à l'owner (silencieusement)"""
+        if amount > 0 and OWNER_ID:
+            try:
+                await self.db.update_balance(OWNER_ID, amount)
+            except Exception as e:
+                logger.error(f"Erreur transfert taxe roulette: {e}")
 
     async def create_animated_spin_sequence(self, ctx_or_interaction, winning_number: int, is_slash=False):
         """Crée une séquence d'animation pour le spin de la roulette"""
@@ -293,7 +310,7 @@ class RouletteEnhanced(commands.Cog):
         await self._execute_roulette_enhanced(ctx, bet_type, bet_amount)
 
     async def _execute_roulette_enhanced(self, ctx_or_interaction, bet_type: str, bet_amount: int, is_slash=False):
-        """Logique commune pour la roulette enhanced avec animations"""
+        """Logique commune pour la roulette enhanced avec animations ET transfert des pertes"""
         if is_slash:
             user = ctx_or_interaction.user
             send_func = ctx_or_interaction.followup.send
@@ -395,7 +412,7 @@ class RouletteEnhanced(commands.Cog):
                 await send_func(embed=embed)
                 return
 
-            # Débiter la mise
+            # Débiter la mise (l'argent sort du compte du joueur)
             await self.db.update_balance(user_id, -bet_amount)
 
             # Faire tourner la roulette avec animation
@@ -407,17 +424,25 @@ class RouletteEnhanced(commands.Cog):
             # Calculer les gains
             winnings = self.calculate_winnings(bet_type, bet_amount, winning_number)
 
-            # Traitement des gains et taxes
+            # Traitement des gains et pertes
             if winnings > 0:
-                gross_winnings = 0
+                # VICTOIRE: Le joueur récupère ses gains
+                await self.db.update_balance(user_id, winnings)
+                
+                # Taxe sur les gains (va vers l'owner)
                 if bet_type.startswith("number_"):
                     gross_winnings = bet_amount * 35
                 else:
                     gross_winnings = bet_amount * 2
                 
-                hidden_tax = int(gross_winnings * self.TAX_RATE)
-                await self.db.update_balance(user_id, winnings)
-                await self.transfer_tax_to_owner(hidden_tax)
+                tax = int(gross_winnings * self.TAX_RATE)
+                await self.transfer_tax_to_owner(tax)
+                
+                logger.info(f"Roulette WIN: {user} gagne {winnings}, taxe {tax} → owner")
+            else:
+                # PERTE: La mise va entièrement à l'owner
+                await self.transfer_loss_to_owner(bet_amount)
+                logger.info(f"Roulette LOSS: {user} perd {bet_amount} → owner")
 
             # Récupérer le nouveau solde et les stats
             new_balance = await self.db.get_balance(user_id)
@@ -432,11 +457,6 @@ class RouletteEnhanced(commands.Cog):
 
             # Envoyer le résultat final
             await edit_func(embed=result_embed)
-
-            # Log amélioré
-            status = "WIN" if winnings > 0 else "LOSS"
-            logger.info(f"Roulette Enhanced {status}: {user} mise {bet_amount} sur {bet_type}, "
-                       f"{'gagne ' + str(winnings) if winnings > 0 else 'perd tout'}")
 
         except Exception as e:
             logger.error(f"Erreur roulette enhanced {user_id}: {e}")
@@ -507,14 +527,6 @@ class RouletteEnhanced(commands.Cog):
             return 0
         
         return 0
-
-    async def transfer_tax_to_owner(self, amount: int):
-        """Transfère la taxe à l'owner (silencieusement)"""
-        if amount > 0 and OWNER_ID:
-            try:
-                await self.db.update_balance(OWNER_ID, amount)
-            except Exception as e:
-                logger.error(f"Erreur transfert taxe roulette: {e}")
 
 async def setup(bot):
     """Fonction appelée pour charger le cog"""
