@@ -14,7 +14,7 @@ from utils.embeds import (
 logger = logging.getLogger(__name__)
 
 class Shop(commands.Cog):
-    """Système boutique complet : shop, buy, inventory avec taxes et logs"""
+    """Système boutique complet : shop, buy, inventory avec taxes et logs intégrés"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -25,7 +25,7 @@ class Shop(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info("✅ Cog Shop initialisé avec système de taxes et logs")
+        logger.info("✅ Cog Shop initialisé avec système de taxes et logs intégrés")
     
     def _check_buy_cooldown(self, user_id: int) -> float:
         """Vérifie et retourne le cooldown restant pour buy"""
@@ -146,7 +146,7 @@ class Shop(commands.Cog):
         await self._execute_buy(interaction, item_id, is_slash=True)
 
     async def _execute_buy(self, ctx_or_interaction, item_id, is_slash=False):
-        """Logique commune pour buy avec taxes et logs (prefix et slash)"""
+        """Logique commune pour buy avec taxes et logs intégrés (prefix et slash)"""
         if is_slash:
             user_id = ctx_or_interaction.user.id
             author = ctx_or_interaction.user
