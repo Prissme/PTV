@@ -1,8 +1,8 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-import random
 import asyncio
+import random
 import logging
 from datetime import datetime, timezone
 
@@ -12,7 +12,7 @@ from utils.embeds import create_error_embed, create_success_embed
 logger = logging.getLogger(__name__)
 
 class RouletteEnhanced(commands.Cog):
-    """Mini-jeu de roulette européenne avec animations, expérience addictive et logs intégrés"""
+    """Mini-jeu de roulette européenne avec animations, pertes vers BANQUE PUBLIQUE et logs intégrés"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -42,7 +42,7 @@ class RouletteEnhanced(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info(f"✅ Cog Roulette Enhanced initialisé avec transfert CORRECT des pertes vers owner et logs intégrés")
+        logger.info(f"✅ Cog Roulette Enhanced initialisé avec transfert des pertes vers BANQUE PUBLIQUE et logs intégrés")
 
     def _check_roulette_cooldown(self, user_id: int) -> float:
         """Vérifie et retourne le cooldown restant pour la roulette"""
@@ -94,6 +94,32 @@ class RouletteEnhanced(commands.Cog):
         else:
             session['win_streak'] = 0
             session['loss_streak'] += 1
+
+    async def get_public_bank_cog(self):
+        """Récupère le cog PublicBank pour alimenter la banque publique"""
+        return self.bot.get_cog('PublicBank')
+
+    async def send_to_public_bank(self, amount: int, source: str = "roulette"):
+        """Envoie l'argent perdu vers la banque publique au lieu de l'owner"""
+        public_bank_cog = await self.get_public_bank_cog()
+        
+        if public_bank_cog:
+            success = await public_bank_cog.add_casino_loss(amount, source)
+            if success:
+                logger.info(f"🏛️ Roulette: {amount} PB envoyés vers la banque publique")
+                return True
+            else:
+                logger.error(f"Roulette: Échec envoi vers banque publique, amount: {amount}")
+                return False
+        else:
+            # Fallback vers l'owner si la banque publique n'est pas disponible
+            if OWNER_ID:
+                await self.db.update_balance(OWNER_ID, amount)
+                logger.warning(f"Roulette: Banque publique indispo, envoi vers owner ({amount} PB)")
+                return True
+            else:
+                logger.error(f"Roulette: Ni banque publique ni owner configuré, {amount} PB perdus")
+                return False
 
     async def create_animated_spin_sequence(self, ctx_or_interaction, winning_number: int, is_slash=False):
         """Crée une séquence d'animation pour le spin de la roulette"""
@@ -293,7 +319,7 @@ class RouletteEnhanced(commands.Cog):
         await self._execute_roulette_enhanced(ctx, bet_type, bet_amount)
 
     async def _execute_roulette_enhanced(self, ctx_or_interaction, bet_type: str, bet_amount: int, is_slash=False):
-        """Logique commune pour la roulette enhanced avec animations, transfert CORRECT des pertes et logs intégrés"""
+        """Logique commune pour la roulette enhanced avec animations, transfert vers BANQUE PUBLIQUE et logs intégrés"""
         if is_slash:
             user = ctx_or_interaction.user
             send_func = ctx_or_interaction.followup.send
@@ -406,7 +432,7 @@ class RouletteEnhanced(commands.Cog):
             # Calculer les gains AVANT de toucher aux soldes
             winnings = self.calculate_winnings(bet_type, bet_amount, winning_number)
 
-            # ==================== LOGIQUE CORRIGÉE DES TRANSFERTS AVEC LOGS ====================
+            # ==================== LOGIQUE MODIFIÉE DES TRANSFERTS VERS BANQUE PUBLIQUE ====================
             
             if winnings > 0:
                 # VICTOIRE DU JOUEUR
@@ -417,37 +443,33 @@ class RouletteEnhanced(commands.Cog):
                 # 2. Créditer les gains au joueur
                 await self.db.update_balance(user_id, winnings)
                 
-                # 3. Taxe sur les gains va à l'owner (discrètement)
+                # 3. Taxe sur les gains va à la banque publique (discrètement)
                 if bet_type.startswith("number_"):
                     gross_profit = bet_amount * 35  # Profit brut sur numéro
                 else:
                     gross_profit = bet_amount  # Profit brut sur couleur/pair/etc
                 
                 tax = int(gross_profit * self.TAX_RATE)
-                if tax > 0 and OWNER_ID:
-                    await self.db.update_balance(OWNER_ID, tax)
-                    logger.info(f"Roulette: Taxe {tax} PB → owner (victoire joueur)")
+                if tax > 0:
+                    await self.send_to_public_bank(tax, "roulette_tax")
+                    logger.info(f"Roulette: Taxe {tax} PB → banque publique (victoire joueur)")
                 
                 logger.info(f"Roulette WIN: {user} récupère {winnings} PB, taxe: {tax}")
                 
             else:
-                # PERTE DU JOUEUR - L'ARGENT VA DIRECTEMENT CHEZ L'OWNER !
-                logger.info(f"Roulette: {user} PERD - Transfert de {bet_amount} PB vers owner")
+                # PERTE DU JOUEUR - L'ARGENT VA VERS LA BANQUE PUBLIQUE !
+                logger.info(f"Roulette: {user} PERD - Envoi de {bet_amount} PB vers banque publique")
                 
-                if OWNER_ID:
-                    # Transférer directement la mise du joueur vers l'owner
-                    transfer_success = await self.db.transfer(user_id, OWNER_ID, bet_amount)
-                    
-                    if transfer_success:
-                        logger.info(f"🏦 Roulette LOSS: {bet_amount} PB transférés de {user} vers OWNER !")
-                    else:
-                        # Si le transfert échoue, débiter quand même le joueur
-                        await self.db.update_balance(user_id, -bet_amount)
-                        logger.error(f"Roulette: Transfert échoué, {bet_amount} PB perdus dans le vide")
+                # Débiter le joueur
+                await self.db.update_balance(user_id, -bet_amount)
+                
+                # Envoyer vers la banque publique
+                public_bank_success = await self.send_to_public_bank(bet_amount, "roulette_loss")
+                
+                if public_bank_success:
+                    logger.info(f"🏛️ Roulette LOSS: {bet_amount} PB envoyés de {user} vers BANQUE PUBLIQUE !")
                 else:
-                    # Pas d'owner configuré, l'argent disparaît
-                    await self.db.update_balance(user_id, -bet_amount)
-                    logger.warning("Roulette: Pas d'OWNER_ID configuré, argent perdu")
+                    logger.error(f"Roulette: Échec envoi vers banque publique, {bet_amount} PB perdus")
 
             # Récupérer le nouveau solde et les stats
             new_balance = await self.db.get_balance(user_id)
@@ -465,11 +487,21 @@ class RouletteEnhanced(commands.Cog):
                     number=winning_number
                 )
 
-            # Créer l'embed de résultat ultra-visuel
+            # Message de confirmation ultra-visuel avec mention de la banque publique
             result_embed = self.create_result_embed(
                 user, bet_type, bet_amount, winning_number, 
                 winnings, new_balance, session_data
             )
+            
+            # Ajouter une mention spéciale pour les pertes vers banque publique
+            if winnings == 0:
+                result_embed.add_field(
+                    name="🏛️ Impact Social",
+                    value=f"Ta mise de **{bet_amount:,} PB** a été ajoutée à la **banque publique** !\n"
+                          f"✨ Elle pourra être retirée par tous les joueurs du serveur.\n"
+                          f"🤝 Utilise `/publicbank` pour voir les fonds disponibles !",
+                    inline=False
+                )
 
             # Envoyer le résultat final
             await edit_func(embed=result_embed)
