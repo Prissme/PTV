@@ -162,8 +162,18 @@ async def setup_database():
         logger.error(f"❌ Erreur de connexion à la base de données: {e}")
         return False
 
+async def setup_transaction_logs():
+    """Configure le système de logs de transactions"""
+    transaction_logs_cog = bot.get_cog('TransactionLogs')
+    if transaction_logs_cog:
+        # Rendre le système de logs accessible à tous les cogs
+        bot.transaction_logs = transaction_logs_cog
+        logger.info("✅ Système de logs de transactions configuré")
+    else:
+        logger.warning("⚠️ Cog TransactionLogs non trouvé")
+
 async def load_cogs():
-    """Charge automatiquement tous les cogs"""
+    """Charge automatiquement tous les cogs dans l'ordre correct"""
     cogs_dir = Path("cogs")
     cogs_loaded = 0
     cogs_failed = 0
@@ -173,14 +183,29 @@ async def load_cogs():
         cogs_dir.mkdir()
         return
     
-    # Lister tous les fichiers .py dans le dossier cogs
-    cog_files = [f.stem for f in cogs_dir.glob("*.py") if f.stem != "__init__"]
+    # Charger d'abord TransactionLogs en priorité
+    priority_cogs = ['transaction_logs']
+    
+    for cog_name in priority_cogs:
+        try:
+            await bot.load_extension(f'cogs.{cog_name}')
+            logger.info(f"✅ Cog prioritaire '{cog_name}' chargé avec succès")
+            cogs_loaded += 1
+        except Exception as e:
+            logger.error(f"❌ Erreur lors du chargement du cog prioritaire '{cog_name}': {e}")
+            cogs_failed += 1
+    
+    # Configurer le système de logs après le chargement de TransactionLogs
+    await setup_transaction_logs()
+    
+    # Lister tous les autres fichiers .py dans le dossier cogs
+    cog_files = [f.stem for f in cogs_dir.glob("*.py") if f.stem != "__init__" and f.stem not in priority_cogs]
     
     if not cog_files:
-        logger.warning("⚠️ Aucun cog trouvé dans le dossier 'cogs'")
+        logger.warning("⚠️ Aucun autre cog trouvé dans le dossier 'cogs'")
         return
     
-    logger.info(f"🔄 Chargement de {len(cog_files)} cog(s)...")
+    logger.info(f"🔄 Chargement de {len(cog_files)} cog(s) supplémentaires...")
     
     for cog_name in cog_files:
         try:
@@ -200,6 +225,11 @@ async def reload_cog(ctx, cog_name: str):
     """[OWNER] Recharge un cog"""
     try:
         await bot.reload_extension(f'cogs.{cog_name}')
+        
+        # Reconfigurer les logs si TransactionLogs a été rechargé
+        if cog_name == 'transaction_logs':
+            await setup_transaction_logs()
+        
         await ctx.send(f"✅ **Cog '{cog_name}' rechargé avec succès !**")
         logger.info(f"🔄 Cog '{cog_name}' rechargé par {ctx.author}")
         
@@ -220,6 +250,11 @@ async def load_cog(ctx, cog_name: str):
     """[OWNER] Charge un cog"""
     try:
         await bot.load_extension(f'cogs.{cog_name}')
+        
+        # Reconfigurer les logs si TransactionLogs a été chargé
+        if cog_name == 'transaction_logs':
+            await setup_transaction_logs()
+        
         await ctx.send(f"✅ **Cog '{cog_name}' chargé avec succès !**")
         logger.info(f"➕ Cog '{cog_name}' chargé par {ctx.author}")
         
@@ -238,7 +273,7 @@ async def load_cog(ctx, cog_name: str):
 @commands.is_owner()
 async def unload_cog(ctx, cog_name: str):
     """[OWNER] Décharge un cog"""
-    if cog_name.lower() in ['economy', 'help']:
+    if cog_name.lower() in ['economy', 'help', 'transaction_logs']:
         await ctx.send(f"❌ **Le cog '{cog_name}' ne peut pas être déchargé (cog critique).**")
         return
     
@@ -283,6 +318,10 @@ async def list_cogs(ctx):
     # Statut de la base de données
     db_status = "🟢 Connectée" if database and database.pool else "🔴 Déconnectée"
     embed.add_field(name="Base de données", value=db_status, inline=True)
+    
+    # Statut des logs de transactions
+    logs_status = "🟢 Actif" if hasattr(bot, 'transaction_logs') else "🔴 Inactif"
+    embed.add_field(name="Logs Transactions", value=logs_status, inline=True)
     
     embed.set_footer(text=f"Utilisez {PREFIX}reload <cog> pour recharger")
     await ctx.send(embed=embed)
