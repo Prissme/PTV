@@ -9,7 +9,7 @@ from config import Colors, Emojis
 logger = logging.getLogger(__name__)
 
 class MessageRewards(commands.Cog):
-    """Système de récompenses automatiques pour les messages avec logs"""
+    """Système de récompenses automatiques pour les messages avec logs intégrés"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -32,7 +32,7 @@ class MessageRewards(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info(f"✅ Cog MessageRewards initialisé (1 msg = {self.REWARD_AMOUNT} PrissBuck, CD: {self.COOLDOWN_SECONDS}s) avec logs")
+        logger.info(f"✅ Cog MessageRewards initialisé (1 msg = {self.REWARD_AMOUNT} PrissBuck, CD: {self.COOLDOWN_SECONDS}s) avec logs intégrés")
 
     def is_on_cooldown(self, user_id: int) -> bool:
         """Vérifie si l'utilisateur est en cooldown"""
@@ -254,7 +254,7 @@ class MessageRewards(commands.Cog):
             )
         
         embed.set_thumbnail(url=ctx.author.display_avatar.url)
-        embed.set_footer(text=f"Cooldown: {self.COOLDOWN_SECONDS}s • Récompense: {self.REWARD_AMOUNT} PB")
+        embed.set_footer(text=f"Cooldown: {self.COOLDOWN_SECONDS}s • Récompense: {self.REWARD_AMOUNT} PB • Historique dans /transactions")
         await ctx.send(embed=embed)
 
 async def setup(bot):
