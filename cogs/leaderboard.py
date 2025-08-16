@@ -326,7 +326,7 @@ class Leaderboard(commands.Cog):
             embed = create_error_embed("Erreur", "Erreur lors de la recherche des utilisateurs les moins riches.")
             await ctx.send(embed=embed)
 
-    @app_commands.command(name="poorest", description="Affiche les utilisateurs avec le moins de PrissBucks")
+@app_commands.command(name="poorest", description="Affiche les utilisateurs avec le moins de PrissBucks")
     async def poorest_slash(self, interaction: discord.Interaction):
         """/poorest - Affiche les utilisateurs les moins riches"""
         await interaction.response.defer()
@@ -371,6 +371,144 @@ class Leaderboard(commands.Cog):
             logger.error(f"Erreur poorest: {e}")
             embed = create_error_embed("Erreur", "Erreur lors de la recherche des utilisateurs les moins riches.")
             await interaction.followup.send(embed=embed)
+
+    # ==================== COMMANDE TOTAL PRISSBUCKS ====================
+
+    @commands.command(name='total', aliases=['totalpb', 'totalserver'])
+    async def total_prissbucks_cmd(self, ctx):
+        """e!total - Affiche le nombre total de PrissBucks sur le serveur"""
+        await self._execute_total_prissbucks(ctx)
+
+    @app_commands.command(name="total", description="Affiche le nombre total de PrissBucks circulant sur le serveur")
+    async def total_prissbucks_slash(self, interaction: discord.Interaction):
+        """/total - Affiche le total des PrissBucks du serveur"""
+        await interaction.response.defer()
+        await self._execute_total_prissbucks(interaction, is_slash=True)
+
+    async def _execute_total_prissbucks(self, ctx_or_interaction, is_slash=False):
+        """Logique commune pour afficher le total des PrissBucks"""
+        if is_slash:
+            send_func = ctx_or_interaction.followup.send
+        else:
+            send_func = ctx_or_interaction.send
+        
+        try:
+            # Récupérer tous les utilisateurs
+            all_users = await self.db.get_top_users(10000)  # Grande limite pour récupérer tout le monde
+            
+            if not all_users:
+                embed = discord.Embed(
+                    title="💰 Total PrissBucks du Serveur",
+                    description="**0** PrissBucks en circulation\n\nAucun utilisateur n'a encore de PrissBucks !",
+                    color=Colors.WARNING
+                )
+                embed.add_field(
+                    name="💡 Comment obtenir des PrissBucks ?",
+                    value="• Utilise `e!daily` ou `/daily` pour commencer\n"
+                          "• Écris des messages (récompenses automatiques)\n"
+                          "• Joue aux mini-jeux pour gagner plus !",
+                    inline=False
+                )
+                await send_func(embed=embed)
+                return
+            
+            # Calculer le total et les statistiques
+            total_prissbucks = sum(balance for _, balance in all_users)
+            user_count = len(all_users)
+            average_per_user = total_prissbucks / user_count if user_count > 0 else 0
+            
+            # Trouver l'utilisateur le plus riche
+            richest_user_id, richest_balance = all_users[0]
+            try:
+                richest_user = self.bot.get_user(richest_user_id)
+                richest_name = richest_user.display_name if richest_user else f"Utilisateur {richest_user_id}"
+            except:
+                richest_name = f"Utilisateur {richest_user_id}"
+            
+            # Créer l'embed avec les statistiques
+            embed = discord.Embed(
+                title="💰 Total PrissBucks du Serveur",
+                description=f"**{total_prissbucks:,}** PrissBucks en circulation !",
+                color=Colors.GOLD
+            )
+            
+            embed.add_field(
+                name="👥 Utilisateurs actifs",
+                value=f"**{user_count}** utilisateur{'s' if user_count > 1 else ''}\nont des PrissBucks",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="📊 Moyenne par utilisateur",
+                value=f"**{average_per_user:,.0f}** PrissBucks",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="👑 Plus riche",
+                value=f"**{richest_name}**\n{richest_balance:,} PrissBucks",
+                inline=True
+            )
+            
+            # Répartition par tranches
+            ranges = [
+                (0, 100, "🔴"),
+                (100, 1000, "🟠"),
+                (1000, 10000, "🟡"),
+                (10000, 100000, "🟢"),
+                (100000, float('inf'), "🔵")
+            ]
+            
+            range_counts = {emoji: 0 for _, _, emoji in ranges}
+            for _, balance in all_users:
+                for min_val, max_val, emoji in ranges:
+                    if min_val <= balance < max_val:
+                        range_counts[emoji] += 1
+                        break
+            
+            range_text = ""
+            for min_val, max_val, emoji in ranges:
+                count = range_counts[emoji]
+                if count > 0:
+                    if max_val == float('inf'):
+                        range_text += f"{emoji} **{count}** users ≥ {min_val:,} PB\n"
+                    else:
+                        range_text += f"{emoji} **{count}** users ({min_val:,}-{max_val-1:,} PB)\n"
+            
+            if range_text:
+                embed.add_field(
+                    name="📈 Répartition des richesses",
+                    value=range_text,
+                    inline=False
+                )
+            
+            # Pourcentage de concentration
+            top_10_total = sum(balance for _, balance in all_users[:10])
+            concentration_pct = (top_10_total / total_prissbucks * 100) if total_prissbucks > 0 else 0
+            
+            embed.add_field(
+                name="🎯 Concentration",
+                value=f"Le **top 10** possède **{concentration_pct:.1f}%**\nde tous les PrissBucks",
+                inline=True
+            )
+            
+            # Info sur l'économie
+            embed.add_field(
+                name="📊 Économie du serveur",
+                value=f"• Total en circulation: **{total_prissbucks:,}** PB\n"
+                      f"• Utilisateurs actifs: **{user_count}**\n"
+                      f"• Richesse distribuée: **{100-concentration_pct:.1f}%**",
+                inline=False
+            )
+            
+            embed.set_footer(text="Données en temps réel • Utilise 'e!leaderboard' pour voir le classement")
+            
+            await send_func(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Erreur total prissbucks: {e}")
+            embed = create_error_embed("Erreur", "Erreur lors du calcul du total des PrissBucks.")
+            await send_func(embed=embed)
 
 async def setup(bot):
     """Fonction appelée pour charger le cog"""
