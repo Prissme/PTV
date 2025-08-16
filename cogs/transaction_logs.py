@@ -131,7 +131,10 @@ class TransactionLogs(commands.Cog):
             'admin_add': '👑💰',
             'message_reward': '💬',
             'tax_collected': '🏛️',
-            'casino_profit': '🏦💰'
+            'casino_profit': '🏦💰',
+            'bank_deposit': '🏦📤',
+            'bank_withdraw': '🏦📥',
+            'public_bank_withdraw': '🏛️💰'
         }
         
         emoji = type_emojis.get(trans_type, '💰')
@@ -271,35 +274,6 @@ class TransactionLogs(commands.Cog):
     async def log_give_transaction(self, giver_id: int, receiver_id: int, amount: int, 
                                   giver_balance_before: int, giver_balance_after: int,
                                   receiver_balance_before: int, receiver_balance_after: int, tax: int = 0):
-
-# ==================== MÉTHODES BANCAIRES ====================
-    
-    async def log_bank_deposit(self, user_id: int, amount: int, 
-                              main_balance_before: int, main_balance_after: int,
-                              bank_balance_before: int, bank_balance_after: int):
-        """Log un dépôt bancaire"""
-        await self.log_transaction(
-            user_id=user_id,
-            transaction_type='bank_deposit',
-            amount=-amount,  # Négatif car c'est retiré du solde principal
-            balance_before=main_balance_before,
-            balance_after=main_balance_after,
-            description=f"Dépôt en banque +{amount} PB (banque: {bank_balance_before:,} → {bank_balance_after:,})"
-        )
-
-    async def log_bank_withdraw(self, user_id: int, amount: int,
-                               main_balance_before: int, main_balance_after: int,
-                               bank_balance_before: int, bank_balance_after: int):
-        """Log un retrait bancaire"""
-        await self.log_transaction(
-            user_id=user_id,
-            transaction_type='bank_withdraw',
-            amount=amount,  # Positif car c'est ajouté au solde principal
-            balance_before=main_balance_before,
-            balance_after=main_balance_after,
-            description=f"Retrait de banque +{amount} PB (banque: {bank_balance_before:,} → {bank_balance_after:,})"
-        )
-
         """Log une transaction give avec taxe"""
         try:
             # Log pour le donneur
@@ -331,6 +305,34 @@ class TransactionLogs(commands.Cog):
             )
         except Exception as e:
             logger.error(f"Erreur log give transaction: {e}")
+
+    # ==================== MÉTHODES BANCAIRES ====================
+    
+    async def log_bank_deposit(self, user_id: int, amount: int, 
+                              main_balance_before: int, main_balance_after: int,
+                              bank_balance_before: int, bank_balance_after: int):
+        """Log un dépôt bancaire"""
+        await self.log_transaction(
+            user_id=user_id,
+            transaction_type='bank_deposit',
+            amount=-amount,  # Négatif car c'est retiré du solde principal
+            balance_before=main_balance_before,
+            balance_after=main_balance_after,
+            description=f"Dépôt en banque +{amount} PB (banque: {bank_balance_before:,} → {bank_balance_after:,})"
+        )
+
+    async def log_bank_withdraw(self, user_id: int, amount: int,
+                               main_balance_before: int, main_balance_after: int,
+                               bank_balance_before: int, bank_balance_after: int):
+        """Log un retrait bancaire"""
+        await self.log_transaction(
+            user_id=user_id,
+            transaction_type='bank_withdraw',
+            amount=amount,  # Positif car c'est ajouté au solde principal
+            balance_before=main_balance_before,
+            balance_after=main_balance_after,
+            description=f"Retrait de banque +{amount} PB (banque: {bank_balance_before:,} → {bank_balance_after:,})"
+        )
 
     async def log_purchase(self, user_id: int, item_name: str, price: int, tax: int, 
                           balance_before: int, balance_after: int):
@@ -395,7 +397,7 @@ class TransactionLogs(commands.Cog):
                 amount=-bet,
                 balance_before=balance_before,
                 balance_after=balance_after,
-                description=f"PPC TIE vs {opponent_name or 'joueur'} - Mise vers casino: {bet}"
+                description=f"PPC TIE vs {opponent_name or 'joueur'} - Mise vers banque publique: {bet}"
             )
 
     async def log_admin_add(self, user_id: int, amount: int, balance_before: int, balance_after: int, admin_name: str):
