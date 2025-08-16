@@ -326,7 +326,7 @@ class Leaderboard(commands.Cog):
             embed = create_error_embed("Erreur", "Erreur lors de la recherche des utilisateurs les moins riches.")
             await ctx.send(embed=embed)
 
-@app_commands.command(name="poorest", description="Affiche les utilisateurs avec le moins de PrissBucks")
+    @app_commands.command(name="poorest", description="Affiche les utilisateurs avec le moins de PrissBucks")
     async def poorest_slash(self, interaction: discord.Interaction):
         """/poorest - Affiche les utilisateurs les moins riches"""
         await interaction.response.defer()
