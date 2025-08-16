@@ -18,7 +18,7 @@ class RouletteConfig:
     MIN_BET = 10
     MAX_BET = 100000
     TAX_RATE = 0.01  # 1% de taxe sur les gains
-    COOLDOWN_SECONDS = 3
+    COOLDOWN_SECONDS = 4  # MODIFIÉ: 3 → 4 secondes
     
     # Numéros et couleurs de la roulette européenne
     RED_NUMBERS = frozenset({1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36})
@@ -186,71 +186,75 @@ class RouletteEmbeds:
     @staticmethod
     def create_result_embed(game: RouletteGame, user: discord.Member, 
                           balance_before: int, balance_after: int) -> discord.Embed:
-        """Crée l'embed de résultat optimisé"""
+        """Crée l'embed de résultat optimisé avec version allégée pour les pertes"""
         color_name, color_emoji, hex_color = game.get_number_info()
         
         # Couleur de l'embed selon le résultat
         if game.winnings > 0:
+            # ========== VERSION COMPLÈTE POUR LES VICTOIRES ==========
             title = "🎉 VICTOIRE !"
             color = Colors.SUCCESS
             profit = game.winnings - game.bet_amount
-        else:
-            title = "💔 Pas cette fois..."
-            color = Colors.ERROR
-            profit = -game.bet_amount
-        
-        embed = discord.Embed(
-            title=title,
-            description=f"## 🎲 **Numéro tiré : {game.winning_number}** {color_emoji}",
-            color=color
-        )
-        
-        # Informations du pari
-        bet_description = RouletteEmbeds._get_bet_description(game.bet_type)
-        embed.add_field(
-            name="🎯 Ton pari",
-            value=f"{bet_description}\n💸 **{game.bet_amount:,}** PrissBucks",
-            inline=True
-        )
-        
-        # Résultat financier
-        if game.winnings > 0:
+            
+            embed = discord.Embed(
+                title=title,
+                description=f"## 🎲 **Numéro tiré : {game.winning_number}** {color_emoji}",
+                color=color
+            )
+            
+            # Informations du pari
+            bet_description = RouletteEmbeds._get_bet_description(game.bet_type)
+            embed.add_field(
+                name="🎯 Ton pari",
+                value=f"{bet_description}\n💸 **{game.bet_amount:,}** PrissBucks",
+                inline=True
+            )
+            
+            # Résultat financier
             embed.add_field(
                 name="💰 Gains",
                 value=f"🎊 **+{game.winnings:,}** PrissBucks\n💎 Profit : **+{profit:,}** PB",
                 inline=True
             )
-        else:
+            
+            # Solde actuel
             embed.add_field(
-                name="💸 Perte",
-                value=f"📉 **{profit:,}** PrissBucks\n⚡ Retry pour la victoire !",
+                name="💳 Nouveau solde",
+                value=f"{'💎' if balance_after > 1000 else '💰'} **{balance_after:,}** PrissBucks",
                 inline=True
             )
-        
-        # Solde actuel
-        embed.add_field(
-            name="💳 Nouveau solde",
-            value=f"{'💎' if balance_after > 1000 else '💰'} **{balance_after:,}** PrissBucks",
-            inline=True
-        )
-        
-        # Message selon le résultat
-        if game.winnings > 0:
+            
+            # Message selon le résultat
             embed.add_field(
                 name="🎊 Félicitations !",
                 value="La chance était de ton côté ! 🍀",
                 inline=False
             )
+            
+            embed.set_thumbnail(url=user.display_avatar.url)
+            embed.set_footer(text="🎰 Rejoue dans 4 secondes ! Historique: /transactions")
+            
         else:
+            # ========== VERSION ALLÉGÉE POUR LES DÉFAITES ==========
+            title = "💔 Pas cette fois..."
+            color = Colors.ERROR
+            profit = -game.bet_amount
+            
+            embed = discord.Embed(
+                title=title,
+                description=f"🎲 **{game.winning_number}** {color_emoji} • Perte: **{profit:,}** PB",
+                color=color
+            )
+            
+            # Version compacte - un seul field
             embed.add_field(
                 name="🏛️ Impact Social",
-                value=f"Ta mise de **{game.bet_amount:,} PB** a été ajoutée à la **banque publique** !\n"
-                      f"✨ Utilise `/publicbank` pour voir les fonds disponibles !",
+                value=f"**{game.bet_amount:,} PB** → Banque publique\n✨ `/publicbank` pour récupérer !",
                 inline=False
             )
-        
-        embed.set_thumbnail(url=user.display_avatar.url)
-        embed.set_footer(text="🎰 Rejoue dans 3 secondes ! Historique: /transactions")
+            
+            # Footer minimaliste
+            embed.set_footer(text="🎰 Retry dans 4s • Plus de chance la prochaine fois !")
         
         return embed
     
@@ -288,7 +292,7 @@ class Roulette(commands.Cog):
     async def cog_load(self):
         """Initialisation du cog"""
         self.db = self.bot.database
-        logger.info("✅ Cog Roulette initialisé (sécurisé et optimisé)")
+        logger.info("✅ Cog Roulette initialisé (sécurisé et optimisé) - Cooldown: 4s")
     
     def _check_cooldown(self, user_id: int) -> float:
         """Vérifie le cooldown de manière optimisée"""
@@ -425,7 +429,7 @@ class Roulette(commands.Cog):
             # Pour les messages normaux, on créera le message puis on l'éditera
             edit_func = None
         
-        # Vérification du cooldown
+        # Vérification du cooldown (4 secondes maintenant)
         cooldown_remaining = self._check_cooldown(user.id)
         if cooldown_remaining > 0:
             embed = discord.Embed(
@@ -478,7 +482,7 @@ class Roulette(commands.Cog):
             # Enregistrement dans les logs
             await self._log_game_result(game, balance_before, balance_after)
             
-            # Affichage du résultat
+            # Affichage du résultat (embed allégé pour les défaites)
             result_embed = RouletteEmbeds.create_result_embed(game, user, balance_before, balance_after)
             await edit_func(embed=result_embed)
             
