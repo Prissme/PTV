@@ -5,15 +5,15 @@ import logging
 import os
 import signal
 import sys
-import json
-import asyncpg
 from pathlib import Path
+from typing import Optional, List
+import traceback
 
 # Imports locaux
 from config import TOKEN, PREFIX, DATABASE_URL, LOG_LEVEL, HEALTH_PORT
 from database.db import Database
 
-# Import du serveur de santé
+# Import conditionnel du serveur de santé
 try:
     from health_server import HealthServer
     HEALTH_SERVER_AVAILABLE = True
@@ -21,441 +21,371 @@ except ImportError:
     HEALTH_SERVER_AVAILABLE = False
     logging.warning("⚠️ health_server.py non trouvé, pas de health check")
 
-# Configuration du logging
+# Configuration du logging optimisée
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL.upper()),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('bot.log', encoding='utf-8', mode='a') if os.getenv('LOG_FILE') else logging.NullHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
-# Configuration des intents
-intents = discord.Intents.default()
-intents.message_content = True
-intents.guilds = True
-intents.guild_messages = True
-
-# Initialisation du bot
-bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
-
-# Base de données globale
-database = None
-
-# Flag pour arrêt propre
-shutdown_flag = False
-
-def signal_handler(signum, frame):
-    """Gestionnaire pour arrêt propre"""
-    global shutdown_flag
-    logger.info(f"Signal {signum} reçu, arrêt en cours...")
-    shutdown_flag = True
-
-# Installer les gestionnaires de signaux (sauf sur Windows)
-if sys.platform != "win32":
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-# ==================== BOT EVENTS ====================
-
-@bot.event
-async def on_ready():
-    """Événement déclenché quand le bot est prêt"""
-    logger.info(f"✅ {bot.user} est connecté et prêt !")
-    logger.info(f"📊 Connecté à {len(bot.guilds)} serveur(s)")
+class EconomyBot:
+    """Bot économie avec architecture moderne et gestion d'erreurs robuste"""
     
-    # Synchroniser les slash commands
-    try:
-        synced = await bot.tree.sync()
-        logger.info(f"🔄 {len(synced)} slash command(s) synchronisée(s)")
-    except Exception as e:
-        logger.error(f"❌ Erreur sync slash commands: {e}")
-
-@bot.event
-async def on_command_error(ctx, error):
-    """Gestion globale des erreurs de commandes"""
-    # Ignorer les erreurs déjà gérées par les cogs
-    if hasattr(ctx.command, 'has_error_handler') and ctx.command.has_error_handler():
-        return
+    def __init__(self):
+        # Configuration des intents
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.guilds = True
+        intents.guild_messages = True
+        
+        # Initialisation du bot
+        self.bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
+        self.database: Optional[Database] = None
+        self.health_server: Optional[HealthServer] = None
+        
+        # État du bot
+        self.is_ready = False
+        self.shutdown_requested = False
+        
+        # Services
+        self.services: List[asyncio.Task] = []
+        
+        # Configuration des événements
+        self._setup_bot_events()
+        self._setup_signal_handlers()
     
-    if isinstance(error, commands.CommandNotFound):
-        return  # Ignorer les commandes inexistantes
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"❌ **Argument manquant !**\nUtilise `{PREFIX}help` pour voir l'aide.")
-    elif isinstance(error, commands.BadArgument):
-        await ctx.send(f"❌ **Argument invalide !**\nUtilise `{PREFIX}help` pour voir l'aide.")
-    elif isinstance(error, commands.CommandOnCooldown):
-        await ctx.send(f"⏰ **Cooldown !** Réessaye dans {error.retry_after:.1f} secondes.")
-    elif isinstance(error, commands.MissingPermissions):
-        await ctx.send("❌ **Tu n'as pas les permissions nécessaires !**")
-    elif isinstance(error, commands.BotMissingPermissions):
-        missing_perms = ", ".join(error.missing_permissions)
-        await ctx.send(f"❌ **Le bot n'a pas les permissions nécessaires :** {missing_perms}")
-    elif isinstance(error, commands.NotOwner):
-        await ctx.send("❌ **Seul le propriétaire du bot peut utiliser cette commande !**")
-    else:
-        logger.error(f"Erreur non gérée dans {ctx.command}: {error}")
-        await ctx.send("❌ **Une erreur inattendue s'est produite.**")
-
-@bot.event
-async def on_application_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
-    """Gestion globale des erreurs des slash commands"""
-    if isinstance(error, discord.app_commands.CommandOnCooldown):
-        embed = discord.Embed(
-            title="⏰ Cooldown actif !",
-            description=f"Tu pourras utiliser cette commande dans **{error.retry_after:.1f}** secondes.",
-            color=0xff9900
-        )
+    def _setup_signal_handlers(self):
+        """Configure les gestionnaires de signaux pour arrêt propre"""
+        if sys.platform != "win32":
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                signal.signal(sig, self._signal_handler)
+    
+    def _signal_handler(self, signum, frame):
+        """Gestionnaire de signaux pour arrêt gracieux"""
+        logger.info(f"Signal {signum} reçu, arrêt en cours...")
+        self.shutdown_requested = True
+    
+    def _setup_bot_events(self):
+        """Configure les événements du bot"""
+        
+        @self.bot.event
+        async def on_ready():
+            """Événement déclenché quand le bot est prêt"""
+            logger.info(f"✅ {self.bot.user} connecté ! Serveurs: {len(self.bot.guilds)}")
+            
+            # Synchroniser les slash commands une seule fois
+            try:
+                synced = await self.bot.tree.sync()
+                logger.info(f"🔄 {len(synced)} slash command(s) synchronisée(s)")
+            except Exception as e:
+                logger.error(f"❌ Erreur sync slash commands: {e}")
+            
+            self.is_ready = True
+        
+        @self.bot.event
+        async def on_guild_join(guild):
+            """Événement quand le bot rejoint un serveur"""
+            logger.info(f"✅ Ajouté à: {guild.name} ({guild.id}) - {guild.member_count} membres")
+        
+        @self.bot.event
+        async def on_guild_remove(guild):
+            """Événement quand le bot quitte un serveur"""
+            logger.info(f"❌ Retiré de: {guild.name} ({guild.id})")
+        
+        @self.bot.event
+        async def on_command_error(ctx, error):
+            """Gestion globale des erreurs - version simplifiée"""
+            if hasattr(ctx.command, 'has_error_handler') and ctx.command.has_error_handler():
+                return
+            
+            error_handlers = {
+                commands.CommandNotFound: None,  # Ignorer
+                commands.MissingRequiredArgument: ("❌ **Argument manquant !**", False),
+                commands.BadArgument: ("❌ **Argument invalide !**", False),
+                commands.CommandOnCooldown: (f"⏰ **Cooldown !** Réessaye dans {error.retry_after:.1f}s.", False),
+                commands.MissingPermissions: ("❌ **Permissions insuffisantes !**", False),
+                commands.BotMissingPermissions: (f"❌ **Bot sans permissions:** {', '.join(error.missing_permissions)}", False),
+                commands.NotOwner: ("❌ **Commande réservée au propriétaire !**", False)
+            }
+            
+            handler = error_handlers.get(type(error))
+            if handler is None:
+                if isinstance(error, commands.CommandNotFound):
+                    return
+                # Erreur non gérée
+                logger.error(f"Erreur non gérée {ctx.command}: {error}")
+                await ctx.send("❌ **Erreur inattendue.**")
+            elif handler[0]:  # Si message à envoyer
+                await ctx.send(handler[0])
+        
+        @self.bot.event
+        async def on_application_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+            """Gestion des erreurs slash commands - version simplifiée"""
+            embed_data = {
+                discord.app_commands.CommandOnCooldown: ("⏰ Cooldown actif", f"Réessaye dans **{error.retry_after:.1f}s**", 0xff9900),
+                discord.app_commands.MissingPermissions: ("❌ Permissions insuffisantes", "Tu n'as pas les permissions nécessaires", 0xff0000),
+            }
+            
+            embed_info = embed_data.get(type(error), ("❌ Erreur", "Une erreur s'est produite", 0xff0000))
+            embed = discord.Embed(title=embed_info[0], description=embed_info[1], color=embed_info[2])
+            
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                else:
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+            except Exception:
+                logger.error(f"Erreur envoi message d'erreur: {error}")
+    
+    async def setup_database(self) -> bool:
+        """Connecte la base de données de manière robuste"""
         try:
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=embed, ephemeral=True)
+            logger.info("🔌 Connexion à la base de données...")
+            self.database = Database(dsn=DATABASE_URL)
+            await self.database.connect()
+            self.bot.database = self.database
+            logger.info("✅ Base de données connectée")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Erreur connexion DB: {e}")
+            logger.error(traceback.format_exc())
+            return False
+    
+    async def load_cogs(self) -> tuple[int, int]:
+        """Charge tous les cogs avec gestion d'erreurs améliorée"""
+        cogs_dir = Path("cogs")
+        if not cogs_dir.exists():
+            logger.warning("📁 Dossier 'cogs' manquant, création...")
+            cogs_dir.mkdir()
+            return 0, 0
+        
+        # Ordre de chargement (cogs critiques d'abord)
+        priority_cogs = ['transaction_logs', 'economy', 'message_rewards']
+        
+        loaded, failed = 0, 0
+        
+        # Charger les cogs prioritaires
+        for cog_name in priority_cogs:
+            success = await self._load_single_cog(cog_name)
+            if success:
+                loaded += 1
             else:
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-        except:
-            pass
-    elif isinstance(error, discord.app_commands.MissingPermissions):
-        embed = discord.Embed(
-            title="❌ Permissions insuffisantes",
-            description="Tu n'as pas les permissions nécessaires pour utiliser cette commande.",
-            color=0xff0000
-        )
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=embed, ephemeral=True)
+                failed += 1
+        
+        # Configurer les logs de transactions après chargement de transaction_logs
+        self._setup_transaction_logs()
+        
+        # Charger les autres cogs
+        other_cogs = [
+            f.stem for f in cogs_dir.glob("*.py") 
+            if f.stem not in priority_cogs and f.stem != "__init__"
+        ]
+        
+        for cog_name in other_cogs:
+            success = await self._load_single_cog(cog_name)
+            if success:
+                loaded += 1
             else:
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-        except:
-            pass
-    else:
-        logger.error(f"Erreur slash command non gérée: {error}")
-        embed = discord.Embed(
-            title="❌ Erreur",
-            description="Une erreur inattendue s'est produite.",
-            color=0xff0000
-        )
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-        except:
-            pass
-
-@bot.event
-async def on_guild_join(guild):
-    """Événement quand le bot rejoint un serveur"""
-    logger.info(f"✅ Bot ajouté au serveur: {guild.name} ({guild.id}) - {guild.member_count} membres")
-
-@bot.event
-async def on_guild_remove(guild):
-    """Événement quand le bot quitte un serveur"""
-    logger.info(f"❌ Bot retiré du serveur: {guild.name} ({guild.id})")
-
-async def setup_database():
-    """Connecte la base de données et l'attache au bot"""
-    global database
-    try:
-        database = Database(dsn=DATABASE_URL)
-        await database.connect()
-        bot.database = database  # Rendre la DB accessible aux cogs
-        logger.info("✅ Base de données connectée avec succès")
-        return True
-    except Exception as e:
-        logger.error(f"❌ Erreur de connexion à la base de données: {e}")
-        return False
-
-async def setup_transaction_logs():
-    """Configure le système de logs de transactions"""
-    transaction_logs_cog = bot.get_cog('TransactionLogs')
-    if transaction_logs_cog:
-        # Rendre le système de logs accessible à tous les cogs
-        bot.transaction_logs = transaction_logs_cog
-        logger.info("✅ Système de logs de transactions configuré")
-    else:
-        logger.warning("⚠️ Cog TransactionLogs non trouvé")
-
-async def load_cogs():
-    """Charge automatiquement tous les cogs dans l'ordre correct"""
-    cogs_dir = Path("cogs")
-    cogs_loaded = 0
-    cogs_failed = 0
-    
-    if not cogs_dir.exists():
-        logger.warning("📁 Dossier 'cogs' introuvable, création...")
-        cogs_dir.mkdir()
-        return
-    
-    # Charger d'abord TransactionLogs en priorité
-    priority_cogs = ['transaction_logs']
-    
-    for cog_name in priority_cogs:
-        try:
-            await bot.load_extension(f'cogs.{cog_name}')
-            logger.info(f"✅ Cog prioritaire '{cog_name}' chargé avec succès")
-            cogs_loaded += 1
-        except Exception as e:
-            logger.error(f"❌ Erreur lors du chargement du cog prioritaire '{cog_name}': {e}")
-            cogs_failed += 1
-    
-    # Configurer le système de logs après le chargement de TransactionLogs
-    await setup_transaction_logs()
-    
-    # Lister tous les autres fichiers .py dans le dossier cogs
-    cog_files = [f.stem for f in cogs_dir.glob("*.py") if f.stem != "__init__" and f.stem not in priority_cogs]
-    
-    if not cog_files:
-        logger.warning("⚠️ Aucun autre cog trouvé dans le dossier 'cogs'")
-        return
-    
-    logger.info(f"🔄 Chargement de {len(cog_files)} cog(s) supplémentaires...")
-    
-    for cog_name in cog_files:
-        try:
-            await bot.load_extension(f'cogs.{cog_name}')
-            logger.info(f"✅ Cog '{cog_name}' chargé avec succès")
-            cogs_loaded += 1
-        except Exception as e:
-            logger.error(f"❌ Erreur lors du chargement du cog '{cog_name}': {e}")
-            cogs_failed += 1
-    
-    logger.info(f"📊 Résultat: {cogs_loaded} cog(s) chargé(s), {cogs_failed} échec(s)")
-
-# Commandes de gestion des cogs (pour l'owner)
-@bot.command(name='reload')
-@commands.is_owner()
-async def reload_cog(ctx, cog_name: str):
-    """[OWNER] Recharge un cog"""
-    try:
-        await bot.reload_extension(f'cogs.{cog_name}')
+                failed += 1
         
-        # Reconfigurer les logs si TransactionLogs a été rechargé
-        if cog_name == 'transaction_logs':
-            await setup_transaction_logs()
-        
-        await ctx.send(f"✅ **Cog '{cog_name}' rechargé avec succès !**")
-        logger.info(f"🔄 Cog '{cog_name}' rechargé par {ctx.author}")
-        
-        # Re-synchroniser les slash commands après reload
+        logger.info(f"📊 Cogs: {loaded} chargés, {failed} échecs")
+        return loaded, failed
+    
+    async def _load_single_cog(self, cog_name: str) -> bool:
+        """Charge un cog unique avec gestion d'erreurs"""
         try:
-            synced = await bot.tree.sync()
-            logger.info(f"🔄 {len(synced)} slash command(s) re-synchronisée(s)")
+            await self.bot.load_extension(f'cogs.{cog_name}')
+            logger.info(f"✅ Cog '{cog_name}' chargé")
+            return True
         except Exception as e:
-            logger.error(f"Erreur re-sync après reload: {e}")
+            logger.error(f"❌ Échec chargement '{cog_name}': {e}")
+            return False
+    
+    def _setup_transaction_logs(self):
+        """Configure le système de logs de transactions"""
+        transaction_logs_cog = self.bot.get_cog('TransactionLogs')
+        if transaction_logs_cog:
+            self.bot.transaction_logs = transaction_logs_cog
+            logger.info("✅ Logs de transactions configurés")
+        else:
+            logger.warning("⚠️ Cog TransactionLogs non trouvé")
+    
+    async def start_health_server(self) -> Optional[asyncio.Task]:
+        """Démarre le serveur de santé si disponible"""
+        if not HEALTH_SERVER_AVAILABLE:
+            return None
+        
+        try:
+            self.health_server = HealthServer(port=HEALTH_PORT)
+            task = asyncio.create_task(self.health_server.run_forever())
+            logger.info(f"🏥 Serveur de santé démarré sur port {HEALTH_PORT}")
+            return task
+        except Exception as e:
+            logger.error(f"❌ Erreur serveur de santé: {e}")
+            return None
+    
+    def add_owner_commands(self):
+        """Ajoute les commandes owner essentielles"""
+        
+        @self.bot.command(name='reload')
+        @commands.is_owner()
+        async def reload_cog(ctx, cog_name: str):
+            """[OWNER] Recharge un cog"""
+            try:
+                await self.bot.reload_extension(f'cogs.{cog_name}')
+                if cog_name == 'transaction_logs':
+                    self._setup_transaction_logs()
+                await ctx.send(f"✅ **'{cog_name}' rechargé !**")
+                logger.info(f"🔄 Cog '{cog_name}' rechargé par {ctx.author}")
+            except Exception as e:
+                await ctx.send(f"❌ **Erreur:** {e}")
+                logger.error(f"Erreur reload {cog_name}: {e}")
+        
+        @self.bot.command(name='sync')
+        @commands.is_owner()
+        async def sync_commands(ctx):
+            """[OWNER] Synchronise les slash commands"""
+            try:
+                synced = await self.bot.tree.sync()
+                await ctx.send(f"✅ **{len(synced)} commande(s) synchronisée(s) !**")
+                logger.info(f"🔄 Sync manuelle: {len(synced)} commandes")
+            except Exception as e:
+                await ctx.send(f"❌ **Erreur sync:** {e}")
+                logger.error(f"Erreur sync: {e}")
+        
+        @self.bot.command(name='status')
+        @commands.is_owner()
+        async def bot_status(ctx):
+            """[OWNER] Statut du bot"""
+            embed = discord.Embed(title="🤖 Statut Bot", color=0x0099ff)
+            embed.add_field(name="🟢 État", value="En ligne", inline=True)
+            embed.add_field(name="📊 Serveurs", value=len(self.bot.guilds), inline=True)
+            embed.add_field(name="🔧 Cogs", value=len(self.bot.extensions), inline=True)
+            embed.add_field(name="💾 DB", value="🟢 OK" if self.database else "🔴 KO", inline=True)
+            embed.add_field(name="🏥 Santé", value="🟢 OK" if self.health_server else "🔴 KO", inline=True)
+            await ctx.send(embed=embed)
+    
+    async def cleanup(self):
+        """Nettoyage complet des ressources"""
+        logger.info("🧹 Nettoyage en cours...")
+        
+        # Arrêter les services
+        for service in self.services:
+            if not service.done():
+                service.cancel()
+                try:
+                    await service
+                except asyncio.CancelledError:
+                    pass
+        
+        # Fermer la base de données
+        if self.database:
+            try:
+                await self.database.close()
+                logger.info("🔌 Base de données fermée")
+            except Exception as e:
+                logger.error(f"Erreur fermeture DB: {e}")
+        
+        # Fermer le bot
+        if not self.bot.is_closed():
+            try:
+                await self.bot.close()
+                logger.info("🤖 Bot fermé")
+            except Exception as e:
+                logger.error(f"Erreur fermeture bot: {e}")
+        
+        logger.info("✅ Nettoyage terminé")
+    
+    async def run(self):
+        """Méthode principale pour lancer le bot avec gestion complète d'erreurs"""
+        try:
+            # 1. Vérifications préalables
+            if not TOKEN:
+                raise ValueError("❌ TOKEN Discord manquant dans la configuration")
             
-    except Exception as e:
-        await ctx.send(f"❌ **Erreur lors du rechargement de '{cog_name}': {e}**")
-        logger.error(f"Erreur reload {cog_name}: {e}")
-
-@bot.command(name='load')
-@commands.is_owner()
-async def load_cog(ctx, cog_name: str):
-    """[OWNER] Charge un cog"""
-    try:
-        await bot.load_extension(f'cogs.{cog_name}')
-        
-        # Reconfigurer les logs si TransactionLogs a été chargé
-        if cog_name == 'transaction_logs':
-            await setup_transaction_logs()
-        
-        await ctx.send(f"✅ **Cog '{cog_name}' chargé avec succès !**")
-        logger.info(f"➕ Cog '{cog_name}' chargé par {ctx.author}")
-        
-        # Re-synchroniser les slash commands après load
-        try:
-            synced = await bot.tree.sync()
-            logger.info(f"🔄 {len(synced)} slash command(s) re-synchronisée(s)")
-        except Exception as e:
-            logger.error(f"Erreur re-sync après load: {e}")
+            if not DATABASE_URL:
+                raise ValueError("❌ URL de base de données manquante")
             
-    except Exception as e:
-        await ctx.send(f"❌ **Erreur lors du chargement de '{cog_name}': {e}**")
-        logger.error(f"Erreur load {cog_name}: {e}")
-
-@bot.command(name='unload')
-@commands.is_owner()
-async def unload_cog(ctx, cog_name: str):
-    """[OWNER] Décharge un cog"""
-    if cog_name.lower() in ['economy', 'help', 'transaction_logs']:
-        await ctx.send(f"❌ **Le cog '{cog_name}' ne peut pas être déchargé (cog critique).**")
-        return
-    
-    try:
-        await bot.unload_extension(f'cogs.{cog_name}')
-        await ctx.send(f"✅ **Cog '{cog_name}' déchargé avec succès !**")
-        logger.info(f"➖ Cog '{cog_name}' déchargé par {ctx.author}")
-        
-        # Re-synchroniser les slash commands après unload
-        try:
-            synced = await bot.tree.sync()
-            logger.info(f"🔄 {len(synced)} slash command(s) re-synchronisée(s)")
-        except Exception as e:
-            logger.error(f"Erreur re-sync après unload: {e}")
+            # 2. Connexion base de données
+            if not await self.setup_database():
+                raise RuntimeError("💥 Impossible de se connecter à la base de données")
             
-    except Exception as e:
-        await ctx.send(f"❌ **Erreur lors du déchargement de '{cog_name}': {e}**")
-        logger.error(f"Erreur unload {cog_name}: {e}")
-
-@bot.command(name='cogs')
-@commands.is_owner()
-async def list_cogs(ctx):
-    """[OWNER] Liste les cogs chargés"""
-    loaded_cogs = [name.split('.')[-1] for name in bot.extensions.keys()]
-    
-    embed = discord.Embed(
-        title="🔧 Cogs Chargés",
-        description=f"**{len(loaded_cogs)}** cog(s) actuellement chargé(s)",
-        color=0x0099ff
-    )
-    
-    if loaded_cogs:
-        cogs_list = "\n".join([f"✅ `{cog}`" for cog in sorted(loaded_cogs)])
-        embed.add_field(name="Cogs Actifs", value=cogs_list, inline=False)
-    else:
-        embed.add_field(name="Aucun Cog", value="Aucun cog chargé", inline=False)
-    
-    # Afficher le nombre de slash commands
-    slash_count = len(bot.tree.get_commands())
-    embed.add_field(name="Slash Commands", value=f"`{slash_count}` commande(s) slash", inline=True)
-    
-    # Statut de la base de données
-    db_status = "🟢 Connectée" if database and database.pool else "🔴 Déconnectée"
-    embed.add_field(name="Base de données", value=db_status, inline=True)
-    
-    # Statut des logs de transactions
-    logs_status = "🟢 Actif" if hasattr(bot, 'transaction_logs') else "🔴 Inactif"
-    embed.add_field(name="Logs Transactions", value=logs_status, inline=True)
-    
-    embed.set_footer(text=f"Utilisez {PREFIX}reload <cog> pour recharger")
-    await ctx.send(embed=embed)
-
-@bot.command(name='sync')
-@commands.is_owner()
-async def sync_slash_commands(ctx):
-    """[OWNER] Force la synchronisation des slash commands"""
-    try:
-        synced = await bot.tree.sync()
-        await ctx.send(f"✅ **{len(synced)} slash command(s) synchronisée(s) !**")
-        logger.info(f"🔄 Sync manuelle: {len(synced)} slash command(s)")
-    except Exception as e:
-        await ctx.send(f"❌ **Erreur lors de la synchronisation: {e}**")
-        logger.error(f"Erreur sync manuelle: {e}")
-
-async def cleanup():
-    """Nettoyage propre des ressources"""
-    global database
-    
-    logger.info("🧹 Nettoyage en cours...")
-    
-    # Fermer la base de données
-    if database and database.pool:
-        try:
-            await database.close()
-            logger.info("🔌 Connexion à la base fermée")
-        except Exception as e:
-            logger.error(f"Erreur fermeture DB: {e}")
-    
-    # Fermer le bot
-    if not bot.is_closed():
-        try:
-            await bot.close()
-            logger.info("🤖 Bot fermé")
-        except Exception as e:
-            logger.error(f"Erreur fermeture bot: {e}")
-
-async def main():
-    """Fonction principale pour démarrer le bot"""
-    global shutdown_flag
-    
-    try:
-        # 1. D'ABORD connecter la base de données
-        logger.info("🔌 Connexion à la base de données...")
-        if not await setup_database():
-            logger.error("💥 Impossible de se connecter à la base de données, arrêt.")
-            return
-        
-        # 2. ENSUITE charger les cogs (maintenant que bot.database existe)
-        logger.info("📦 Chargement des cogs...")
-        await load_cogs()
-        
-        # 3. ENFIN démarrer le bot
-        logger.info("🚀 Démarrage du bot Discord...")
-        
-        # Démarrer le bot en arrière-plan
-        bot_task = asyncio.create_task(bot.start(TOKEN))
-        
-        # Boucle de vérification du flag d'arrêt
-        while not shutdown_flag and not bot.is_closed():
-            await asyncio.sleep(1)
-        
-        # Arrêt demandé
-        if not bot.is_closed():
-            logger.info("🛑 Arrêt du bot...")
-            bot_task.cancel()
+            # 3. Chargement des cogs
+            loaded, failed = await self.load_cogs()
+            if loaded == 0:
+                logger.warning("⚠️ Aucun cog chargé, le bot pourrait ne pas fonctionner")
             
-        try:
-            await bot_task
-        except asyncio.CancelledError:
-            pass
-        
-    except KeyboardInterrupt:
-        logger.info("👋 Arrêt du bot demandé par l'utilisateur")
-        shutdown_flag = True
-    except Exception as e:
-        logger.error(f"💥 Erreur fatale: {e}")
-        raise
-    finally:
-        await cleanup()
-
-async def run_with_health_server():
-    """Lance le bot avec le serveur de santé"""
-    global shutdown_flag
-    
-    tasks = []
-    
-    # Tâche principale du bot
-    bot_task = asyncio.create_task(main())
-    tasks.append(bot_task)
-    
-    # Serveur de santé si disponible
-    if HEALTH_SERVER_AVAILABLE:
-        health_server = HealthServer(port=HEALTH_PORT)
-        health_task = asyncio.create_task(health_server.run_forever())
-        tasks.append(health_task)
-        logger.info("🏥 Serveur de santé configuré")
-    
-    try:
-        # Attendre que l'une des tâches se termine ou que l'arrêt soit demandé
-        while not shutdown_flag:
-            done, pending = await asyncio.wait(tasks, timeout=1.0, return_when=asyncio.FIRST_COMPLETED)
+            # 4. Commandes owner
+            self.add_owner_commands()
             
-            if done:
-                # Une tâche s'est terminée
-                break
-        
-        # Annuler toutes les tâches restantes
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        
-        # Attendre que toutes les tâches se terminent proprement
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # 5. Serveur de santé (optionnel)
+            health_task = await self.start_health_server()
+            if health_task:
+                self.services.append(health_task)
+            
+            # 6. Démarrage du bot Discord
+            logger.info("🚀 Démarrage du bot Discord...")
+            bot_task = asyncio.create_task(self.bot.start(TOKEN))
+            self.services.append(bot_task)
+            
+            # 7. Boucle principale avec surveillance
+            await self._main_loop()
+            
+        except KeyboardInterrupt:
+            logger.info("👋 Arrêt demandé par l'utilisateur")
+        except Exception as e:
+            logger.error(f"💥 Erreur fatale: {e}")
+            logger.error(traceback.format_exc())
+            raise
+        finally:
+            await self.cleanup()
+    
+    async def _main_loop(self):
+        """Boucle principale avec surveillance des services"""
+        while not self.shutdown_requested:
+            try:
+                # Vérifier l'état des services
+                done_services = [s for s in self.services if s.done()]
                 
-    except KeyboardInterrupt:
-        logger.info("👋 Arrêt en cours...")
-        shutdown_flag = True
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+                if done_services:
+                    # Un service s'est arrêté
+                    for service in done_services:
+                        try:
+                            await service  # Récupérer l'exception si elle existe
+                        except Exception as e:
+                            logger.error(f"Service arrêté avec erreur: {e}")
+                    break
+                
+                # Attendre un peu avant la prochaine vérification
+                await asyncio.sleep(1)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Erreur dans la boucle principale: {e}")
+                break
+
+# Point d'entrée principal
+async def main():
+    """Point d'entrée principal avec configuration d'event loop optimisée"""
+    
+    # Configuration Windows si nécessaire
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    
+    # Création et lancement du bot
+    bot = EconomyBot()
+    await bot.run()
 
 if __name__ == "__main__":
     try:
-        # Gestion propre des signaux sur Windows
-        if sys.platform == "win32":
-            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-        
-        asyncio.run(run_with_health_server())
+        asyncio.run(main())
     except KeyboardInterrupt:
         print("\n👋 Au revoir !")
     except Exception as e:
-        print(f"💥 Erreur lors du démarrage: {e}")
-        raise
+        print(f"💥 Erreur critique: {e}")
+        sys.exit(1)
