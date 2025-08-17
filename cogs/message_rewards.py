@@ -501,7 +501,7 @@ class MessageRewards(commands.Cog):
 
     @commands.command(name='msgtop', aliases=['message_top'])
     @commands.cooldown(1, 60, commands.BucketType.guild)  # Limite: 1 fois par minute par serveur
-    async def message_top_cmd(self, ctx):
+    async def msgtop_cmd(self, ctx):
         """Affiche un classement des utilisateurs les plus actifs avec indication TOP 1"""
         try:
             if not self.cooldowns:
