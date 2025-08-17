@@ -393,10 +393,40 @@ class Leaderboard(commands.Cog):
             send_func = ctx_or_interaction.send
         
         try:
-            # Récupérer tous les utilisateurs
+            # Récupérer tous les utilisateurs (soldes principaux)
             all_users = await self.db.get_top_users(10000)  # Grande limite pour récupérer tout le monde
             
-            if not all_users:
+            # Récupérer les soldes bancaires si disponibles
+            total_bank_balance = 0
+            bank_users_count = 0
+            try:
+                if hasattr(self.bot, 'database') and self.bot.database.pool:
+                    async with self.bot.database.pool.acquire() as conn:
+                        bank_result = await conn.fetchrow("""
+                            SELECT COUNT(*) as users, COALESCE(SUM(balance), 0) as total_balance 
+                            FROM user_bank WHERE balance > 0
+                        """)
+                        if bank_result:
+                            total_bank_balance = bank_result['total_balance']
+                            bank_users_count = bank_result['users']
+            except Exception as e:
+                logger.debug(f"Impossible de récupérer les soldes bancaires: {e}")
+            
+            # Récupérer la banque publique si disponible
+            public_bank_balance = 0
+            try:
+                public_bank_cog = self.bot.get_cog('PublicBank')
+                if public_bank_cog:
+                    bank_info = await public_bank_cog.get_public_bank_balance()
+                    public_bank_balance = bank_info.get('balance', 0)
+            except Exception as e:
+                logger.debug(f"Impossible de récupérer la banque publique: {e}")
+            
+            # Calculer les totaux
+            main_balance_total = sum(balance for _, balance in all_users) if all_users else 0
+            total_prissbucks = main_balance_total + total_bank_balance + public_bank_balance
+            
+            if total_prissbucks == 0:
                 embed = discord.Embed(
                     title="💰 Total PrissBucks du Serveur",
                     description="**0** PrissBucks en circulation\n\nAucun utilisateur n'a encore de PrissBucks !",
@@ -412,96 +442,128 @@ class Leaderboard(commands.Cog):
                 await send_func(embed=embed)
                 return
             
-            # Calculer le total et les statistiques
-            total_prissbucks = sum(balance for _, balance in all_users)
-            user_count = len(all_users)
-            average_per_user = total_prissbucks / user_count if user_count > 0 else 0
+            # Statistiques utilisateurs
+            user_count = len(all_users) if all_users else 0
+            average_per_user = main_balance_total / user_count if user_count > 0 else 0
             
-            # Trouver l'utilisateur le plus riche
-            richest_user_id, richest_balance = all_users[0]
+            # Trouver l'utilisateur le plus riche (total main + banque)
+            richest_user_id, richest_balance = all_users[0] if all_users else (None, 0)
             try:
-                richest_user = self.bot.get_user(richest_user_id)
-                richest_name = richest_user.display_name if richest_user else f"Utilisateur {richest_user_id}"
+                if richest_user_id:
+                    richest_user = self.bot.get_user(richest_user_id)
+                    richest_name = richest_user.display_name if richest_user else f"Utilisateur {richest_user_id}"
+                else:
+                    richest_name = "Aucun"
+                    richest_balance = 0
             except:
-                richest_name = f"Utilisateur {richest_user_id}"
+                richest_name = f"Utilisateur {richest_user_id}" if richest_user_id else "Aucun"
             
-            # Créer l'embed avec les statistiques
+            # Créer l'embed avec les statistiques complètes
             embed = discord.Embed(
                 title="💰 Total PrissBucks du Serveur",
                 description=f"**{total_prissbucks:,}** PrissBucks en circulation !",
                 color=Colors.GOLD
             )
             
+            # Répartition par types de comptes
             embed.add_field(
-                name="👥 Utilisateurs actifs",
-                value=f"**{user_count}** utilisateur{'s' if user_count > 1 else ''}\nont des PrissBucks",
+                name="💳 Comptes principaux",
+                value=f"**{main_balance_total:,}** PB\n({user_count} utilisateur{'s' if user_count > 1 else ''})",
                 inline=True
             )
             
             embed.add_field(
-                name="📊 Moyenne par utilisateur",
+                name="🏦 Banques privées",
+                value=f"**{total_bank_balance:,}** PB\n({bank_users_count} compte{'s' if bank_users_count > 1 else ''})",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="🏛️ Banque publique",
+                value=f"**{public_bank_balance:,}** PB\n(communautaire)",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="📊 Moyenne (comptes principaux)",
                 value=f"**{average_per_user:,.0f}** PrissBucks",
                 inline=True
             )
             
             embed.add_field(
-                name="👑 Plus riche",
+                name="👑 Plus riche (principal)",
                 value=f"**{richest_name}**\n{richest_balance:,} PrissBucks",
                 inline=True
             )
             
-            # Répartition par tranches
-            ranges = [
-                (0, 100, "🔴"),
-                (100, 1000, "🟠"),
-                (1000, 10000, "🟡"),
-                (10000, 100000, "🟢"),
-                (100000, float('inf'), "🔵")
-            ]
-            
-            range_counts = {emoji: 0 for _, _, emoji in ranges}
-            for _, balance in all_users:
-                for min_val, max_val, emoji in ranges:
-                    if min_val <= balance < max_val:
-                        range_counts[emoji] += 1
-                        break
-            
-            range_text = ""
-            for min_val, max_val, emoji in ranges:
-                count = range_counts[emoji]
-                if count > 0:
-                    if max_val == float('inf'):
-                        range_text += f"{emoji} **{count}** users ≥ {min_val:,} PB\n"
-                    else:
-                        range_text += f"{emoji} **{count}** users ({min_val:,}-{max_val-1:,} PB)\n"
-            
-            if range_text:
-                embed.add_field(
-                    name="📈 Répartition des richesses",
-                    value=range_text,
-                    inline=False
-                )
-            
-            # Pourcentage de concentration
-            top_10_total = sum(balance for _, balance in all_users[:10])
-            concentration_pct = (top_10_total / total_prissbucks * 100) if total_prissbucks > 0 else 0
+            # Répartition économique
+            main_pct = (main_balance_total / total_prissbucks * 100) if total_prissbucks > 0 else 0
+            bank_pct = (total_bank_balance / total_prissbucks * 100) if total_prissbucks > 0 else 0
+            public_pct = (public_bank_balance / total_prissbucks * 100) if total_prissbucks > 0 else 0
             
             embed.add_field(
-                name="🎯 Concentration",
-                value=f"Le **top 10** possède **{concentration_pct:.1f}%**\nde tous les PrissBucks",
-                inline=True
-            )
-            
-            # Info sur l'économie
-            embed.add_field(
-                name="📊 Économie du serveur",
-                value=f"• Total en circulation: **{total_prissbucks:,}** PB\n"
-                      f"• Utilisateurs actifs: **{user_count}**\n"
-                      f"• Richesse distribuée: **{100-concentration_pct:.1f}%**",
+                name="📊 Répartition économique",
+                value=f"💳 **{main_pct:.1f}%** en circulation libre\n"
+                      f"🏦 **{bank_pct:.1f}%** épargné (banques privées)\n"
+                      f"🏛️ **{public_pct:.1f}%** solidaire (banque publique)",
                 inline=False
             )
             
-            embed.set_footer(text="Données en temps réel • Utilise 'e!leaderboard' pour voir le classement")
+            # Répartition par tranches (basé sur les comptes principaux)
+            if all_users:
+                ranges = [
+                    (0, 100, "🔴"),
+                    (100, 1000, "🟠"),
+                    (1000, 10000, "🟡"),
+                    (10000, 100000, "🟢"),
+                    (100000, float('inf'), "🔵")
+                ]
+                
+                range_counts = {emoji: 0 for _, _, emoji in ranges}
+                for _, balance in all_users:
+                    for min_val, max_val, emoji in ranges:
+                        if min_val <= balance < max_val:
+                            range_counts[emoji] += 1
+                            break
+                
+                range_text = ""
+                for min_val, max_val, emoji in ranges:
+                    count = range_counts[emoji]
+                    if count > 0:
+                        if max_val == float('inf'):
+                            range_text += f"{emoji} **{count}** users ≥ {min_val:,} PB\n"
+                        else:
+                            range_text += f"{emoji} **{count}** users ({min_val:,}-{max_val-1:,} PB)\n"
+                
+                if range_text:
+                    embed.add_field(
+                        name="📈 Répartition des richesses (comptes principaux)",
+                        value=range_text,
+                        inline=True
+                    )
+                
+                # Pourcentage de concentration
+                top_10_total = sum(balance for _, balance in all_users[:10])
+                concentration_pct = (top_10_total / main_balance_total * 100) if main_balance_total > 0 else 0
+                
+                embed.add_field(
+                    name="🎯 Concentration (comptes principaux)",
+                    value=f"Le **top 10** possède **{concentration_pct:.1f}%**\ndes comptes principaux",
+                    inline=True
+                )
+            
+            # Info sur l'économie globale
+            embed.add_field(
+                name="🌍 Économie globale du serveur",
+                value=f"• **Total en circulation:** {total_prissbucks:,} PB\n"
+                      f"• **Utilisateurs actifs:** {user_count} (comptes principaux)\n"
+                      f"• **Comptes bancaires:** {bank_users_count} (épargne privée)\n"
+                      f"• **Système solidaire:** {public_bank_balance:,} PB disponibles à tous\n"
+                      f"• **Liquidités:** {main_pct:.1f}% immédiatement disponibles",
+                inline=False
+            )
+            
+            embed.set_footer(text="Données complètes en temps réel • Comptes principaux + banques privées + banque publique")
             
             await send_func(embed=embed)
             
