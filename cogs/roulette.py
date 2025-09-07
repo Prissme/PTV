@@ -94,7 +94,7 @@ class RouletteGame:
     
     def _calculate_winnings(self) -> int:
         """Calcule les gains selon le type de pari"""
-        if not self.winning_number:
+        if self.winning_number is None:
             return 0
         
         # Pari sur un numéro spécifique (35:1 + mise remboursée)
@@ -133,13 +133,51 @@ class RouletteGame:
             return "Vert", "💚", "#00ff00"
 
 class RouletteAnimator:
-    """Gère les animations de la roulette de manière optimisée"""
+    """Gère les animations de la roulette de manière sécurisée"""
     
     @staticmethod
-    async def animate_spin(message, winning_number: int) -> None:
-        """Animation optimisée du spin avec gestion d'erreurs renforcée"""
+    async def animate_spin_slash(interaction: discord.Interaction, winning_number: int) -> None:
+        """Animation pour slash commands"""
         try:
-            # Phase 1: Préparation (1s)
+            # Phase 1
+            embed = discord.Embed(
+                title="🎰 LA ROULETTE TOURNE...",
+                description="```\n🎯 La bille est lancée !\n```",
+                color=Colors.WARNING
+            )
+            await interaction.edit_original_response(embed=embed)
+            await asyncio.sleep(1.0)
+
+            # Phase 2
+            for phase_msg in RouletteConfig.ANIMATION_PHASES[1:3]:
+                fake_numbers = [random.randint(0, 36) for _ in range(3)]
+                animation_text = " → ".join([f"**{n}**" for n in fake_numbers])
+                
+                embed = discord.Embed(
+                    title=phase_msg,
+                    description=f"```\n{animation_text} → ...\n```",
+                    color=Colors.INFO
+                )
+                await interaction.edit_original_response(embed=embed)
+                await asyncio.sleep(0.7)
+
+            # Phase 3
+            embed = discord.Embed(
+                title="🎯 RÉSULTAT !",
+                description=f"```\nNuméro gagnant : {winning_number}\n```",
+                color=Colors.SUCCESS
+            )
+            await interaction.edit_original_response(embed=embed)
+            await asyncio.sleep(0.8)
+            
+        except Exception as e:
+            logger.error(f"Erreur animation slash: {e}")
+    
+    @staticmethod
+    async def animate_spin_prefix(message: discord.Message, winning_number: int) -> None:
+        """Animation pour commandes prefix"""
+        try:
+            # Phase 1
             embed = discord.Embed(
                 title="🎰 LA ROULETTE TOURNE...",
                 description="```\n🎯 La bille est lancée !\n```",
@@ -148,8 +186,8 @@ class RouletteAnimator:
             await message.edit(embed=embed)
             await asyncio.sleep(1.0)
 
-            # Phase 2: Animation rapide (2s)
-            for i, phase_msg in enumerate(RouletteConfig.ANIMATION_PHASES[1:3]):
+            # Phase 2
+            for phase_msg in RouletteConfig.ANIMATION_PHASES[1:3]:
                 fake_numbers = [random.randint(0, 36) for _ in range(3)]
                 animation_text = " → ".join([f"**{n}**" for n in fake_numbers])
                 
@@ -161,7 +199,7 @@ class RouletteAnimator:
                 await message.edit(embed=embed)
                 await asyncio.sleep(0.7)
 
-            # Phase 3: Résultat final (1s)
+            # Phase 3
             embed = discord.Embed(
                 title="🎯 RÉSULTAT !",
                 description=f"```\nNuméro gagnant : {winning_number}\n```",
@@ -170,20 +208,8 @@ class RouletteAnimator:
             await message.edit(embed=embed)
             await asyncio.sleep(0.8)
             
-        except discord.HTTPException as e:
-            logger.error(f"Erreur HTTP animation roulette: {e}")
-            # Animation fallback simple
-            try:
-                embed = discord.Embed(
-                    title="🎰 Roulette",
-                    description=f"**Numéro tiré :** {winning_number}",
-                    color=Colors.INFO
-                )
-                await message.edit(embed=embed)
-            except Exception as e2:
-                logger.error(f"Erreur fallback animation: {e2}")
         except Exception as e:
-            logger.error(f"Erreur animation roulette: {e}")
+            logger.error(f"Erreur animation prefix: {e}")
 
 class RouletteEmbeds:
     """Générateur d'embeds pour la roulette"""
@@ -353,14 +379,17 @@ class Roulette(commands.Cog):
             return False
     
     async def _process_game_transaction(self, game: RouletteGame, balance_before: int) -> Tuple[int, bool]:
-        """Traite la transaction de jeu de manière atomique"""
+        """Traite la transaction de jeu de manière atomique avec protection contre les soldes négatifs"""
         try:
-            # Débiter la mise du joueur
-            await self.db.update_balance(game.user_id, -game.bet_amount)
+            # NOUVEAU : Vérifier le solde AVANT de débiter
+            if balance_before < game.bet_amount:
+                logger.warning(f"Solde insuffisant: {game.user_id} a {balance_before}, veut miser {game.bet_amount}")
+                return balance_before, False
             
             if game.winnings > 0:
-                # VICTOIRE : Créditer les gains
-                await self.db.update_balance(game.user_id, game.winnings)
+                # VICTOIRE : Transaction atomique
+                net_gain = game.winnings - game.bet_amount
+                await self.db.update_balance(game.user_id, net_gain)
                 
                 # Taxe optionnelle vers banque publique
                 if game.bet_type.startswith("number_"):
@@ -372,9 +401,12 @@ class Roulette(commands.Cog):
                 if tax > 0:
                     await self._send_to_public_bank(tax)
                 
-                balance_after = balance_before - game.bet_amount + game.winnings
+                balance_after = balance_before + net_gain
             else:
-                # DÉFAITE : Envoyer la mise vers la banque publique
+                # DÉFAITE : Débiter seulement la mise
+                await self.db.update_balance(game.user_id, -game.bet_amount)
+                
+                # Envoyer vers banque publique
                 success = await self._send_to_public_bank(game.bet_amount)
                 if not success:
                     logger.error(f"Échec envoi {game.bet_amount} PB vers banque publique")
@@ -385,11 +417,6 @@ class Roulette(commands.Cog):
             
         except Exception as e:
             logger.error(f"Erreur transaction roulette {game.user_id}: {e}")
-            # En cas d'erreur, essayer de restaurer le solde
-            try:
-                await self.db.update_balance(game.user_id, game.bet_amount)
-            except:
-                pass
             return balance_before, False
     
     async def _log_game_result(self, game: RouletteGame, balance_before: int, balance_after: int):
@@ -423,7 +450,7 @@ class Roulette(commands.Cog):
         await self._execute_roulette(ctx, bet_type, bet_amount)
     
     async def _execute_roulette(self, ctx_or_interaction, bet_type: str, bet_amount: int, is_slash=False):
-        """Logique principale de la roulette CORRIGÉE"""
+        """Logique principale de la roulette TOTALEMENT CORRIGÉE"""
         if is_slash:
             user = ctx_or_interaction.user
             send_func = ctx_or_interaction.followup.send
@@ -451,7 +478,7 @@ class Roulette(commands.Cog):
             return
         
         try:
-            # Vérification du solde
+            # Vérification du solde AVANT tout
             balance_before = await self.db.get_balance(user.id)
             
             if balance_before < game.bet_amount:
@@ -465,20 +492,24 @@ class Roulette(commands.Cog):
             # Effectuer le spin
             winning_number = game.spin()
             
-            # CORRECTION PRINCIPALE : Création du message d'animation
+            # ANIMATION SELON LE TYPE DE COMMANDE
             if is_slash:
-                # Pour les slash commands, on peut éditer directement
-                await RouletteAnimator.animate_spin(ctx_or_interaction, winning_number)
+                await RouletteAnimator.animate_spin_slash(ctx_or_interaction, winning_number)
             else:
-                # Pour les commandes prefix, créer un nouveau message
-                animation_msg = await send_func("🎰 **La roulette commence...**")
-                await RouletteAnimator.animate_spin(animation_msg, winning_number)
+                # Pour prefix : créer un message puis l'animer
+                initial_embed = discord.Embed(
+                    title="🎰 Préparation...",
+                    description="La roulette se prépare...",
+                    color=Colors.INFO
+                )
+                animation_msg = await send_func(embed=initial_embed)
+                await RouletteAnimator.animate_spin_prefix(animation_msg, winning_number)
             
             # Traitement de la transaction
             balance_after, transaction_success = await self._process_game_transaction(game, balance_before)
             
             if not transaction_success:
-                embed = create_error_embed("Erreur technique", "Une erreur s'est produite lors du jeu.")
+                embed = create_error_embed("Erreur technique", "Solde insuffisant ou erreur de transaction.")
                 if is_slash:
                     await ctx_or_interaction.edit_original_response(embed=embed)
                 else:
@@ -488,7 +519,7 @@ class Roulette(commands.Cog):
             # Enregistrement dans les logs
             await self._log_game_result(game, balance_before, balance_after)
             
-            # Affichage du résultat (embed allégé pour les défaites)
+            # Affichage du résultat
             result_embed = RouletteEmbeds.create_result_embed(game, user, balance_before, balance_after)
             
             if is_slash:
@@ -508,27 +539,22 @@ class Roulette(commands.Cog):
             result_text = "GAGNE" if game.winnings > 0 else "PERD"
             logger.info(f"Roulette: {user} {result_text} {game.bet_amount} PB sur #{winning_number}")
             
-        except discord.HTTPException as e:
-            logger.error(f"Erreur HTTP roulette {user.id}: {e}")
-            try:
-                embed = create_error_embed(
-                    "Erreur Discord", 
-                    "Problème de communication avec Discord. Réessaie dans un instant."
-                )
-                await send_func(embed=embed)
-            except Exception as e2:
-                logger.error(f"Impossible d'envoyer message d'erreur: {e2}")
-                
         except Exception as e:
             logger.error(f"Erreur critique roulette {user.id}: {e}")
             try:
                 embed = create_error_embed(
                     "Erreur inattendue", 
-                    "Une erreur technique s'est produite. Réessaie dans quelques instants."
+                    "Une erreur technique s'est produite. Ton solde n'a pas été affecté."
                 )
-                await send_func(embed=embed)
+                if is_slash:
+                    try:
+                        await ctx_or_interaction.edit_original_response(embed=embed)
+                    except:
+                        await send_func(embed=embed)
+                else:
+                    await send_func(embed=embed)
             except Exception as e2:
-                logger.error(f"Impossible d'envoyer message d'erreur critique: {e2}")
+                logger.error(f"Impossible d'envoyer message d'erreur: {e2}")
     
     @commands.command(name='roulette_stats')
     @commands.is_owner()
