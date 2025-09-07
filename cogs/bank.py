@@ -190,7 +190,7 @@ class Bank(commands.Cog):
             return {"balance": 0, "total_deposited": 0, "total_withdrawn": 0, "total_fees_paid": 0}
 
     async def update_bank_balance(self, user_id: int, amount: int, operation_type: str) -> bool:
-        """Met à jour le solde bancaire"""
+        """Met à jour le solde bancaire - VERSION CORRIGÉE"""
         if not self.db.pool or amount == 0:
             return False
         
@@ -200,17 +200,19 @@ class Bank(commands.Cog):
             async with self.db.pool.acquire() as conn:
                 async with conn.transaction():
                     if operation_type == "deposit" and amount > 0:
+                        # CORRECTION: 3 paramètres seulement
                         await conn.execute("""
                             INSERT INTO user_bank (user_id, balance, total_deposited, last_activity)
                             VALUES ($1, $2, $2, $3)
                             ON CONFLICT (user_id) DO UPDATE SET
-                            balance = user_bank.balance + EXCLUDED.balance,
-                            total_deposited = user_bank.total_deposited + EXCLUDED.total_deposited,
-                            last_activity = EXCLUDED.last_activity
-                        """, user_id, amount, amount, now)
+                            balance = user_bank.balance + $2,
+                            total_deposited = user_bank.total_deposited + $2,
+                            last_activity = $3
+                        """, user_id, amount, now)
                         return True
                         
                     elif operation_type == "withdraw" and amount > 0:
+                        # CORRECTION: 3 paramètres seulement
                         result = await conn.execute("""
                             UPDATE user_bank 
                             SET balance = balance - $1, 
@@ -356,7 +358,7 @@ class Bank(commands.Cog):
         await self._execute_deposit(interaction, amount, is_slash=True)
 
     async def _execute_deposit(self, ctx_or_interaction, amount, is_slash=False):
-        """Logique de dépôt simplifiée"""
+        """Logique de dépôt simplifiée - VERSION CORRIGÉE"""
         if is_slash:
             user = ctx_or_interaction.user
             send_func = ctx_or_interaction.followup.send
@@ -390,6 +392,8 @@ class Bank(commands.Cog):
             deposit_tax = int(amount * self.DEPOSIT_TAX_RATE)
             total_cost = amount + deposit_tax
             
+            logger.info(f"Dépôt debug - User: {user_id}, Amount: {amount}, MainBalance: {main_balance_before}, Tax: {deposit_tax}, TotalCost: {total_cost}")
+            
             if main_balance_before < total_cost:
                 embed = create_error_embed("Solde insuffisant",
                     f"Coût total: {total_cost:,} PB (dépôt: {amount:,} + taxe: {deposit_tax:,})\nTu as: {main_balance_before:,} PB")
@@ -404,25 +408,32 @@ class Bank(commands.Cog):
                 await send_func(embed=embed)
                 return
 
-            # Transaction atomique
+            # Transaction atomique CORRIGÉE
+            logger.info("Début transaction atomique dépôt")
             async with self.db.pool.acquire() as conn:
                 async with conn.transaction():
                     # Débiter compte principal
+                    logger.info(f"Débitage {total_cost} du compte principal")
                     await conn.execute("UPDATE users SET balance = balance - $1 WHERE user_id = $2", 
                                      total_cost, user_id)
                     
-                    # Créditer banque (sans taxe)
+                    # Créditer banque (sans taxe) - UTILISE LA VERSION CORRIGÉE
+                    logger.info(f"Crédit banque privée: {amount}")
                     success = await self.update_bank_balance(user_id, amount, "deposit")
                     if not success:
+                        logger.error("Échec update_bank_balance")
                         embed = create_error_embed("Erreur", "Erreur lors du dépôt.")
                         await send_func(embed=embed)
                         return
                     
                     # Envoyer taxe vers banque publique
                     if deposit_tax > 0:
+                        logger.info(f"Envoi taxe {deposit_tax} vers banque publique")
                         public_bank_cog = self.bot.get_cog('PublicBank')
                         if public_bank_cog:
                             await public_bank_cog.add_casino_loss(deposit_tax, "bank_deposit_tax")
+                        else:
+                            logger.warning("PublicBank cog non trouvé")
 
             # Mettre à jour limites
             self._add_daily_deposit(user_id, amount)
@@ -437,10 +448,11 @@ class Bank(commands.Cog):
                     value=f"{daily_fee:,} PB/jour de frais", inline=False)
             
             await send_func(embed=embed)
+            logger.info(f"Dépôt réussi - User: {user_id}, Amount: {amount}, Tax: {deposit_tax}")
             
         except Exception as e:
-            logger.error(f"Erreur deposit {user_id}: {e}")
-            embed = create_error_embed("Erreur", "Erreur lors du dépôt.")
+            logger.error(f"Erreur deposit {user_id}: {type(e).__name__}: {str(e)}", exc_info=True)
+            embed = create_error_embed("Erreur", f"Erreur technique lors du dépôt.")
             await send_func(embed=embed)
 
     @commands.command(name='withdraw', aliases=['retirer'])
@@ -460,7 +472,7 @@ class Bank(commands.Cog):
         await self._execute_withdraw(interaction, amount, is_slash=True)
 
     async def _execute_withdraw(self, ctx_or_interaction, amount, is_slash=False):
-        """Logique de retrait simplifiée"""
+        """Logique de retrait simplifiée - VERSION CORRIGÉE"""
         if is_slash:
             user = ctx_or_interaction.user
             send_func = ctx_or_interaction.followup.send
@@ -481,23 +493,29 @@ class Bank(commands.Cog):
             bank_balance_before = await self.get_bank_balance(user_id)
             main_balance_before = await self.db.get_balance(user_id)
             
+            logger.info(f"Retrait debug - User: {user_id}, Amount: {amount}, BankBalance: {bank_balance_before}")
+            
             if bank_balance_before < amount:
                 embed = create_error_embed("Solde bancaire insuffisant",
                     f"Banque: {bank_balance_before:,} PB\nDemandé: {amount:,} PB")
                 await send_func(embed=embed)
                 return
 
-            # Transaction atomique
+            # Transaction atomique CORRIGÉE
+            logger.info("Début transaction atomique retrait")
             async with self.db.pool.acquire() as conn:
                 async with conn.transaction():
-                    # Débiter banque
+                    # Débiter banque - UTILISE LA VERSION CORRIGÉE
+                    logger.info(f"Débit banque: {amount}")
                     success = await self.update_bank_balance(user_id, amount, "withdraw")
                     if not success:
+                        logger.error("Échec update_bank_balance pour retrait")
                         embed = create_error_embed("Erreur", "Erreur lors du retrait.")
                         await send_func(embed=embed)
                         return
                     
                     # Créditer compte principal
+                    logger.info(f"Crédit compte principal: {amount}")
                     await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", 
                                      amount, user_id)
 
@@ -515,10 +533,11 @@ class Bank(commands.Cog):
                 embed.add_field(name="✅ Plus de frais", value="Aucun frais quotidien appliqué !", inline=False)
             
             await send_func(embed=embed)
+            logger.info(f"Retrait réussi - User: {user_id}, Amount: {amount}")
             
         except Exception as e:
-            logger.error(f"Erreur withdraw {user_id}: {e}")
-            embed = create_error_embed("Erreur", "Erreur lors du retrait.")
+            logger.error(f"Erreur withdraw {user_id}: {type(e).__name__}: {str(e)}", exc_info=True)
+            embed = create_error_embed("Erreur", f"Erreur technique lors du retrait.")
             await send_func(embed=embed)
 
 async def setup(bot):
