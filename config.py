@@ -9,9 +9,6 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 PREFIX = os.getenv("PREFIX", "e!")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-# NOUVEAU: ID spécial pour la banque publique (virtuel)
-PUBLIC_BANK_ID = -1  # ID virtuel pour identifier la banque publique dans les logs
-
 # Vérification des variables critiques
 if not TOKEN:
     raise ValueError("❌ DISCORD_TOKEN manquant dans le fichier .env")
@@ -31,25 +28,18 @@ DAILY_BONUS_MIN = 50
 DAILY_BONUS_MAX = 200
 DAILY_COOLDOWN = 86400  # 24 heures
 
-# Transfer limits et taxes - CORRIGÉ
+# Transfer limits et taxes
 TRANSFER_MIN = 1
 TRANSFER_MAX = 100000  # Limite maximale de transfert
 TRANSFER_COOLDOWN = 5  # secondes
-TRANSFER_TAX_RATE = 0.05  # 5% de taxe sur les transferts (CORRIGÉ: était 0.02)
+TRANSFER_TAX_RATE = 0.05  # 5% de taxe sur les transferts
 
-# Shop taxes - AJOUTÉ
-SHOP_TAX_RATE = 0.05  # 5% de taxe sur les achats (MANQUAIT)
+# Shop taxes
+SHOP_TAX_RATE = 0.05  # 5% de taxe sur tous les achats
 
 # Message rewards
 MESSAGE_REWARD_AMOUNT = 1
 MESSAGE_REWARD_COOLDOWN = 20  # 20 secondes
-
-# ==================== PUBLIC BANK SETTINGS - NOUVEAU ====================
-# Configuration de la banque publique
-PUBLIC_BANK_MIN_WITHDRAW = 50      # Montant minimum de retrait
-PUBLIC_BANK_MAX_WITHDRAW = 1000    # Montant maximum par retrait
-PUBLIC_BANK_DAILY_LIMIT = 2000     # Limite quotidienne par utilisateur
-PUBLIC_BANK_COOLDOWN = 1800        # Cooldown entre retraits (30 minutes)
 
 # ==================== SHOP SETTINGS ====================
 ITEMS_PER_PAGE = 5
@@ -58,9 +48,9 @@ DEFAULT_LEADERBOARD_LIMIT = 10
 
 # ==================== STEAL SETTINGS ====================
 STEAL_SUCCESS_RATE = 50  # 50% de chances de réussite
-STEAL_PERCENTAGE = 25  # Vol 10% des pièces
+STEAL_PERCENTAGE = 25  # Vol 25% des pièces
 STEAL_FAIL_PENALTY_PERCENTAGE = 50  # Perd 50% si échec
-STEAL_COOLDOWN_HOURS = 0.5  # Cooldown de 0.5 heure (CORRIGÉ: était 0,5)
+STEAL_COOLDOWN_HOURS = 0.5  # Cooldown de 0.5 heure
 STEAL_COOLDOWN_SECONDS = int(STEAL_COOLDOWN_HOURS * 3600)  # 1800 secondes
 
 # ==================== HEALTH SERVER SETTINGS ====================
@@ -94,4 +84,4 @@ class Emojis:
     INVENTORY = "📦"
     PREMIUM = "🌟"
     TAX = "🏛️"
-    PUBLIC_BANK = "🏛️"  # NOUVEAU: Emoji pour la banque publique
+    PUBLIC_BANK = "🏛️"
