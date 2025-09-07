@@ -1,6 +1,6 @@
 """
-Bot Économie - Point d'entrée principal refactorisé
-Architecture simplifiée, maintenable et robuste
+Bot Économie - Point d'entrée principal simplifié
+Version allégée sans les systèmes complexes
 """
 
 import discord
@@ -16,14 +16,6 @@ from typing import Optional, List
 from config import TOKEN, PREFIX, DATABASE_URL, LOG_LEVEL, HEALTH_PORT
 from database.db import Database
 
-# Import conditionnel du serveur de santé
-try:
-    from health_server import HealthServer
-    HEALTH_SERVER_AVAILABLE = True
-except ImportError:
-    HEALTH_SERVER_AVAILABLE = False
-    logging.warning("⚠️ health_server.py non trouvé, pas de health check")
-
 # Configuration simple du logging
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
@@ -34,12 +26,11 @@ logger = logging.getLogger(__name__)
 
 
 class BotManager:
-    """Gestionnaire principal du bot - responsabilités claires et séparées"""
+    """Gestionnaire principal du bot - version simplifiée"""
     
     def __init__(self):
         self.bot: Optional[commands.Bot] = None
         self.database: Optional[Database] = None
-        self.health_server: Optional[HealthServer] = None
         self.services: List[asyncio.Task] = []
         self.shutdown_requested = False
         
@@ -112,23 +103,29 @@ class BotManager:
             return False
     
     async def load_extensions(self, bot: commands.Bot) -> tuple[int, int]:
-        """Charge toutes les extensions avec gestion d'erreurs"""
+        """Charge les extensions simplifiées"""
         cogs_dir = Path("cogs")
         if not cogs_dir.exists():
             logger.warning("📁 Dossier 'cogs' manquant")
             return 0, 0
         
-        # Extensions prioritaires (ordre de chargement important)
-        priority_extensions = [
+        # Extensions essentielles seulement
+        essential_extensions = [
             'transaction_logs',  # Doit être chargé en premier
             'economy',
-            'message_rewards'
+            'shop', 
+            'leaderboard',
+            'games',
+            'roulette',
+            'public_bank',
+            'bank',  # Banque privée conservée
+            'steal',
+            'help'
         ]
         
         loaded = failed = 0
         
-        # Charger les extensions prioritaires
-        for ext_name in priority_extensions:
+        for ext_name in essential_extensions:
             if await self._load_extension(bot, ext_name):
                 loaded += 1
             else:
@@ -137,19 +134,7 @@ class BotManager:
         # Configurer les logs après chargement de transaction_logs
         self._setup_transaction_logging(bot)
         
-        # Charger les autres extensions
-        other_extensions = [
-            f.stem for f in cogs_dir.glob("*.py")
-            if f.stem not in priority_extensions and f.stem != "__init__"
-        ]
-        
-        for ext_name in other_extensions:
-            if await self._load_extension(bot, ext_name):
-                loaded += 1
-            else:
-                failed += 1
-        
-        logger.info(f"📊 Extensions: {loaded} chargées, {failed} échecs")
+        logger.info(f"📊 Extensions simplifiées: {loaded} chargées, {failed} échecs")
         return loaded, failed
     
     async def _load_extension(self, bot: commands.Bot, ext_name: str) -> bool:
@@ -168,20 +153,6 @@ class BotManager:
         if transaction_logs_cog:
             bot.transaction_logs = transaction_logs_cog
             logger.info("✅ Logs de transactions configurés")
-    
-    async def start_health_server(self) -> Optional[asyncio.Task]:
-        """Démarre le serveur de santé si disponible"""
-        if not HEALTH_SERVER_AVAILABLE:
-            return None
-        
-        try:
-            self.health_server = HealthServer(port=HEALTH_PORT)
-            task = asyncio.create_task(self.health_server.run_forever())
-            logger.info(f"🏥 Serveur de santé sur port {HEALTH_PORT}")
-            return task
-        except Exception as e:
-            logger.error(f"❌ Erreur serveur de santé: {e}")
-            return None
     
     def add_owner_commands(self, bot: commands.Bot):
         """Ajoute les commandes owner essentielles"""
@@ -230,7 +201,7 @@ class BotManager:
             self.bot = self.create_bot()
             self.bot.database = self.database
             
-            # Chargement des extensions
+            # Chargement des extensions essentielles
             loaded, failed = await self.load_extensions(self.bot)
             if loaded == 0:
                 logger.warning("⚠️ Aucune extension chargée")
@@ -238,13 +209,8 @@ class BotManager:
             # Commandes owner
             self.add_owner_commands(self.bot)
             
-            # Serveur de santé (optionnel)
-            health_task = await self.start_health_server()
-            if health_task:
-                self.services.append(health_task)
-            
             # Démarrage du bot
-            logger.info("🚀 Démarrage du bot...")
+            logger.info("🚀 Démarrage du bot simplifié...")
             bot_task = asyncio.create_task(self.bot.start(TOKEN))
             self.services.append(bot_task)
             
