@@ -1,3 +1,8 @@
+"""
+Bot Économie - Point d'entrée principal simplifié
+Version allégée sans les systèmes complexes
+"""
+
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -25,6 +30,7 @@ class TransactionType(Enum):
     TRANSFER_SENT = "transfer_sent"
     TRANSFER_RECEIVED = "transfer_received"
     ADMIN_ADD = "admin_add"
+    ECONOMY_RESET = "economy_reset"
 
 @dataclass
 class TransactionResult:
@@ -289,6 +295,65 @@ class EconomyService:
                 error_message="Failed to process daily reward"
             )
 
+    async def reset_economy(self) -> Dict[str, int]:
+        """Reset complet de l'économie - DANGEREUX"""
+        try:
+            stats = {"users_reset": 0, "transactions_deleted": 0, "shop_purchases_deleted": 0, 
+                    "cooldowns_cleared": 0, "banks_cleared": 0, "public_bank_reset": False}
+            
+            if not self.db.pool:
+                raise TransactionError("Database not available")
+            
+            async with self.db.pool.acquire() as conn:
+                async with conn.transaction():
+                    # 1. Reset tous les soldes utilisateurs
+                    result = await conn.execute("UPDATE users SET balance = 0, last_daily = NULL")
+                    if "UPDATE" in result:
+                        stats["users_reset"] = int(result.split()[-1])
+                    
+                    # 2. Supprimer l'historique des transactions
+                    result = await conn.execute("DELETE FROM transaction_logs")
+                    if "DELETE" in result:
+                        stats["transactions_deleted"] = int(result.split()[-1])
+                    
+                    # 3. Supprimer les achats du shop
+                    result = await conn.execute("DELETE FROM user_purchases")
+                    if "DELETE" in result:
+                        stats["shop_purchases_deleted"] = int(result.split()[-1])
+                    
+                    # 4. Clear les cooldowns
+                    result = await conn.execute("DELETE FROM cooldowns")
+                    if "DELETE" in result:
+                        stats["cooldowns_cleared"] = int(result.split()[-1])
+                    
+                    # 5. Reset les banques privées (si table existe)
+                    try:
+                        result = await conn.execute("UPDATE user_bank SET balance = 0, total_deposited = 0, total_withdrawn = 0, total_fees_paid = 0")
+                        if "UPDATE" in result:
+                            stats["banks_cleared"] = int(result.split()[-1])
+                    except:
+                        pass  # Table n'existe peut-être pas
+                    
+                    # 6. Reset la banque publique (si table existe)
+                    try:
+                        await conn.execute("UPDATE public_bank SET balance = 0, total_deposited = 0, total_withdrawn = 0 WHERE id = 1")
+                        stats["public_bank_reset"] = True
+                    except:
+                        pass  # Table n'existe peut-être pas
+                    
+                    # 7. Supprimer les retraits de banque publique
+                    try:
+                        await conn.execute("DELETE FROM public_bank_withdrawals")
+                    except:
+                        pass
+            
+            logger.critical(f"🚨 ECONOMY RESET EXECUTED - Stats: {stats}")
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Economy reset failed: {e}")
+            raise TransactionError(f"Economy reset failed: {str(e)}")
+
 class MinimalEmbedBuilder:
     """Constructeur d'embeds minimalistes et informatifs"""
     
@@ -336,6 +401,43 @@ class MinimalEmbedBuilder:
             description=f"⏰ **{command}** ready in {time_str}",
             color=Colors.WARNING
         )
+    
+    @staticmethod
+    def economy_reset_warning() -> discord.Embed:
+        """Embed d'avertissement pour le reset"""
+        return discord.Embed(
+            title="⚠️ ATTENTION - RESET ÉCONOMIE",
+            description=(
+                "**CETTE ACTION EST IRRÉVERSIBLE !**\n\n"
+                "Cette commande va :\n"
+                "• Remettre TOUS les soldes à 0\n"
+                "• Supprimer TOUT l'historique des transactions\n"
+                "• Supprimer TOUS les achats du shop\n"
+                "• Reset TOUTES les banques (privées et publique)\n"
+                "• Clear TOUS les cooldowns\n\n"
+                "**Tape exactement `CONFIRM RESET ECONOMY` pour confirmer.**"
+            ),
+            color=Colors.ERROR
+        )
+    
+    @staticmethod
+    def economy_reset_success(stats: Dict[str, int]) -> discord.Embed:
+        """Embed de confirmation du reset"""
+        return discord.Embed(
+            title="✅ ÉCONOMIE RESETÉE",
+            description=(
+                f"**Reset effectué avec succès !**\n\n"
+                f"📊 **Statistiques du reset :**\n"
+                f"• **{stats['users_reset']}** utilisateurs remis à zéro\n"
+                f"• **{stats['transactions_deleted']}** transactions supprimées\n"
+                f"• **{stats['shop_purchases_deleted']}** achats shop supprimés\n"
+                f"• **{stats['cooldowns_cleared']}** cooldowns effacés\n"
+                f"• **{stats['banks_cleared']}** banques privées resetées\n"
+                f"• **Banque publique :** {'✅' if stats['public_bank_reset'] else '❌'} resetée\n\n"
+                f"🆕 **L'économie est maintenant vierge !**"
+            ),
+            color=Colors.SUCCESS
+        )
 
 class Economy(commands.Cog):
     """Système économique optimisé et sécurisé"""
@@ -354,6 +456,9 @@ class Economy(commands.Cog):
             'balance': 0, 'daily': 0, 'give': 0, 'addpb': 0,
             'errors': 0, 'avg_response_time': 0
         }
+        
+        # Dictionnaire pour les confirmations de reset
+        self._reset_confirmations = {}
     
     async def cog_load(self):
         """Initialisation sécurisée du cog"""
@@ -596,6 +701,182 @@ class Economy(commands.Cog):
             logger.error(f"AddPB command error: {e}")
             await send_func(embed=self.embed_builder.error("Admin operation failed"))
 
+    # ==================== COMMANDE RESET ÉCONOMIE ====================
+
+    @commands.command(name='reset_economy', aliases=['reseteconomy', 'econreset'])
+    @commands.is_owner()
+    async def reset_economy_cmd(self, ctx):
+        """[OWNER ONLY] Reset complet de l'économie - DANGEREUX !"""
+        await self._execute_reset_economy(ctx)
+
+    @app_commands.command(name="reset_economy", description="[OWNER ONLY] Reset complet de l'économie - DANGEREUX !")
+    async def reset_economy_slash(self, interaction: discord.Interaction):
+        """Slash command pour reset économie"""
+        # Vérification owner strict
+        if interaction.user.id != OWNER_ID:
+            embed = self.embed_builder.error("Cette commande est réservée au propriétaire du bot.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+            
+        await interaction.response.defer()
+        await self._execute_reset_economy(interaction, is_slash=True)
+
+    async def _execute_reset_economy(self, ctx_or_interaction, is_slash=False):
+        """Logique commune pour reset économie avec confirmation obligatoire"""
+        if is_slash:
+            user = ctx_or_interaction.user
+            send_func = ctx_or_interaction.followup.send
+        else:
+            user = ctx_or_interaction.author
+            send_func = ctx_or_interaction.send
+
+        user_id = user.id
+
+        try:
+            # Vérification propriétaire du bot
+            if user_id != OWNER_ID:
+                embed = self.embed_builder.error("Cette commande est réservée au propriétaire du bot.")
+                await send_func(embed=embed)
+                return
+
+            # Vérifier si une confirmation est en attente
+            if user_id in self._reset_confirmations:
+                confirmation_time = self._reset_confirmations[user_id]
+                # Timeout de 60 secondes pour la confirmation
+                if time.time() - confirmation_time > 60:
+                    del self._reset_confirmations[user_id]
+                else:
+                    embed = discord.Embed(
+                        title="⏰ Confirmation en attente",
+                        description="Tu as déjà initié un reset. Tape `CONFIRM RESET ECONOMY` pour confirmer ou attends que ça expire (60s).",
+                        color=Colors.WARNING
+                    )
+                    await send_func(embed=embed)
+                    return
+
+            # Première étape : Afficher l'avertissement et demander confirmation
+            embed = self.embed_builder.economy_reset_warning()
+            await send_func(embed=embed)
+            
+            # Enregistrer la demande de confirmation
+            self._reset_confirmations[user_id] = time.time()
+
+        except Exception as e:
+            logger.error(f"Reset economy initiation error: {e}")
+            await send_func(embed=self.embed_builder.error("Erreur lors de l'initiation du reset"))
+
+    @commands.command(name='confirm_reset_economy', hidden=True)
+    @commands.is_owner()
+    async def confirm_reset_economy_cmd(self, ctx, *, confirmation: str = ""):
+        """Commande de confirmation pour le reset économie"""
+        await self._execute_reset_confirmation(ctx, confirmation)
+
+    async def _execute_reset_confirmation(self, ctx_or_interaction, confirmation: str, is_slash=False):
+        """Exécute le reset après confirmation"""
+        if is_slash:
+            user = ctx_or_interaction.user
+            send_func = ctx_or_interaction.followup.send
+        else:
+            user = ctx_or_interaction.author
+            send_func = ctx_or_interaction.send
+
+        user_id = user.id
+
+        try:
+            # Vérifications de sécurité
+            if user_id != OWNER_ID:
+                return
+
+            if user_id not in self._reset_confirmations:
+                embed = self.embed_builder.error("Aucune demande de reset en cours. Utilise d'abord `reset_economy`.")
+                await send_func(embed=embed)
+                return
+
+            # Vérifier timeout
+            if time.time() - self._reset_confirmations[user_id] > 60:
+                del self._reset_confirmations[user_id]
+                embed = self.embed_builder.error("La demande de reset a expiré. Recommence avec `reset_economy`.")
+                await send_func(embed=embed)
+                return
+
+            # Vérifier la confirmation exacte
+            if confirmation.strip() != "CONFIRM RESET ECONOMY":
+                embed = discord.Embed(
+                    title="❌ Confirmation incorrecte",
+                    description="Tu dois taper exactement `CONFIRM RESET ECONOMY` pour confirmer.\n\nFormat attendu : `confirm_reset_economy CONFIRM RESET ECONOMY`",
+                    color=Colors.ERROR
+                )
+                await send_func(embed=embed)
+                return
+
+            # Supprimer la confirmation en attente
+            del self._reset_confirmations[user_id]
+
+            # Message de préparation
+            embed = discord.Embed(
+                title="🔄 Reset en cours...",
+                description="**ATTENTION : Reset de l'économie en cours !**\n\nCela peut prendre quelques secondes...",
+                color=Colors.WARNING
+            )
+            await send_func(embed=embed)
+
+            # Exécuter le reset
+            stats = await self.economy_service.reset_economy()
+
+            # Nettoyer les caches en mémoire
+            self.cooldown_manager._cache.clear()
+            self.tx_manager._locks.clear()
+            self._reset_confirmations.clear()
+
+            # Nettoyer les cooldowns des autres cogs si possible
+            try:
+                for cog_name, cog in self.bot.cogs.items():
+                    if hasattr(cog, 'cooldowns'):
+                        cog.cooldowns.clear()
+                    if hasattr(cog, '_cooldowns'):
+                        cog._cooldowns.clear()
+                    if hasattr(cog, 'withdraw_cooldowns'):
+                        cog.withdraw_cooldowns.clear()
+                    if hasattr(cog, 'daily_withdrawals'):
+                        cog.daily_withdrawals.clear()
+                    if hasattr(cog, 'info_cooldowns'):
+                        cog.info_cooldowns.clear()
+            except Exception as e:
+                logger.warning(f"Erreur nettoyage caches cogs: {e}")
+
+            # Log de l'action critique
+            logger.critical(f"🚨 ECONOMY COMPLETELY RESET BY {user} ({user_id}) - All data wiped!")
+
+            # Message de succès
+            embed = self.embed_builder.economy_reset_success(stats)
+            await send_func(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Reset confirmation error: {e}")
+            embed = discord.Embed(
+                title="❌ Erreur lors du reset",
+                description=f"Une erreur s'est produite lors du reset de l'économie :\n\n`{str(e)}`\n\nLes données peuvent être partiellement affectées. Vérifiez manuellement la base de données.",
+                color=Colors.ERROR
+            )
+            await send_func(embed=embed)
+
+    # Listener pour capturer les confirmations dans les messages normaux
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        """Écoute les messages pour capturer les confirmations de reset"""
+        if message.author.bot:
+            return
+            
+        if message.author.id != OWNER_ID:
+            return
+            
+        # Vérifier si c'est une confirmation de reset
+        content = message.content.strip()
+        if content == "CONFIRM RESET ECONOMY" and message.author.id in self._reset_confirmations:
+            # Créer un contexte factice pour traiter la confirmation
+            ctx = await self.bot.get_context(message)
+            await self._execute_reset_confirmation(ctx, content)
+
     # ==================== COMMANDES DE MONITORING ====================
 
     @commands.command(name='economy_stats')
@@ -621,6 +902,13 @@ class Economy(commands.Cog):
                 value=f"Active locks: {active_locks}\nTotal locks: {len(self.tx_manager._locks)}",
                 inline=True
             )
+
+            # État des confirmations de reset
+            embed.add_field(
+                name="Reset Status",
+                value=f"Pending resets: {len(self._reset_confirmations)}",
+                inline=True
+            )
             
             await ctx.send(embed=embed)
             
@@ -628,11 +916,33 @@ class Economy(commands.Cog):
             logger.error(f"Stats command error: {e}")
             await ctx.send(embed=self.embed_builder.error("Stats unavailable"))
 
+    @commands.command(name='cancel_reset')
+    @commands.is_owner()
+    async def cancel_reset_cmd(self, ctx):
+        """[OWNER] Annule une demande de reset en cours"""
+        user_id = ctx.author.id
+        
+        if user_id not in self._reset_confirmations:
+            embed = self.embed_builder.error("Aucune demande de reset en cours à annuler.")
+            await ctx.send(embed=embed)
+            return
+            
+        del self._reset_confirmations[user_id]
+        embed = discord.Embed(
+            title="✅ Reset annulé",
+            description="La demande de reset de l'économie a été annulée avec succès.",
+            color=Colors.SUCCESS
+        )
+        await ctx.send(embed=embed)
+        logger.info(f"Economy reset cancelled by {ctx.author}")
+
     async def cog_unload(self):
         """Nettoyage lors du déchargement"""
         try:
             if hasattr(self, 'tx_manager'):
                 await self.tx_manager.cleanup_locks()
+            # Nettoyer les confirmations en attente
+            self._reset_confirmations.clear()
             logger.info("Economy cog unloaded cleanly")
         except Exception as e:
             logger.error(f"Error during cog unload: {e}")
