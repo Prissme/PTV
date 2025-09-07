@@ -18,7 +18,7 @@ class RouletteConfig:
     MIN_BET = 10
     MAX_BET = 100000
     TAX_RATE = 0.01  # 1% de taxe sur les gains
-    COOLDOWN_SECONDS = 4  # MODIFIÉ: 3 → 4 secondes
+    COOLDOWN_SECONDS = 4  # 4 secondes
     
     # Numéros et couleurs de la roulette européenne
     RED_NUMBERS = frozenset({1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36})
