@@ -50,7 +50,7 @@ DEFAULT_LEADERBOARD_LIMIT = 10
 STEAL_SUCCESS_RATE = 50  # 50% de chances de réussite
 STEAL_PERCENTAGE = 25  # Vol 25% des pièces
 STEAL_FAIL_PENALTY_PERCENTAGE = 50  # Perd 50% si échec
-STEAL_COOLDOWN_HOURS = 0.5  # Cooldown de 0.5 heure
+STEAL_COOLDOWN_HOURS = 0.005  # Cooldown de 0.5 heure
 STEAL_COOLDOWN_SECONDS = int(STEAL_COOLDOWN_HOURS * 3600)  # 1800 secondes
 
 # ==================== HEALTH SERVER SETTINGS ====================
