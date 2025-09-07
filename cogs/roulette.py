@@ -136,8 +136,8 @@ class RouletteAnimator:
     """Gère les animations de la roulette de manière optimisée"""
     
     @staticmethod
-    async def animate_spin(edit_func, winning_number: int) -> None:
-        """Animation optimisée du spin"""
+    async def animate_spin(message, winning_number: int) -> None:
+        """Animation optimisée du spin avec gestion d'erreurs renforcée"""
         try:
             # Phase 1: Préparation (1s)
             embed = discord.Embed(
@@ -145,7 +145,7 @@ class RouletteAnimator:
                 description="```\n🎯 La bille est lancée !\n```",
                 color=Colors.WARNING
             )
-            await edit_func(embed=embed)
+            await message.edit(embed=embed)
             await asyncio.sleep(1.0)
 
             # Phase 2: Animation rapide (2s)
@@ -158,7 +158,7 @@ class RouletteAnimator:
                     description=f"```\n{animation_text} → ...\n```",
                     color=Colors.INFO
                 )
-                await edit_func(embed=embed)
+                await message.edit(embed=embed)
                 await asyncio.sleep(0.7)
 
             # Phase 3: Résultat final (1s)
@@ -167,18 +167,23 @@ class RouletteAnimator:
                 description=f"```\nNuméro gagnant : {winning_number}\n```",
                 color=Colors.SUCCESS
             )
-            await edit_func(embed=embed)
+            await message.edit(embed=embed)
             await asyncio.sleep(0.8)
             
+        except discord.HTTPException as e:
+            logger.error(f"Erreur HTTP animation roulette: {e}")
+            # Animation fallback simple
+            try:
+                embed = discord.Embed(
+                    title="🎰 Roulette",
+                    description=f"**Numéro tiré :** {winning_number}",
+                    color=Colors.INFO
+                )
+                await message.edit(embed=embed)
+            except Exception as e2:
+                logger.error(f"Erreur fallback animation: {e2}")
         except Exception as e:
             logger.error(f"Erreur animation roulette: {e}")
-            # Animation simplifiée en cas d'erreur
-            embed = discord.Embed(
-                title="🎰 Roulette",
-                description=f"**Numéro tiré :** {winning_number}",
-                color=Colors.INFO
-            )
-            await edit_func(embed=embed)
 
 class RouletteEmbeds:
     """Générateur d'embeds pour la roulette"""
@@ -418,16 +423,13 @@ class Roulette(commands.Cog):
         await self._execute_roulette(ctx, bet_type, bet_amount)
     
     async def _execute_roulette(self, ctx_or_interaction, bet_type: str, bet_amount: int, is_slash=False):
-        """Logique principale de la roulette"""
+        """Logique principale de la roulette CORRIGÉE"""
         if is_slash:
             user = ctx_or_interaction.user
             send_func = ctx_or_interaction.followup.send
-            edit_func = ctx_or_interaction.edit_original_response
         else:
             user = ctx_or_interaction.author
             send_func = ctx_or_interaction.send
-            # Pour les messages normaux, on créera le message puis on l'éditera
-            edit_func = None
         
         # Vérification du cooldown (4 secondes maintenant)
         cooldown_remaining = self._check_cooldown(user.id)
@@ -463,20 +465,24 @@ class Roulette(commands.Cog):
             # Effectuer le spin
             winning_number = game.spin()
             
-            # Animation du spin
-            if not edit_func:
-                # Pour les commandes prefix, créer le message d'abord
-                msg = await send_func("🎰 **La roulette tourne...**")
-                edit_func = msg.edit
-            
-            await RouletteAnimator.animate_spin(edit_func, winning_number)
+            # CORRECTION PRINCIPALE : Création du message d'animation
+            if is_slash:
+                # Pour les slash commands, on peut éditer directement
+                await RouletteAnimator.animate_spin(ctx_or_interaction, winning_number)
+            else:
+                # Pour les commandes prefix, créer un nouveau message
+                animation_msg = await send_func("🎰 **La roulette commence...**")
+                await RouletteAnimator.animate_spin(animation_msg, winning_number)
             
             # Traitement de la transaction
             balance_after, transaction_success = await self._process_game_transaction(game, balance_before)
             
             if not transaction_success:
                 embed = create_error_embed("Erreur technique", "Une erreur s'est produite lors du jeu.")
-                await edit_func(embed=embed)
+                if is_slash:
+                    await ctx_or_interaction.edit_original_response(embed=embed)
+                else:
+                    await animation_msg.edit(embed=embed)
                 return
             
             # Enregistrement dans les logs
@@ -484,7 +490,11 @@ class Roulette(commands.Cog):
             
             # Affichage du résultat (embed allégé pour les défaites)
             result_embed = RouletteEmbeds.create_result_embed(game, user, balance_before, balance_after)
-            await edit_func(embed=result_embed)
+            
+            if is_slash:
+                await ctx_or_interaction.edit_original_response(embed=result_embed)
+            else:
+                await animation_msg.edit(embed=result_embed)
             
             # Mise à jour des statistiques
             self._games_played += 1
@@ -498,17 +508,27 @@ class Roulette(commands.Cog):
             result_text = "GAGNE" if game.winnings > 0 else "PERD"
             logger.info(f"Roulette: {user} {result_text} {game.bet_amount} PB sur #{winning_number}")
             
+        except discord.HTTPException as e:
+            logger.error(f"Erreur HTTP roulette {user.id}: {e}")
+            try:
+                embed = create_error_embed(
+                    "Erreur Discord", 
+                    "Problème de communication avec Discord. Réessaie dans un instant."
+                )
+                await send_func(embed=embed)
+            except Exception as e2:
+                logger.error(f"Impossible d'envoyer message d'erreur: {e2}")
+                
         except Exception as e:
             logger.error(f"Erreur critique roulette {user.id}: {e}")
-            embed = create_error_embed(
-                "Erreur inattendue", 
-                "Une erreur technique s'est produite. Réessaie dans quelques instants."
-            )
-            
-            if edit_func:
-                await edit_func(embed=embed)
-            else:
+            try:
+                embed = create_error_embed(
+                    "Erreur inattendue", 
+                    "Une erreur technique s'est produite. Réessaie dans quelques instants."
+                )
                 await send_func(embed=embed)
+            except Exception as e2:
+                logger.error(f"Impossible d'envoyer message d'erreur critique: {e2}")
     
     @commands.command(name='roulette_stats')
     @commands.is_owner()
