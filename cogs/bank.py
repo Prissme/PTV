@@ -16,6 +16,8 @@ class Bank(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.db = None
+        self._initialized = False
+        self._initialization_lock = asyncio.Lock()
         
         # Configuration simplifiée
         self.MIN_DEPOSIT = 1
@@ -35,18 +37,44 @@ class Bank(commands.Cog):
         self.bank_cooldowns = {}
         self.daily_deposit_limits = {}
         
-        # Démarrer la tâche automatique simplifiée
-        self.daily_bank_fees.start()
+        # Tâche de frais - sera initialisée dans cog_load
+        self._fees_task = None
         
     async def cog_load(self):
-        """Appelé quand le cog est chargé"""
-        self.db = self.bot.database
-        await self.create_bank_table()
-        logger.info("✅ Cog Bank simplifié initialisé")
+        """Appelé quand le cog est chargé - Protection contre les loops"""
+        async with self._initialization_lock:
+            if self._initialized:
+                logger.warning("Cog Bank déjà initialisé, skip")
+                return
+            
+            try:
+                self.db = self.bot.database
+                if not self.db:
+                    raise RuntimeError("Database non disponible")
+                
+                await self.create_bank_table()
+                
+                # Démarrer la tâche de frais seulement après initialisation complète
+                if not self._fees_task or self._fees_task.cancelled():
+                    self._fees_task = self.daily_bank_fees.start()
+                
+                self._initialized = True
+                logger.info("✅ Cog Bank simplifié initialisé")
+                
+            except Exception as e:
+                logger.error(f"Erreur initialisation Bank cog: {e}")
+                raise
     
     async def cog_unload(self):
         """Arrêter les tâches lors du déchargement"""
-        self.daily_bank_fees.cancel()
+        try:
+            if self._fees_task and not self._fees_task.cancelled():
+                self._fees_task.cancel()
+                logger.info("Tâche frais bancaires arrêtée")
+        except Exception as e:
+            logger.error(f"Erreur arrêt tâche frais: {e}")
+        
+        self._initialized = False
 
     async def create_bank_table(self):
         """Crée la table pour stocker les comptes bancaires"""
