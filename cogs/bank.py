@@ -3,6 +3,7 @@ from discord.ext import commands, tasks
 from discord import app_commands
 import logging
 import math
+import asyncio  # AJOUT MANQUANT
 from datetime import datetime, timezone
 
 from config import Colors, Emojis, PREFIX
@@ -77,75 +78,130 @@ class Bank(commands.Cog):
         self._initialized = False
 
     async def create_bank_table(self):
-        """Crée la table pour stocker les comptes bancaires"""
-        if not self.db.pool:
-            return
-            
-        async with self.db.pool.acquire() as conn:
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS user_bank (
-                    user_id BIGINT PRIMARY KEY,
-                    balance BIGINT DEFAULT 0 CHECK (balance >= 0),
-                    total_deposited BIGINT DEFAULT 0,
-                    total_withdrawn BIGINT DEFAULT 0,
-                    total_fees_paid BIGINT DEFAULT 0,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    last_activity TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    last_fee_payment TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                )
-            ''')
-            
-            # Index basique
-            await conn.execute('CREATE INDEX IF NOT EXISTS idx_user_bank_user_id ON user_bank(user_id)')
-            logger.info("✅ Table user_bank simplifiée créée/vérifiée")
+        """Crée la table pour stocker les comptes bancaires - Protection timeout"""
+        if not self.db or not self.db.pool:
+            raise RuntimeError("Base de données non disponible")
+        
+        try:
+            # Timeout pour éviter les blocages
+            async with asyncio.timeout(30):
+                async with self.db.pool.acquire() as conn:
+                    # Création table avec protection existante
+                    await conn.execute('''
+                        CREATE TABLE IF NOT EXISTS user_bank (
+                            user_id BIGINT PRIMARY KEY,
+                            balance BIGINT DEFAULT 0 CHECK (balance >= 0),
+                            total_deposited BIGINT DEFAULT 0,
+                            total_withdrawn BIGINT DEFAULT 0,
+                            total_fees_paid BIGINT DEFAULT 0,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                            last_activity TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                            last_fee_payment TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                        )
+                    ''')
+                    
+                    # Index avec IF NOT EXISTS
+                    await conn.execute('''
+                        CREATE INDEX IF NOT EXISTS idx_user_bank_user_id ON user_bank(user_id)
+                    ''')
+                    
+                    logger.info("✅ Table user_bank créée/vérifiée avec succès")
+                    
+        except asyncio.TimeoutError:
+            logger.error("Timeout lors de la création de la table user_bank")
+            raise
+        except Exception as e:
+            logger.error(f"Erreur création table user_bank: {e}")
+            raise
 
     @tasks.loop(hours=24)
     async def daily_bank_fees(self):
-        """Applique les frais de maintenance bancaire quotidiens"""
-        if not self.db.pool:
+        """Applique les frais de maintenance bancaire quotidiens - Protection contre loops"""
+        if not self._initialized or not self.db or not self.db.pool:
+            logger.warning("Tâche frais: Bot non initialisé, skip")
             return
             
         try:
-            async with self.db.pool.acquire() as conn:
-                accounts = await conn.fetch("""
-                    SELECT user_id, balance 
-                    FROM user_bank 
-                    WHERE balance > $1
-                """, self.MIN_BALANCE_FOR_FEES)
-                
-                total_fees_collected = 0
-                
-                for account in accounts:
-                    user_id = account['user_id']
-                    current_balance = account['balance']
+            async with asyncio.timeout(120):  # Timeout de 2 minutes
+                async with self.db.pool.acquire() as conn:
+                    accounts = await conn.fetch("""
+                        SELECT user_id, balance 
+                        FROM user_bank 
+                        WHERE balance > $1
+                    """, self.MIN_BALANCE_FOR_FEES)
                     
-                    fee = int(current_balance * self.DAILY_BANK_FEE_RATE)
-                    new_balance = max(0, current_balance - fee)
+                    if not accounts:
+                        logger.info("🏦 Aucun compte avec frais bancaires")
+                        return
                     
-                    await conn.execute("""
-                        UPDATE user_bank 
-                        SET balance = $1, 
-                            total_fees_paid = total_fees_paid + $2,
-                            last_activity = NOW(),
-                            last_fee_payment = NOW()
-                        WHERE user_id = $3
-                    """, new_balance, fee, user_id)
+                    total_fees_collected = 0
+                    processed_accounts = 0
                     
-                    # Envoyer les frais vers la banque publique
-                    public_bank_cog = self.bot.get_cog('PublicBank')
-                    if public_bank_cog:
-                        await public_bank_cog.add_casino_loss(fee, "bank_maintenance_fees")
+                    for account in accounts:
+                        try:
+                            user_id = account['user_id']
+                            current_balance = account['balance']
+                            
+                            fee = int(current_balance * self.DAILY_BANK_FEE_RATE)
+                            if fee <= 0:
+                                continue
+                                
+                            new_balance = max(0, current_balance - fee)
+                            
+                            await conn.execute("""
+                                UPDATE user_bank 
+                                SET balance = $1, 
+                                    total_fees_paid = total_fees_paid + $2,
+                                    last_activity = NOW(),
+                                    last_fee_payment = NOW()
+                                WHERE user_id = $3
+                            """, new_balance, fee, user_id)
+                            
+                            # Envoyer les frais vers la banque publique
+                            try:
+                                public_bank_cog = self.bot.get_cog('PublicBank')
+                                if public_bank_cog:
+                                    await public_bank_cog.add_casino_loss(fee, "bank_maintenance_fees")
+                            except Exception as e:
+                                logger.error(f"Erreur envoi frais vers banque publique: {e}")
+                            
+                            total_fees_collected += fee
+                            processed_accounts += 1
+                            
+                        except Exception as e:
+                            logger.error(f"Erreur traitement frais pour user {account['user_id']}: {e}")
+                            continue
                     
-                    total_fees_collected += fee
-                
-                logger.info(f"🏦 Frais bancaires: {total_fees_collected:,} PB collectés → Banque publique")
-                
+                    logger.info(f"🏦 Frais bancaires: {total_fees_collected:,} PB collectés sur {processed_accounts} comptes → Banque publique")
+                    
+        except asyncio.TimeoutError:
+            logger.error("Timeout lors du traitement des frais bancaires")
         except Exception as e:
-            logger.error(f"Erreur frais bancaires: {e}")
+            logger.error(f"Erreur tâche frais bancaires: {e}")
 
     @daily_bank_fees.before_loop
     async def before_daily_bank_fees(self):
-        await self.bot.wait_until_ready()
+        """Attendre que le bot soit prêt avant de démarrer la tâche"""
+        if not self.bot.is_ready():
+            await self.bot.wait_until_ready()
+        
+        # Attendre que l'initialisation soit complète
+        max_wait = 60  # 60 secondes max
+        waited = 0
+        while not self._initialized and waited < max_wait:
+            await asyncio.sleep(1)
+            waited += 1
+            
+        if not self._initialized:
+            logger.warning("Tâche frais: Timeout attente initialisation")
+            
+    @daily_bank_fees.after_loop
+    async def after_daily_bank_fees(self):
+        """Nettoyage après arrêt de la tâche"""
+        if self.daily_bank_fees.is_being_cancelled():
+            logger.info("Tâche frais bancaires arrêtée proprement")
+        else:
+            logger.warning("Tâche frais bancaires arrêtée de manière inattendue")
 
     def _check_bank_cooldown(self, user_id: int) -> float:
         """Vérifie le cooldown pour les opérations bancaires"""
@@ -188,72 +244,104 @@ class Bank(commands.Cog):
             self.daily_deposit_limits[user_id] = {'date': today, 'deposited': amount}
 
     async def get_bank_balance(self, user_id: int) -> int:
-        """Récupère le solde bancaire"""
-        if not self.db.pool:
+        """Récupère le solde bancaire - Avec protection timeout"""
+        if not self._initialized or not self.db or not self.db.pool:
+            logger.warning(f"get_bank_balance: DB non initialisée pour user {user_id}")
             return 0
         
         try:
-            async with self.db.pool.acquire() as conn:
-                row = await conn.fetchrow("SELECT balance FROM user_bank WHERE user_id = $1", user_id)
-                return row["balance"] if row else 0
+            async with asyncio.timeout(10):
+                async with self.db.pool.acquire() as conn:
+                    row = await conn.fetchrow("SELECT balance FROM user_bank WHERE user_id = $1", user_id)
+                    return row["balance"] if row else 0
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout get_bank_balance pour user {user_id}")
+            return 0
         except Exception as e:
             logger.error(f"Erreur get_bank_balance {user_id}: {e}")
             return 0
 
     async def get_bank_stats(self, user_id: int) -> dict:
-        """Récupère les statistiques bancaires"""
-        if not self.db.pool:
-            return {"balance": 0, "total_deposited": 0, "total_withdrawn": 0, "total_fees_paid": 0}
+        """Récupère les statistiques bancaires - Avec protection timeout"""
+        default_stats = {"balance": 0, "total_deposited": 0, "total_withdrawn": 0, "total_fees_paid": 0}
+        
+        if not self._initialized or not self.db or not self.db.pool:
+            logger.warning(f"get_bank_stats: DB non initialisée pour user {user_id}")
+            return default_stats
         
         try:
-            async with self.db.pool.acquire() as conn:
-                row = await conn.fetchrow("""
-                    SELECT balance, total_deposited, total_withdrawn, total_fees_paid, created_at, last_activity
-                    FROM user_bank WHERE user_id = $1
-                """, user_id)
-                
-                return dict(row) if row else {"balance": 0, "total_deposited": 0, "total_withdrawn": 0, "total_fees_paid": 0}
+            async with asyncio.timeout(10):
+                async with self.db.pool.acquire() as conn:
+                    row = await conn.fetchrow("""
+                        SELECT balance, total_deposited, total_withdrawn, total_fees_paid, created_at, last_activity
+                        FROM user_bank WHERE user_id = $1
+                    """, user_id)
+                    
+                    return dict(row) if row else default_stats
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout get_bank_stats pour user {user_id}")
+            return default_stats
         except Exception as e:
             logger.error(f"Erreur get_bank_stats {user_id}: {e}")
-            return {"balance": 0, "total_deposited": 0, "total_withdrawn": 0, "total_fees_paid": 0}
+            return default_stats
 
     async def update_bank_balance(self, user_id: int, amount: int, operation_type: str) -> bool:
-        """Met à jour le solde bancaire - VERSION CORRIGÉE"""
-        if not self.db.pool or amount == 0:
+        """Met à jour le solde bancaire - VERSION CORRIGÉE avec protection timeout"""
+        if not self._initialized or not self.db or not self.db.pool:
+            logger.error(f"update_bank_balance: DB non initialisée pour user {user_id}")
             return False
+            
+        if amount == 0:
+            logger.warning(f"update_bank_balance: montant 0 pour user {user_id}")
+            return True  # Considéré comme succès
         
         now = datetime.now(timezone.utc)
         
         try:
-            async with self.db.pool.acquire() as conn:
-                async with conn.transaction():
-                    if operation_type == "deposit" and amount > 0:
-                        # CORRECTION: 3 paramètres seulement
-                        await conn.execute("""
-                            INSERT INTO user_bank (user_id, balance, total_deposited, last_activity)
-                            VALUES ($1, $2, $2, $3)
-                            ON CONFLICT (user_id) DO UPDATE SET
-                            balance = user_bank.balance + $2,
-                            total_deposited = user_bank.total_deposited + $2,
-                            last_activity = $3
-                        """, user_id, amount, now)
-                        return True
-                        
-                    elif operation_type == "withdraw" and amount > 0:
-                        # CORRECTION: 3 paramètres seulement
-                        result = await conn.execute("""
-                            UPDATE user_bank 
-                            SET balance = balance - $1, 
-                                total_withdrawn = total_withdrawn + $1,
-                                last_activity = $2
-                            WHERE user_id = $3 AND balance >= $1
-                        """, amount, now, user_id)
-                        return "UPDATE 0" not in result
+            async with asyncio.timeout(15):
+                async with self.db.pool.acquire() as conn:
+                    async with conn.transaction():
+                        if operation_type == "deposit" and amount > 0:
+                            # CORRECTION: 3 paramètres seulement
+                            await conn.execute("""
+                                INSERT INTO user_bank (user_id, balance, total_deposited, last_activity)
+                                VALUES ($1, $2, $2, $3)
+                                ON CONFLICT (user_id) DO UPDATE SET
+                                balance = user_bank.balance + $2,
+                                total_deposited = user_bank.total_deposited + $2,
+                                last_activity = $3
+                            """, user_id, amount, now)
+                            return True
+                            
+                        elif operation_type == "withdraw" and amount > 0:
+                            # CORRECTION: 3 paramètres seulement
+                            result = await conn.execute("""
+                                UPDATE user_bank 
+                                SET balance = balance - $1, 
+                                    total_withdrawn = total_withdrawn + $1,
+                                    last_activity = $2
+                                WHERE user_id = $3 AND balance >= $1
+                            """, amount, now, user_id)
+                            return "UPDATE 0" not in result
+                        else:
+                            logger.warning(f"update_bank_balance: opération invalide '{operation_type}' ou montant négatif")
+                            return False
             
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout update_bank_balance pour user {user_id}")
             return False
         except Exception as e:
             logger.error(f"Erreur update_bank_balance {user_id}: {e}")
             return False
+
+    # ==================== MÉTHODES UTILITAIRES ====================
+    
+    def _is_ready(self) -> bool:
+        """Vérifie si le cog est prêt à fonctionner"""
+        return (self._initialized and 
+                self.db is not None and 
+                self.db.pool is not None and 
+                self.bot.is_ready())
 
     # ==================== COMMANDES BANQUE ====================
 
