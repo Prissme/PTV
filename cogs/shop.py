@@ -4,6 +4,7 @@ from discord import app_commands
 import math
 import logging
 import json
+import datetime
 
 from config import ITEMS_PER_PAGE, SHOP_TAX_RATE, OWNER_ID, Colors, Emojis, PREFIX
 from utils.embeds import (
@@ -14,7 +15,7 @@ from utils.embeds import (
 logger = logging.getLogger(__name__)
 
 class Shop(commands.Cog):
-    """Système boutique complet : shop, buy, inventory avec taxes et logs intégrés"""
+    """Système boutique complet : shop, buy, inventory avec timeout rigolo"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -25,7 +26,27 @@ class Shop(commands.Cog):
     async def cog_load(self):
         """Appelé quand le cog est chargé"""
         self.db = self.bot.database
-        logger.info("✅ Cog Shop initialisé avec système de taxes et logs intégrés")
+        await self._create_timeout_tokens_table()
+        logger.info("✅ Cog Shop initialisé avec système timeout rigolo")
+    
+    async def _create_timeout_tokens_table(self):
+        """Crée la table pour les tokens timeout"""
+        if not self.db or not self.db.pool:
+            return
+            
+        try:
+            async with self.db.pool.acquire() as conn:
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS user_timeout_tokens (
+                        user_id BIGINT PRIMARY KEY,
+                        timeout_tokens INTEGER DEFAULT 0,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        last_used TIMESTAMP WITH TIME ZONE
+                    )
+                ''')
+                logger.info("✅ Table user_timeout_tokens créée/vérifiée")
+        except Exception as e:
+            logger.error(f"Erreur création table timeout tokens: {e}")
     
     def _check_buy_cooldown(self, user_id: int) -> float:
         """Vérifie et retourne le cooldown restant pour buy"""
@@ -49,10 +70,46 @@ class Shop(commands.Cog):
         """Gère les effets spéciaux des items après achat"""
         special_effect = None
         
-        # Actuellement aucun effet spécial disponible
-        # Cette fonction est prête pour de futurs items spéciaux
+        # Item timeout rigolo
+        if item.get('type') == 'timeout_token':
+            try:
+                special_effect = await self._create_timeout_token(user.id, item)
+            except Exception as e:
+                logger.error(f"Erreur création timeout token: {e}")
+                special_effect = "Erreur lors de la création du token"
         
         return special_effect
+
+    async def _create_timeout_token(self, user_id: int, item: dict) -> str:
+        """Crée un token de timeout utilisable"""
+        if not self.db.pool:
+            return "Erreur base de données"
+        
+        try:
+            async with self.db.pool.acquire() as conn:
+                # Vérifier s'il a déjà des tokens
+                existing = await conn.fetchval("""
+                    SELECT timeout_tokens FROM user_timeout_tokens 
+                    WHERE user_id = $1
+                """, user_id)
+                
+                if existing is not None:
+                    new_count = existing + 1
+                    await conn.execute("""
+                        UPDATE user_timeout_tokens 
+                        SET timeout_tokens = $1 
+                        WHERE user_id = $2
+                    """, new_count, user_id)
+                else:
+                    await conn.execute("""
+                        INSERT INTO user_timeout_tokens (user_id, timeout_tokens)
+                        VALUES ($1, 1)
+                    """, user_id)
+            
+            return f"Token de temps mort ajouté ! Utilise `{PREFIX}timeout @user` pour l'utiliser."
+        except Exception as e:
+            logger.error(f"Erreur ajout timeout token: {e}")
+            return "Erreur lors de l'ajout du token"
 
     # ==================== SHOP COMMANDS ====================
 
@@ -260,10 +317,9 @@ class Shop(commands.Cog):
                     await send_func(embed=embed)
                     return
             
-            # ==================== GESTION DES ITEMS SPÉCIAUX ====================
-            # Actuellement aucun item spécial disponible
-            # Cette section est prête pour de futurs items spéciaux
-            special_effect = await self._handle_special_item_effects(author, guild, item)
+            # ==================== GESTION DES ITEMS TIMEOUT ====================
+            if item["type"] == "timeout_token":
+                special_effect = await self._handle_special_item_effects(author, guild, item)
             
             # Récupérer le nouveau solde final (pour être sûr)
             new_balance = await self.db.get_balance(user_id)
@@ -287,6 +343,128 @@ class Shop(commands.Cog):
         except Exception as e:
             logger.error(f"Erreur buy {user_id} -> {item_id}: {e}")
             embed = create_error_embed("Erreur", "Erreur lors de l'achat.")
+            await send_func(embed=embed)
+
+    # ==================== TIMEOUT COMMAND ====================
+
+    @commands.command(name='timeout', aliases=['timeoutuser'])
+    @commands.cooldown(1, 10, commands.BucketType.user)
+    async def timeout_cmd(self, ctx, target: discord.Member, *, reason: str = "Temps mort rigolo !"):
+        """Utilise un token pour donner un timeout rigolo de 5 minutes"""
+        await self._execute_timeout(ctx, target, reason)
+
+    @app_commands.command(name="timeout", description="[PREMIUM] Utilise un token pour donner un timeout rigolo de 5 minutes")
+    @app_commands.describe(
+        target="L'utilisateur à timeout",
+        reason="Raison du timeout (optionnel)"
+    )
+    async def timeout_slash(self, interaction: discord.Interaction, target: discord.Member, reason: str = "Temps mort rigolo !"):
+        """Slash command pour timeout premium"""
+        await interaction.response.defer()
+        await self._execute_timeout(interaction, target, reason, is_slash=True)
+
+    async def _execute_timeout(self, ctx_or_interaction, target: discord.Member, reason: str, is_slash=False):
+        """Utilise un token de timeout acheté dans le shop"""
+        if is_slash:
+            user = ctx_or_interaction.user
+            send_func = ctx_or_interaction.followup.send
+        else:
+            user = ctx_or_interaction.author
+            send_func = ctx_or_interaction.send
+        
+        user_id = user.id
+        
+        # ==================== PROTECTIONS IMPORTANTES ====================
+        # 1. Vérifier que ce n'est pas un admin/modérateur
+        if target.guild_permissions.administrator or target.guild_permissions.moderate_members:
+            embed = create_error_embed(
+                "Cible protégée",
+                "Tu ne peux pas timeout un modérateur ou administrateur !"
+            )
+            await send_func(embed=embed)
+            return
+        
+        # 2. Vérifier que ce n'est pas soi-même
+        if target.id == user_id:
+            embed = create_error_embed(
+                "Auto-timeout interdit",
+                "Tu ne peux pas te timeout toi-même !"
+            )
+            await send_func(embed=embed)
+            return
+        
+        # 3. Vérifier que ce n'est pas un bot
+        if target.bot:
+            embed = create_error_embed(
+                "Bots protégés",
+                "Tu ne peux pas timeout un bot !"
+            )
+            await send_func(embed=embed)
+            return
+        
+        # 4. Vérifier les permissions du bot
+        if not ctx_or_interaction.guild.me.guild_permissions.moderate_members:
+            embed = create_error_embed(
+                "Permissions insuffisantes",
+                "Le bot n'a pas les permissions pour timeout !"
+            )
+            await send_func(embed=embed)
+            return
+        
+        try:
+            # Vérifier si l'utilisateur a des tokens
+            async with self.db.pool.acquire() as conn:
+                tokens = await conn.fetchval("""
+                    SELECT timeout_tokens FROM user_timeout_tokens 
+                    WHERE user_id = $1
+                """, user_id)
+                
+                if not tokens or tokens <= 0:
+                    embed = create_error_embed(
+                        "Pas de token",
+                        f"Tu n'as pas de token de timeout ! Achète-en un dans le shop avec `{PREFIX}buy <id>`."
+                    )
+                    await send_func(embed=embed)
+                    return
+                
+                # Consommer un token
+                await conn.execute("""
+                    UPDATE user_timeout_tokens 
+                    SET timeout_tokens = timeout_tokens - 1,
+                        last_used = NOW()
+                    WHERE user_id = $1
+                """, user_id)
+            
+            # Appliquer le timeout (5 minutes pour rester rigolo)
+            timeout_duration = datetime.timedelta(minutes=5)
+            await target.timeout(timeout_duration, reason=f"Timeout premium par {user.display_name}: {reason}")
+            
+            # Message de confirmation
+            embed = discord.Embed(
+                title="⏰ Timeout Premium utilisé !",
+                description=f"{target.mention} a reçu un timeout de 5 minutes !",
+                color=Colors.WARNING
+            )
+            embed.add_field(name="Raison", value=reason, inline=False)
+            embed.add_field(name="Durée", value="5 minutes", inline=True)
+            embed.add_field(name="Tokens restants", value=f"{tokens-1}", inline=True)
+            embed.add_field(name="Utilisé par", value=user.mention, inline=True)
+            embed.set_footer(text="Timeout rigolo via le système premium !")
+            
+            await send_func(embed=embed)
+            
+            # Log l'action
+            logger.info(f"Premium timeout: {user} a timeout {target} pour 5min - Tokens restants: {tokens-1}")
+            
+        except discord.Forbidden:
+            embed = create_error_embed(
+                "Hiérarchie des rôles",
+                "Je ne peux pas timeout cet utilisateur (hiérarchie des rôles)"
+            )
+            await send_func(embed=embed)
+        except Exception as e:
+            logger.error(f"Erreur timeout premium: {e}")
+            embed = create_error_embed("Erreur", "Erreur lors du timeout")
             await send_func(embed=embed)
 
     # ==================== INVENTORY COMMANDS ====================
@@ -314,7 +492,40 @@ class Shop(commands.Cog):
 
         try:
             purchases = await self.db.get_user_purchases(target.id)
+            
+            # Ajouter les tokens timeout à l'inventaire
+            tokens_count = 0
+            if self.db.pool:
+                async with self.db.pool.acquire() as conn:
+                    tokens_result = await conn.fetchval("""
+                        SELECT timeout_tokens FROM user_timeout_tokens 
+                        WHERE user_id = $1
+                    """, target.id)
+                    tokens_count = tokens_result or 0
+            
+            # Créer un pseudo-achat pour les tokens
+            if tokens_count > 0:
+                token_entry = {
+                    'name': '⏰ Tokens Timeout',
+                    'description': f'Permet de timeout des utilisateurs (5 min max)',
+                    'type': 'timeout_token',
+                    'price_paid': 0,  # Prix non affiché pour les tokens
+                    'tax_paid': 0,
+                    'purchase_date': datetime.datetime.now(),
+                    'data': {'quantity': tokens_count}
+                }
+                purchases.insert(0, token_entry)  # Ajouter en première position
+            
             embed = create_inventory_embed(target, purchases)
+            
+            # Ajouter info spéciale pour les tokens
+            if tokens_count > 0:
+                embed.add_field(
+                    name="🎯 Tokens actifs",
+                    value=f"**{tokens_count}** token(s) timeout disponible(s)\nUtilise `{PREFIX}timeout @user` pour les utiliser",
+                    inline=False
+                )
+            
             await send_func(embed=embed)
             
         except Exception as e:
@@ -322,7 +533,171 @@ class Shop(commands.Cog):
             embed = create_error_embed("Erreur", "Erreur lors de la récupération de l'inventaire.")
             await send_func(embed=embed)
 
+    # ==================== COMMANDES D'INFO TOKENS ====================
+
+    @commands.command(name='tokens', aliases=['mytokens'])
+    async def tokens_cmd(self, ctx, user: discord.Member = None):
+        """Affiche tes tokens timeout disponibles"""
+        await self._execute_tokens_info(ctx, user)
+
+    @app_commands.command(name="tokens", description="Affiche tes tokens timeout disponibles")
+    @app_commands.describe(user="Utilisateur dont voir les tokens (optionnel)")
+    async def tokens_slash(self, interaction: discord.Interaction, user: discord.Member = None):
+        await interaction.response.defer()
+        await self._execute_tokens_info(interaction, user, is_slash=True)
+
+    async def _execute_tokens_info(self, ctx_or_interaction, user=None, is_slash=False):
+        """Affiche les tokens timeout d'un utilisateur"""
+        if is_slash:
+            target = user or ctx_or_interaction.user
+            send_func = ctx_or_interaction.followup.send
+        else:
+            target = user or ctx_or_interaction.author
+            send_func = ctx_or_interaction.send
+
+        try:
+            tokens_count = 0
+            last_used = None
+            
+            if self.db.pool:
+                async with self.db.pool.acquire() as conn:
+                    result = await conn.fetchrow("""
+                        SELECT timeout_tokens, last_used FROM user_timeout_tokens 
+                        WHERE user_id = $1
+                    """, target.id)
+                    
+                    if result:
+                        tokens_count = result['timeout_tokens'] or 0
+                        last_used = result['last_used']
+
+            embed = discord.Embed(
+                title="⏰ Tokens Timeout",
+                description=f"Tokens de **{target.display_name}**",
+                color=Colors.PREMIUM if tokens_count > 0 else Colors.WARNING
+            )
+
+            embed.add_field(
+                name="🎯 Tokens disponibles",
+                value=f"**{tokens_count}** token(s)",
+                inline=True
+            )
+
+            if last_used:
+                embed.add_field(
+                    name="📅 Dernière utilisation",
+                    value=f"<t:{int(last_used.timestamp())}:R>",
+                    inline=True
+                )
+
+            if tokens_count > 0:
+                embed.add_field(
+                    name="🚀 Utilisation",
+                    value=f"`{PREFIX}timeout @user [raison]`\n5 minutes maximum par timeout",
+                    inline=False
+                )
+                embed.add_field(
+                    name="🛡️ Protections",
+                    value="• Admins/modérateurs protégés\n• Bots protégés\n• Auto-timeout interdit",
+                    inline=True
+                )
+            else:
+                embed.add_field(
+                    name="🛒 Comment obtenir ?",
+                    value=f"Achète des tokens dans `{PREFIX}shop` !\nCherche l'item **Token Temps Mort**",
+                    inline=False
+                )
+
+            embed.set_thumbnail(url=target.display_avatar.url)
+            embed.set_footer(text="Système timeout rigolo • Protections incluses")
+            
+            await send_func(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Erreur tokens info {target.id}: {e}")
+            embed = create_error_embed("Erreur", "Erreur lors de la récupération des tokens.")
+            await send_func(embed=embed)
+
     # ==================== ADMIN COMMANDS ====================
+
+    @commands.command(name='addtimeoutitem')
+    @commands.has_permissions(administrator=True)
+    async def add_timeout_item_cmd(self, ctx, price: int = 1000):
+        """[ADMIN] Ajoute l'item timeout token au shop"""
+        await self._execute_add_timeout_item(ctx, price)
+
+    @app_commands.command(name="addtimeoutitem", description="[ADMIN] Ajoute l'item timeout token au shop")
+    @app_commands.describe(price="Prix du token en PrissBucks (sans taxe)")
+    @app_commands.default_permissions(administrator=True)
+    async def add_timeout_item_slash(self, interaction: discord.Interaction, price: int = 1000):
+        """Ajoute l'item timeout au shop"""
+        if not interaction.user.guild_permissions.administrator:
+            embed = create_error_embed(
+                "Permission refusée", 
+                "Seuls les administrateurs peuvent utiliser cette commande."
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        await self._execute_add_timeout_item(interaction, price, is_slash=True)
+
+    async def _execute_add_timeout_item(self, ctx_or_interaction, price, is_slash=False):
+        """Ajoute l'item timeout token au shop"""
+        if is_slash:
+            send_func = ctx_or_interaction.followup.send
+            admin = ctx_or_interaction.user
+        else:
+            send_func = ctx_or_interaction.send
+            admin = ctx_or_interaction.author
+
+        try:
+            if price <= 0 or price > 10000000:
+                embed = create_error_embed("Prix invalide", "Le prix doit être entre 1 et 10,000,000 PrissBucks.")
+                await send_func(embed=embed)
+                return
+
+            item_data = {
+                "duration_minutes": 5,
+                "restrictions": ["no_admin", "no_mod", "no_bot", "no_self"],
+                "type": "timeout_rigolo"
+            }
+            
+            item_id = await self.db.add_shop_item(
+                name="⏰ Token Temps Mort",
+                description="Permet de donner un timeout rigolo de 5 minutes à un utilisateur (protections incluses)",
+                price=price,
+                item_type="timeout_token",
+                data=item_data
+            )
+            
+            # Calculer le prix avec taxe
+            total_price, tax = self._calculate_price_with_tax(price)
+            
+            embed = create_success_embed(
+                "Item timeout ajouté !",
+                f"**Token Temps Mort** ajouté au shop avec succès !"
+            )
+            embed.add_field(name="💰 Prix de base", value=f"{price:,} PrissBucks", inline=True)
+            embed.add_field(name="🛒 Prix avec taxe", value=f"{total_price:,} PrissBucks", inline=True)
+            embed.add_field(name="🆔 ID", value=f"`{item_id}`", inline=True)
+            embed.add_field(name="⏱️ Durée", value="5 minutes maximum", inline=True)
+            embed.add_field(name="🛡️ Protections", value="Admins/mods protégés", inline=True)
+            embed.add_field(name="📈 Taxe", value=f"{SHOP_TAX_RATE*100}% ({tax:,} PB)", inline=True)
+            embed.add_field(
+                name="ℹ️ Utilisation", 
+                value=f"Après achat : `{PREFIX}timeout @user [raison]`", 
+                inline=False
+            )
+            
+            embed.set_footer(text=f"Ajouté par {admin.display_name} • Item rigolo et sécurisé")
+            await send_func(embed=embed)
+            
+            logger.info(f"ADMIN: {admin} a ajouté l'item timeout token (ID: {item_id}, Prix: {price})")
+            
+        except Exception as e:
+            logger.error(f"Erreur add timeout item: {e}")
+            embed = create_error_embed("Erreur", "Erreur lors de l'ajout de l'item timeout.")
+            await send_func(embed=embed)
 
     @commands.command(name='additem')
     @commands.has_permissions(administrator=True)
@@ -405,7 +780,7 @@ class Shop(commands.Cog):
             )
             
             embed.add_field(name="💰 Prix de base", value=f"{price:,} PrissBucks", inline=True)
-            embed.add_field(name="🏛️ Prix avec taxe", value=f"{total_price:,} PrissBucks", inline=True)
+            embed.add_field(name="🛒 Prix avec taxe", value=f"{total_price:,} PrissBucks", inline=True)
             embed.add_field(name="🎭 Rôle", value=role.mention, inline=True)
             embed.add_field(name="🆔 ID", value=f"`{item_id}`", inline=True)
             embed.add_field(name="📈 Taxe", value=f"{SHOP_TAX_RATE*100}% ({tax:,} PB)", inline=True)
@@ -512,7 +887,7 @@ class Shop(commands.Cog):
             
             # Nouvelles statistiques sur les taxes
             embed.add_field(
-                name="🏛️ Taxes collectées", 
+                name="🛒 Taxes collectées", 
                 value=f"**{stats['total_taxes']:,}** PrissBucks", 
                 inline=True
             )
@@ -586,7 +961,7 @@ class Shop(commands.Cog):
             
             # Nouvelles statistiques sur les taxes
             embed.add_field(
-                name="🏛️ Taxes collectées", 
+                name="🛒 Taxes collectées", 
                 value=f"**{stats['total_taxes']:,}** PrissBucks", 
                 inline=True
             )
