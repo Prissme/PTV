@@ -114,6 +114,8 @@ class BotManager:
             'transaction_logs',  # Doit être chargé en premier
             'economy',
             'shop', 
+            'xp_system', 
+            'loan_system', 
             'leaderboard',
             'games',
             'roulette',
