@@ -24,7 +24,7 @@ class Bank(commands.Cog):
         self.MIN_DEPOSIT = 1
         self.MIN_WITHDRAW = 1
         self.MAX_TRANSACTION = 50000
-        self.MAX_TOTAL_BANK_BALANCE = 15000
+        self.MAX_TOTAL_BANK_BALANCE = 100000
         
         # Système de frais bancaires simplifié
         self.DAILY_BANK_FEE_RATE = 0.02  # 2% de frais par jour
@@ -32,7 +32,7 @@ class Bank(commands.Cog):
         self.DEPOSIT_TAX_RATE = 0.02  # 2% de taxe sur les dépôts
         
         # Limites quotidiennes simplifiées
-        self.MAX_DAILY_DEPOSITS = 5000
+        self.MAX_DAILY_DEPOSITS = 15000
         
         # Dictionnaires pour gérer les cooldowns et limites
         self.bank_cooldowns = {}
