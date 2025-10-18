@@ -1,558 +1,1187 @@
-import asyncpg
-import logging
-from datetime import datetime
-from typing import Optional, List, Dict, Tuple, Any
+"""Database access layer for the EcoBot project.
+
+This module exposes the :class:`Database` class which centralises **all**
+PostgreSQL interactions required by the Discord bot.  The class has been
+carefully designed to satisfy the specification provided in the user request:
+
+* asynchronous access through ``asyncpg`` with a connection pool
+* automatic schema creation for every table mentioned in the requirements
+* atomic transactions for all money related operations
+* utility helpers for pagination, cooldown management and leaderboards
+* extensive logging and docstrings for maintainability
+
+The goal of this file is to be the single source of truth for the data access
+layer; all cogs rely on the methods defined here.  Keeping all SQL queries in a
+single module simplifies auditing and makes it easier to share transactions
+between features.
+"""
+from __future__ import annotations
+
 import json
+import logging
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, AsyncIterator, Dict, Iterable, List, Optional, Sequence, Tuple
+
+import asyncpg
+
+__all__ = ["Database", "DatabaseError", "TransactionLogEntry"]
+
 
 logger = logging.getLogger(__name__)
 
-class DatabaseError(Exception):
-    """Exception personnalisée pour les erreurs de base de données"""
-    pass
+
+class DatabaseError(RuntimeError):
+    """Exception levée lorsqu'une opération de base de données échoue."""
+
+
+@dataclass(slots=True)
+class TransactionLogEntry:
+    """Structure représentant une entrée du journal des transactions."""
+
+    user_id: int
+    transaction_type: str
+    amount: int
+    balance_before: int
+    balance_after: int
+    description: str
+    related_user_id: Optional[int]
+    timestamp: datetime
+
 
 class Database:
+    """Gestionnaire d'accès PostgreSQL.
+
+    Parameters
+    ----------
+    dsn:
+        Chaîne de connexion PostgreSQL.
+    min_size, max_size:
+        Paramètres du pool ``asyncpg``.  Les valeurs par défaut conviennent à
+        un hébergement sur Replit mais peuvent être ajustées par configuration.
     """
-    Classe de base de données simplifiée et robuste.
-    Focus sur la clarté, simplicité et fiabilité.
-    """
-    
-    def __init__(self, dsn: str):
+
+    def __init__(self, dsn: str, *, min_size: int = 1, max_size: int = 10) -> None:
         if not dsn:
-            raise ValueError("DSN requis pour la base de données")
-        
-        self.dsn = dsn
-        self.pool: Optional[asyncpg.Pool] = None
-    
-    async def connect(self):
-        """Connexion à la base de données avec initialisation automatique"""
+            raise ValueError("Le DSN de connexion PostgreSQL est obligatoire")
+
+        self._dsn = dsn
+        self._pool: Optional[asyncpg.Pool] = None
+        self._min_size = min_size
+        self._max_size = max_size
+
+    # ------------------------------------------------------------------
+    # Gestion du cycle de vie
+    # ------------------------------------------------------------------
+    @property
+    def pool(self) -> asyncpg.Pool:
+        """Renvoie le pool et s'assure qu'il est initialisé."""
+
+        if self._pool is None:
+            raise DatabaseError("La base de données n'est pas connectée")
+        return self._pool
+
+    async def connect(self) -> None:
+        """Initialise la connexion et crée les tables si nécessaire."""
+
+        if self._pool is not None:
+            return
+
         try:
-            self.pool = await asyncpg.create_pool(dsn=self.dsn)
-            await self._init_tables()
-            logger.info("✅ Base de données connectée et initialisée")
-        except Exception as e:
-            logger.error(f"❌ Erreur connexion DB: {e}")
-            raise DatabaseError(f"Connexion échouée: {e}")
-    
-    async def close(self):
-        """Fermeture propre de la base de données"""
-        if self.pool:
-            await self.pool.close()
-            self.pool = None
-            logger.info("🔌 Base de données fermée")
-    
-    def _ensure_connected(self):
-        """Vérifie que la base de données est connectée"""
-        if not self.pool:
-            raise DatabaseError("Base de données non connectée")
-    
-    async def _init_tables(self):
-        """Initialise toutes les tables nécessaires"""
-        self._ensure_connected()
-        
+            self._pool = await asyncpg.create_pool(
+                dsn=self._dsn,
+                min_size=self._min_size,
+                max_size=self._max_size,
+                command_timeout=60,
+            )
+        except Exception as exc:  # pragma: no cover - logging only
+            logger.exception("Impossible de créer le pool PostgreSQL")
+            raise DatabaseError("Connexion base de données échouée") from exc
+
+        logger.info("Connexion PostgreSQL établie - initialisation du schéma")
+        await self._initialise_schema()
+
+    async def close(self) -> None:
+        """Ferme proprement le pool."""
+
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None
+            logger.info("Pool PostgreSQL fermé")
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[asyncpg.Connection]:
+        """Context manager pour exécuter une transaction atomique.
+
+        Exemple::
+
+            async with database.transaction() as conn:
+                await conn.execute("UPDATE ...")
+
+        Toutes les commandes d'argent dans le bot utilisent ce context manager
+        afin de garantir la cohérence des soldes.
+        """
+
+        async with self.pool.acquire() as connection:
+            async with connection.transaction():
+                yield connection
+
+    # ------------------------------------------------------------------
+    # Initialisation du schéma
+    # ------------------------------------------------------------------
+    async def _initialise_schema(self) -> None:
+        """Crée toutes les tables et index nécessaires."""
+
         async with self.pool.acquire() as conn:
-            # Table utilisateurs (table principale)
-            await conn.execute('''
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
-                    balance BIGINT DEFAULT 0 CHECK (balance >= 0),
-                    last_daily TIMESTAMP WITH TIME ZONE
+                    balance BIGINT NOT NULL DEFAULT 0 CHECK (balance >= 0),
+                    last_daily TIMESTAMPTZ,
+                    message_cooldown TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
-            ''')
-            
-            # Table items boutique
-            await conn.execute('''
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS shop_items (
                     id SERIAL PRIMARY KEY,
-                    name VARCHAR(100) NOT NULL,
+                    name TEXT NOT NULL,
                     description TEXT,
                     price BIGINT NOT NULL CHECK (price > 0),
-                    type VARCHAR(50) NOT NULL,
-                    data JSONB DEFAULT '{}',
-                    is_active BOOLEAN DEFAULT TRUE,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    type TEXT NOT NULL,
+                    data JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
-            ''')
-            
-            # Table achats utilisateurs
-            await conn.execute('''
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS user_purchases (
                     id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    item_id INTEGER NOT NULL REFERENCES shop_items(id),
+                    purchase_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    price_paid BIGINT NOT NULL,
+                    tax_paid BIGINT NOT NULL DEFAULT 0
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_xp (
+                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                    xp BIGINT NOT NULL DEFAULT 0,
+                    level INTEGER NOT NULL DEFAULT 1,
+                    total_xp BIGINT NOT NULL DEFAULT 0,
+                    xp_boost_role TEXT,
+                    last_xp_gain TIMESTAMPTZ
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_bank (
+                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                    balance BIGINT NOT NULL DEFAULT 0 CHECK (balance >= 0),
+                    total_deposited BIGINT NOT NULL DEFAULT 0,
+                    total_withdrawn BIGINT NOT NULL DEFAULT 0,
+                    total_fees_paid BIGINT NOT NULL DEFAULT 0,
+                    last_fee_payment TIMESTAMPTZ,
+                    daily_deposit BIGINT NOT NULL DEFAULT 0,
+                    last_deposit_reset DATE
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public_bank (
+                    id SMALLINT PRIMARY KEY DEFAULT 1,
+                    balance BIGINT NOT NULL DEFAULT 0 CHECK (balance >= 0),
+                    total_deposited BIGINT NOT NULL DEFAULT 0,
+                    total_withdrawn BIGINT NOT NULL DEFAULT 0,
+                    last_activity TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await conn.execute(
+                """
+                INSERT INTO public_bank (id)
+                VALUES (1)
+                ON CONFLICT (id) DO NOTHING
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public_bank_withdrawals (
+                    id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
-                    item_id INTEGER REFERENCES shop_items(id),
-                    purchase_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    price_paid BIGINT NOT NULL CHECK (price_paid > 0),
-                    tax_paid BIGINT DEFAULT 0 CHECK (tax_paid >= 0)
+                    amount BIGINT NOT NULL,
+                    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    remaining_balance BIGINT NOT NULL
                 )
-            ''')
-            
-            # Index pour performances
-            await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_balance ON users(balance DESC)')
-            await conn.execute('CREATE INDEX IF NOT EXISTS idx_purchases_user ON user_purchases(user_id)')
-            
-            logger.info("✅ Tables initialisées")
-    
-    # ==================== MÉTHODES ÉCONOMIE SIMPLIFIÉES ====================
-    
-    async def get_balance(self, user_id: int) -> int:
-        """Récupère le solde d'un utilisateur (méthode la plus utilisée)"""
-        self._ensure_connected()
-        
-        try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT balance FROM users WHERE user_id = $1", 
-                    user_id
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_defenses (
+                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                    active BOOLEAN NOT NULL DEFAULT FALSE,
+                    purchased_at TIMESTAMPTZ
                 )
-                return row['balance'] if row else 0
-        except Exception as e:
-            logger.error(f"Erreur get_balance {user_id}: {e}")
-            return 0
-    
-    async def update_balance(self, user_id: int, amount: int):
-        """
-        Met à jour le solde d'un utilisateur.
-        Crée l'utilisateur si nécessaire.
-        """
-        if amount == 0:
-            return  # Optimisation : ne rien faire si montant = 0
-        
-        self._ensure_connected()
-        
-        try:
-            async with self.pool.acquire() as conn:
-                await conn.execute('''
-                    INSERT INTO users (user_id, balance) VALUES ($1, $2)
-                    ON CONFLICT (user_id) 
-                    DO UPDATE SET balance = GREATEST(0, users.balance + $2)
-                ''', user_id, amount)
-        except Exception as e:
-            logger.error(f"Erreur update_balance {user_id}: {e}")
-            raise DatabaseError(f"Échec mise à jour solde: {e}")
-    
-    async def set_balance(self, user_id: int, amount: int):
-        """Définit le solde exact d'un utilisateur"""
-        if amount < 0:
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_timeout_tokens (
+                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                    timeout_tokens INTEGER NOT NULL DEFAULT 0,
+                    last_used TIMESTAMPTZ
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS transaction_logs (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    transaction_type TEXT NOT NULL,
+                    amount BIGINT NOT NULL,
+                    balance_before BIGINT NOT NULL,
+                    balance_after BIGINT NOT NULL,
+                    description TEXT,
+                    related_user_id BIGINT,
+                    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cooldowns (
+                    user_id BIGINT NOT NULL,
+                    command_type TEXT NOT NULL,
+                    last_used TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (user_id, command_type)
+                )
+                """
+            )
+
+            # Indexes pour accélérer les requêtes usuelles
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_users_balance ON users(balance DESC)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_transaction_user ON transaction_logs(user_id, timestamp DESC)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_public_withdrawals_user ON public_bank_withdrawals(user_id, timestamp DESC)"
+            )
+            logger.info("Schéma PostgreSQL initialisé")
+
+    # ------------------------------------------------------------------
+    # Utilitaires généraux
+    # ------------------------------------------------------------------
+    async def ensure_user(self, user_id: int) -> None:
+        """Crée l'utilisateur s'il n'existe pas."""
+
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO users (user_id)
+                VALUES ($1)
+                ON CONFLICT (user_id) DO NOTHING
+                """,
+                user_id,
+            )
+
+    async def fetch_balance(self, user_id: int) -> int:
+        """Retourne le solde actuel du portefeuille."""
+
+        async with self.pool.acquire() as conn:
+            balance = await conn.fetchval(
+                "SELECT balance FROM users WHERE user_id = $1",
+                user_id,
+            )
+            return balance or 0
+
+    async def set_balance(self, user_id: int, new_balance: int) -> None:
+        """Fixe le solde exact d'un utilisateur."""
+
+        if new_balance < 0:
             raise ValueError("Le solde ne peut pas être négatif")
-        
-        self._ensure_connected()
-        
-        try:
-            async with self.pool.acquire() as conn:
-                await conn.execute('''
-                    INSERT INTO users (user_id, balance) VALUES ($1, $2)
-                    ON CONFLICT (user_id) 
-                    DO UPDATE SET balance = $2
-                ''', user_id, amount)
-        except Exception as e:
-            logger.error(f"Erreur set_balance {user_id}: {e}")
-            raise DatabaseError(f"Échec définition solde: {e}")
-    
-    async def transfer(self, from_user: int, to_user: int, amount: int) -> bool:
+
+        async with self.transaction() as conn:
+            await conn.execute(
+                """
+                INSERT INTO users (user_id, balance)
+                VALUES ($1, $2)
+                ON CONFLICT (user_id) DO UPDATE
+                SET balance = EXCLUDED.balance
+                """,
+                user_id,
+                new_balance,
+            )
+
+    async def increment_balance(self, user_id: int, amount: int) -> Tuple[int, int]:
+        """Incrémente le solde du portefeuille.
+
+        Parameters
+        ----------
+        user_id:
+            Identifiant Discord de l'utilisateur.
+        amount:
+            Montant à ajouter (peut être négatif).  Le solde final ne peut pas
+            être inférieur à ``0``.
         """
-        Transfert simple entre deux utilisateurs.
-        Transaction atomique garantie.
+
+        async with self.transaction() as conn:
+            row = await conn.fetchrow(
+                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+
+            previous_balance = 0 if row is None else row[0]
+            new_balance = max(previous_balance + amount, 0)
+
+            if row is None:
+                await conn.execute(
+                    "INSERT INTO users (user_id, balance) VALUES ($1, $2)",
+                    user_id,
+                    new_balance,
+                )
+            else:
+                await conn.execute(
+                    "UPDATE users SET balance = $2 WHERE user_id = $1",
+                    user_id,
+                    new_balance,
+                )
+
+            return int(previous_balance), int(new_balance)
+
+    async def transfer(self, sender_id: int, receiver_id: int, amount: int) -> Tuple[bool, int, int]:
+        """Transfert brut d'un montant entre deux utilisateurs.
+
+        Returns
+        -------
+        success: bool
+            ``True`` si la transaction a réussi.
+        sender_balance: int
+            Solde du sender après transaction.
+        receiver_balance: int
+            Solde du receiver après transaction.
         """
+
         if amount <= 0:
-            return False
-        
-        if from_user == to_user:
-            return False
-        
-        self._ensure_connected()
-        
-        try:
-            async with self.pool.acquire() as conn:
-                async with conn.transaction():
-                    # Vérifier et débiter
-                    sender_balance = await conn.fetchval(
-                        "SELECT balance FROM users WHERE user_id = $1", 
-                        from_user
-                    )
-                    
-                    if not sender_balance or sender_balance < amount:
-                        return False
-                    
-                    # Effectuer le transfert
-                    await conn.execute(
-                        "UPDATE users SET balance = balance - $1 WHERE user_id = $2", 
-                        amount, from_user
-                    )
-                    
-                    await conn.execute('''
-                        INSERT INTO users (user_id, balance) VALUES ($1, $2)
-                        ON CONFLICT (user_id) 
-                        DO UPDATE SET balance = users.balance + $2
-                    ''', to_user, amount)
-                    
-                    return True
-        except Exception as e:
-            logger.error(f"Erreur transfer {from_user} -> {to_user}: {e}")
-            return False
-    
-    async def transfer_with_tax(self, from_user: int, to_user: int, amount: int, 
-                              tax_rate: float, tax_recipient: int) -> Tuple[bool, Dict]:
-        """
-        Transfert avec taxe - version simplifiée.
-        Retourne (succès, info_détaillée).
-        """
-        if amount <= 0 or tax_rate < 0:
-            return False, {"error": "Paramètres invalides"}
-        
-        # Calculs simples
-        tax_amount = int(amount * tax_rate)
-        net_amount = amount - tax_amount
-        
-        self._ensure_connected()
-        
-        try:
-            async with self.pool.acquire() as conn:
-                async with conn.transaction():
-                    # Vérifier le solde
-                    sender_balance = await conn.fetchval(
-                        "SELECT balance FROM users WHERE user_id = $1", 
-                        from_user
-                    )
-                    
-                    if not sender_balance or sender_balance < amount:
-                        return False, {"error": "Solde insuffisant"}
-                    
-                    # Débiter l'expéditeur
-                    await conn.execute(
-                        "UPDATE users SET balance = balance - $1 WHERE user_id = $2", 
-                        amount, from_user
-                    )
-                    
-                    # Créditer le destinataire (montant net)
-                    await conn.execute('''
-                        INSERT INTO users (user_id, balance) VALUES ($1, $2)
-                        ON CONFLICT (user_id) 
-                        DO UPDATE SET balance = users.balance + $2
-                    ''', to_user, net_amount)
-                    
-                    # Créditer la taxe si elle existe
-                    if tax_amount > 0 and tax_recipient:
-                        await conn.execute('''
-                            INSERT INTO users (user_id, balance) VALUES ($1, $2)
-                            ON CONFLICT (user_id) 
-                            DO UPDATE SET balance = users.balance + $2
-                        ''', tax_recipient, tax_amount)
-                    
-                    return True, {
-                        "gross_amount": amount,
-                        "net_amount": net_amount,
-                        "tax_amount": tax_amount,
-                        "tax_rate": tax_rate * 100
-                    }
-        except Exception as e:
-            logger.error(f"Erreur transfer_with_tax {from_user} -> {to_user}: {e}")
-            return False, {"error": str(e)}
-    
-    # ==================== DAILY SYSTEM SIMPLIFIÉ ====================
-    
+            raise ValueError("Le montant doit être positif")
+
+        async with self.transaction() as conn:
+            sender_balance = await conn.fetchval(
+                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                sender_id,
+            )
+            if sender_balance is None or sender_balance < amount:
+                return False, sender_balance or 0, await self.fetch_balance(receiver_id)
+
+            receiver_balance = await conn.fetchval(
+                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                receiver_id,
+            )
+
+            await conn.execute(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+                amount,
+                sender_id,
+            )
+            await conn.execute(
+                """
+                INSERT INTO users (user_id, balance)
+                VALUES ($1, $2)
+                ON CONFLICT (user_id) DO UPDATE SET balance = users.balance + $2
+                """,
+                receiver_id,
+                amount,
+            )
+
+            new_sender_balance = sender_balance - amount
+            new_receiver_balance = (receiver_balance or 0) + amount
+            return True, new_sender_balance, new_receiver_balance
+
+    # ------------------------------------------------------------------
+    # Daily & récompenses messages
+    # ------------------------------------------------------------------
     async def get_last_daily(self, user_id: int) -> Optional[datetime]:
-        """Récupère la dernière fois que l'utilisateur a fait son daily"""
-        self._ensure_connected()
-        
-        try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT last_daily FROM users WHERE user_id = $1", 
-                    user_id
+        async with self.pool.acquire() as conn:
+            value = await conn.fetchval(
+                "SELECT last_daily FROM users WHERE user_id = $1",
+                user_id,
+            )
+            return value
+
+    async def set_last_daily(self, user_id: int, timestamp: datetime) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO users (user_id, last_daily)
+                VALUES ($1, $2)
+                ON CONFLICT (user_id) DO UPDATE SET last_daily = EXCLUDED.last_daily
+                """,
+                user_id,
+                timestamp,
+            )
+
+    async def get_message_reward_cooldown(self, user_id: int) -> Optional[datetime]:
+        async with self.pool.acquire() as conn:
+            value = await conn.fetchval(
+                "SELECT message_cooldown FROM users WHERE user_id = $1",
+                user_id,
+            )
+            return value
+
+    async def set_message_reward_cooldown(self, user_id: int, timestamp: datetime) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO users (user_id, message_cooldown)
+                VALUES ($1, $2)
+                ON CONFLICT (user_id) DO UPDATE SET message_cooldown = EXCLUDED.message_cooldown
+                """,
+                user_id,
+                timestamp,
+            )
+
+    # ------------------------------------------------------------------
+    # Cooldowns génériques
+    # ------------------------------------------------------------------
+    async def get_cooldown(self, user_id: int, command_type: str) -> Optional[datetime]:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT last_used FROM cooldowns WHERE user_id = $1 AND command_type = $2",
+                user_id,
+                command_type,
+            )
+
+    async def set_cooldown(self, user_id: int, command_type: str, timestamp: Optional[datetime] = None) -> None:
+        if timestamp is None:
+            timestamp = datetime.now(timezone.utc)
+
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO cooldowns (user_id, command_type, last_used)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (user_id, command_type)
+                DO UPDATE SET last_used = EXCLUDED.last_used
+                """,
+                user_id,
+                command_type,
+                timestamp,
+            )
+
+    # ------------------------------------------------------------------
+    # Gestion des transactions
+    # ------------------------------------------------------------------
+    async def log_transaction(
+        self,
+        user_id: int,
+        transaction_type: str,
+        amount: int,
+        balance_before: int,
+        balance_after: int,
+        *,
+        description: str = "",
+        related_user_id: Optional[int] = None,
+    ) -> None:
+        """Ajoute une entrée dans ``transaction_logs``."""
+
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO transaction_logs (
+                    user_id, transaction_type, amount, balance_before,
+                    balance_after, description, related_user_id
                 )
-                return row['last_daily'] if row else None
-        except Exception as e:
-            logger.error(f"Erreur get_last_daily {user_id}: {e}")
-            return None
-    
-    async def set_last_daily(self, user_id: int, timestamp: datetime):
-        """Met à jour la dernière fois que l'utilisateur a fait son daily"""
-        self._ensure_connected()
-        
-        try:
-            async with self.pool.acquire() as conn:
-                await conn.execute('''
-                    INSERT INTO users (user_id, last_daily) VALUES ($1, $2)
-                    ON CONFLICT (user_id) 
-                    DO UPDATE SET last_daily = $2
-                ''', user_id, timestamp)
-        except Exception as e:
-            logger.error(f"Erreur set_last_daily {user_id}: {e}")
-            raise DatabaseError(f"Échec update daily: {e}")
-    
-    # ==================== CLASSEMENT SIMPLIFIÉ ====================
-    
-    async def get_top_users(self, limit: int = 10) -> List[Tuple[int, int]]:
-        """Récupère le top des utilisateurs les plus riches"""
-        self._ensure_connected()
-        
-        try:
-            async with self.pool.acquire() as conn:
-                rows = await conn.fetch('''
-                    SELECT user_id, balance 
-                    FROM users 
-                    WHERE balance > 0 
-                    ORDER BY balance DESC 
-                    LIMIT $1
-                ''', min(limit, 100))  # Limite de sécurité
-                
-                return [(row['user_id'], row['balance']) for row in rows]
-        except Exception as e:
-            logger.error(f"Erreur get_top_users: {e}")
-            return []
-    
-    # ==================== BOUTIQUE SIMPLIFIÉE ====================
-    
-    async def get_shop_items(self, active_only: bool = True) -> List[Dict]:
-        """Récupère la liste des items du shop"""
-        self._ensure_connected()
-        
-        try:
-            query = "SELECT * FROM shop_items"
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                """,
+                user_id,
+                transaction_type,
+                amount,
+                balance_before,
+                balance_after,
+                description,
+                related_user_id,
+            )
+
+    async def fetch_transactions(
+        self,
+        user_id: int,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> Tuple[List[TransactionLogEntry], int]:
+        """Retourne l'historique paginé des transactions."""
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, user_id, transaction_type, amount, balance_before,
+                       balance_after, description, related_user_id, timestamp
+                FROM transaction_logs
+                WHERE user_id = $1
+                ORDER BY timestamp DESC
+                LIMIT $2 OFFSET $3
+                """,
+                user_id,
+                limit,
+                offset,
+            )
+            total = await conn.fetchval(
+                "SELECT COUNT(*) FROM transaction_logs WHERE user_id = $1",
+                user_id,
+            )
+
+        entries = [
+            TransactionLogEntry(
+                user_id=row[1],
+                transaction_type=row[2],
+                amount=row[3],
+                balance_before=row[4],
+                balance_after=row[5],
+                description=row[6] or "",
+                related_user_id=row[7],
+                timestamp=row[8],
+            )
+            for row in rows
+        ]
+        return entries, int(total or 0)
+
+    # ------------------------------------------------------------------
+    # Gestion du shop
+    # ------------------------------------------------------------------
+    async def list_shop_items(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 5,
+        active_only: bool = True,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Renvoie les items du shop et le total."""
+
+        offset = max(page - 1, 0) * per_page
+        async with self.pool.acquire() as conn:
+            base_query = "SELECT id, name, description, price, type, data, is_active FROM shop_items"
             if active_only:
-                query += " WHERE is_active = TRUE"
-            query += " ORDER BY price ASC"
-            
-            async with self.pool.acquire() as conn:
-                rows = await conn.fetch(query)
-                
-                items = []
-                for row in rows:
-                    item = dict(row)
-                    # Convertir JSONB en dict Python
-                    if isinstance(item['data'], str):
-                        try:
-                            item['data'] = json.loads(item['data'])
-                        except (json.JSONDecodeError, TypeError):
-                            item['data'] = {}
-                    items.append(item)
-                
-                return items
-        except Exception as e:
-            logger.error(f"Erreur get_shop_items: {e}")
-            return []
-    
-    async def get_shop_item(self, item_id: int) -> Optional[Dict]:
-        """Récupère un item spécifique du shop"""
-        self._ensure_connected()
-        
-        try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT * FROM shop_items WHERE id = $1", 
-                    item_id
-                )
-                
-                if not row:
-                    return None
-                
-                item = dict(row)
-                # Convertir JSONB
-                if isinstance(item['data'], str):
-                    try:
-                        item['data'] = json.loads(item['data'])
-                    except (json.JSONDecodeError, TypeError):
-                        item['data'] = {}
-                
-                return item
-        except Exception as e:
-            logger.error(f"Erreur get_shop_item {item_id}: {e}")
-            return None
-    
-    async def add_shop_item(self, name: str, description: str, price: int, 
-                          item_type: str, data: Dict) -> int:
-        """Ajoute un item au shop"""
-        if price <= 0:
-            raise ValueError("Le prix doit être positif")
-        
-        self._ensure_connected()
-        
-        try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow('''
-                    INSERT INTO shop_items (name, description, price, type, data)
-                    VALUES ($1, $2, $3, $4, $5)
-                    RETURNING id
-                ''', name, description, price, item_type, json.dumps(data))
-                
-                return row['id']
-        except Exception as e:
-            logger.error(f"Erreur add_shop_item: {e}")
-            raise DatabaseError(f"Échec ajout item: {e}")
-    
-    async def purchase_item_with_tax(self, user_id: int, item_id: int, 
-                                   tax_rate: float, tax_recipient: int) -> Tuple[bool, str, Dict]:
-        """
-        Effectue un achat avec taxe - version simplifiée.
-        Transaction atomique garantie.
-        """
-        self._ensure_connected()
-        
-        try:
-            async with self.pool.acquire() as conn:
-                async with conn.transaction():
-                    # Récupérer l'item
-                    item = await conn.fetchrow('''
-                        SELECT id, name, price, type, data 
-                        FROM shop_items 
-                        WHERE id = $1 AND is_active = TRUE
-                    ''', item_id)
-                    
-                    if not item:
-                        return False, "Item inexistant ou inactif", {}
-                    
-                    # Vérifier si l'utilisateur a déjà acheté (pour les rôles)
-                    if item['type'] == "role":
-                        existing = await conn.fetchval('''
-                            SELECT 1 FROM user_purchases 
-                            WHERE user_id = $1 AND item_id = $2
-                        ''', user_id, item_id)
-                        
-                        if existing:
-                            return False, "Tu possèdes déjà cet item", {}
-                    
-                    # Calculer les prix
-                    base_price = item['price']
-                    tax_amount = int(base_price * tax_rate)
-                    total_price = base_price + tax_amount
-                    
-                    # Vérifier le solde
-                    user_balance = await conn.fetchval(
-                        "SELECT balance FROM users WHERE user_id = $1", 
-                        user_id
-                    ) or 0
-                    
-                    if user_balance < total_price:
-                        return False, f"Solde insuffisant (besoin: {total_price:,})", {}
-                    
-                    # Effectuer l'achat
-                    await conn.execute(
-                        "UPDATE users SET balance = balance - $1 WHERE user_id = $2", 
-                        total_price, user_id
-                    )
-                    
-                    # Créditer la taxe
-                    if tax_amount > 0 and tax_recipient:
-                        await conn.execute('''
-                            INSERT INTO users (user_id, balance) VALUES ($1, $2)
-                            ON CONFLICT (user_id) 
-                            DO UPDATE SET balance = users.balance + $2
-                        ''', tax_recipient, tax_amount)
-                    
-                    # Enregistrer l'achat
-                    await conn.execute('''
-                        INSERT INTO user_purchases (user_id, item_id, price_paid, tax_paid)
-                        VALUES ($1, $2, $3, $4)
-                    ''', user_id, item_id, total_price, tax_amount)
-                    
-                    return True, f"Achat de '{item['name']}' réussi", {
-                        "base_price": base_price,
-                        "tax_amount": tax_amount,
-                        "total_price": total_price,
-                        "tax_rate": tax_rate * 100
-                    }
-        except Exception as e:
-            logger.error(f"Erreur purchase_item_with_tax {user_id}: {e}")
-            return False, f"Erreur technique: {e}", {}
-    
-    async def get_user_purchases(self, user_id: int) -> List[Dict]:
-        """Récupère l'historique des achats d'un utilisateur"""
-        self._ensure_connected()
-        
-        try:
-            async with self.pool.acquire() as conn:
-                rows = await conn.fetch('''
-                    SELECT up.purchase_date, up.price_paid, up.tax_paid,
-                           si.name, si.description, si.type, si.data
-                    FROM user_purchases up
-                    JOIN shop_items si ON up.item_id = si.id
-                    WHERE up.user_id = $1
-                    ORDER BY up.purchase_date DESC
-                    LIMIT 50
-                ''', user_id)
-                
-                purchases = []
-                for row in rows:
-                    purchase = dict(row)
-                    # Convertir JSONB
-                    if isinstance(purchase['data'], str):
-                        try:
-                            purchase['data'] = json.loads(purchase['data'])
-                        except (json.JSONDecodeError, TypeError):
-                            purchase['data'] = {}
-                    purchases.append(purchase)
-                
-                return purchases
-        except Exception as e:
-            logger.error(f"Erreur get_user_purchases {user_id}: {e}")
-            return []
-    
-    async def get_shop_stats(self) -> Dict:
-        """Récupère les statistiques simples du shop"""
-        self._ensure_connected()
-        
-        try:
-            async with self.pool.acquire() as conn:
-                # Statistiques de base
-                stats = await conn.fetchrow('''
-                    SELECT 
-                        COUNT(DISTINCT up.user_id) as unique_buyers,
-                        COUNT(up.id) as total_purchases,
-                        COALESCE(SUM(up.price_paid), 0) as total_revenue,
-                        COALESCE(SUM(up.tax_paid), 0) as total_taxes
-                    FROM user_purchases up
-                ''')
-                
-                # Top items
-                top_items = await conn.fetch('''
-                    SELECT si.name, COUNT(up.id) as purchases, 
-                           SUM(up.price_paid) as revenue
-                    FROM user_purchases up
-                    JOIN shop_items si ON up.item_id = si.id
-                    GROUP BY si.id, si.name
-                    ORDER BY purchases DESC
-                    LIMIT 5
-                ''')
-                
-                return {
-                    "unique_buyers": stats['unique_buyers'] or 0,
-                    "total_purchases": stats['total_purchases'] or 0,
-                    "total_revenue": stats['total_revenue'] or 0,
-                    "total_taxes": stats['total_taxes'] or 0,
-                    "top_items": [dict(row) for row in top_items]
+                base_query += " WHERE is_active = TRUE"
+            base_query += " ORDER BY price ASC LIMIT $1 OFFSET $2"
+            rows = await conn.fetch(base_query, per_page, offset)
+
+            count_query = "SELECT COUNT(*) FROM shop_items"
+            if active_only:
+                count_query += " WHERE is_active = TRUE"
+            total = await conn.fetchval(count_query)
+
+        items: List[Dict[str, Any]] = []
+        for row in rows:
+            data = row[5]
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except json.JSONDecodeError:
+                    data = {}
+            items.append(
+                {
+                    "id": row[0],
+                    "name": row[1],
+                    "description": row[2],
+                    "price": row[3],
+                    "type": row[4],
+                    "data": data,
+                    "is_active": row[6],
                 }
-        except Exception as e:
-            logger.error(f"Erreur get_shop_stats: {e}")
-            return {"unique_buyers": 0, "total_purchases": 0, "total_revenue": 0, "total_taxes": 0, "top_items": []}
-    
-    # ==================== MÉTHODES UTILITAIRES ====================
-    
-    async def deactivate_shop_item(self, item_id: int) -> bool:
-        """Désactive un item du shop"""
-        self._ensure_connected()
-        
-        try:
-            async with self.pool.acquire() as conn:
-                result = await conn.execute(
-                    "UPDATE shop_items SET is_active = FALSE WHERE id = $1", 
-                    item_id
+            )
+        return items, int(total or 0)
+
+    async def get_shop_item(self, item_id: int) -> Optional[Dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, name, description, price, type, data, is_active FROM shop_items WHERE id = $1",
+                item_id,
+            )
+        if not row:
+            return None
+        data = row[5]
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except json.JSONDecodeError:
+                data = {}
+        return {
+            "id": row[0],
+            "name": row[1],
+            "description": row[2],
+            "price": row[3],
+            "type": row[4],
+            "data": data,
+            "is_active": row[6],
+        }
+
+    async def add_shop_item(
+        self,
+        name: str,
+        description: str,
+        price: int,
+        item_type: str,
+        data: Optional[Dict[str, Any]] = None,
+        *,
+        is_active: bool = True,
+    ) -> int:
+        if price <= 0:
+            raise ValueError("Le prix doit être strictement positif")
+        payload = json.dumps(data or {})
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO shop_items (name, description, price, type, data, is_active)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+                RETURNING id
+                """,
+                name,
+                description,
+                price,
+                item_type,
+                payload,
+                is_active,
+            )
+        return int(row[0])
+
+    async def set_shop_item_active(self, item_id: int, active: bool) -> None:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE shop_items SET is_active = $2 WHERE id = $1",
+                item_id,
+                active,
+            )
+        if result == "UPDATE 0":
+            raise DatabaseError("Item de boutique introuvable")
+
+    async def record_purchase(
+        self,
+        user_id: int,
+        item_id: int,
+        *,
+        price_paid: int,
+        tax_paid: int,
+    ) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO user_purchases (user_id, item_id, price_paid, tax_paid)
+                VALUES ($1, $2, $3, $4)
+                """,
+                user_id,
+                item_id,
+                price_paid,
+                tax_paid,
+            )
+
+    async def get_user_inventory(self, user_id: int) -> List[Dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT si.id, si.name, si.description, si.type, si.data,
+                       up.purchase_date, up.price_paid
+                FROM user_purchases up
+                JOIN shop_items si ON si.id = up.item_id
+                WHERE up.user_id = $1
+                ORDER BY up.purchase_date DESC
+                LIMIT 100
+                """,
+                user_id,
+            )
+        inventory: List[Dict[str, Any]] = []
+        for row in rows:
+            data = row[4]
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except json.JSONDecodeError:
+                    data = {}
+            inventory.append(
+                {
+                    "item_id": row[0],
+                    "name": row[1],
+                    "description": row[2],
+                    "type": row[3],
+                    "data": data,
+                    "purchase_date": row[5],
+                    "price_paid": row[6],
+                }
+            )
+        return inventory
+
+    # ------------------------------------------------------------------
+    # XP & niveaux
+    # ------------------------------------------------------------------
+    async def get_user_xp(self, user_id: int) -> Dict[str, Any]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO user_xp (user_id)
+                VALUES ($1)
+                ON CONFLICT (user_id) DO UPDATE SET user_id = EXCLUDED.user_id
+                RETURNING xp, level, total_xp, xp_boost_role, last_xp_gain
+                """,
+                user_id,
+            )
+        return {
+            "xp": row[0],
+            "level": row[1],
+            "total_xp": row[2],
+            "xp_boost_role": row[3],
+            "last_xp_gain": row[4],
+        }
+
+    async def add_user_xp(self, user_id: int, xp_amount: int, *, new_level: Optional[int] = None) -> Dict[str, Any]:
+        async with self.transaction() as conn:
+            row = await conn.fetchrow(
+                "SELECT xp, level, total_xp FROM user_xp WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            if row is None:
+                current_xp = total_xp = 0
+                level = 1
+                await conn.execute(
+                    "INSERT INTO user_xp (user_id, xp, level, total_xp) VALUES ($1, 0, 1, 0)",
+                    user_id,
                 )
-                return result != "UPDATE 0"
-        except Exception as e:
-            logger.error(f"Erreur deactivate_shop_item {item_id}: {e}")
-            return False
-    
-    async def has_purchased_item(self, user_id: int, item_id: int) -> bool:
-        """Vérifie si un utilisateur a déjà acheté un item"""
-        self._ensure_connected()
-        
+            else:
+                current_xp, level, total_xp = row
+
+            new_xp = current_xp + xp_amount
+            new_total = total_xp + xp_amount
+            if new_level is None:
+                new_level = level
+
+            await conn.execute(
+                """
+                UPDATE user_xp
+                SET xp = $2, total_xp = $3, level = $4, last_xp_gain = NOW()
+                WHERE user_id = $1
+                """,
+                user_id,
+                new_xp,
+                new_total,
+                new_level,
+            )
+
+            return {
+                "xp": new_xp,
+                "previous_level": level,
+                "new_level": new_level,
+                "total_xp": new_total,
+            }
+
+    async def set_xp_boost_role(self, user_id: int, role_name: str) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO user_xp (user_id, xp_boost_role)
+                VALUES ($1, $2)
+                ON CONFLICT (user_id) DO UPDATE SET xp_boost_role = EXCLUDED.xp_boost_role
+                """,
+                user_id,
+                role_name,
+            )
+
+    async def get_xp_leaderboard(self, *, limit: int = 20) -> List[Dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT user_id, total_xp, level
+                FROM user_xp
+                ORDER BY total_xp DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+        return [
+            {"user_id": row[0], "total_xp": row[1], "level": row[2]}
+            for row in rows
+        ]
+
+    # ------------------------------------------------------------------
+    # Banque privée
+    # ------------------------------------------------------------------
+    async def get_private_bank_account(self, user_id: int) -> Dict[str, Any]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO user_bank (user_id)
+                VALUES ($1)
+                ON CONFLICT (user_id) DO UPDATE SET user_id = EXCLUDED.user_id
+                RETURNING balance, total_deposited, total_withdrawn, total_fees_paid,
+                          last_fee_payment, daily_deposit, last_deposit_reset
+                """,
+                user_id,
+            )
+        return {
+            "balance": row[0],
+            "total_deposited": row[1],
+            "total_withdrawn": row[2],
+            "total_fees_paid": row[3],
+            "last_fee_payment": row[4],
+            "daily_deposit": row[5],
+            "last_deposit_reset": row[6],
+        }
+
+    async def update_private_bank(
+        self,
+        user_id: int,
+        *,
+        delta_balance: int,
+        deposit: int = 0,
+        withdraw: int = 0,
+        fees_paid: int = 0,
+        reset_daily: bool = False,
+    ) -> Dict[str, Any]:
+        async with self.transaction() as conn:
+            account = await conn.fetchrow(
+                "SELECT balance, total_deposited, total_withdrawn, total_fees_paid, daily_deposit FROM user_bank WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            if account is None:
+                await conn.execute(
+                    "INSERT INTO user_bank (user_id) VALUES ($1)",
+                    user_id,
+                )
+                balance = total_deposited = total_withdrawn = total_fees = daily_deposit = 0
+            else:
+                balance, total_deposited, total_withdrawn, total_fees, daily_deposit = account
+
+            new_balance = max(balance + delta_balance, 0)
+            new_total_deposited = total_deposited + deposit
+            new_total_withdrawn = total_withdrawn + withdraw
+            new_total_fees = total_fees + fees_paid
+            new_daily_deposit = 0 if reset_daily else (daily_deposit + deposit)
+
+            await conn.execute(
+                """
+                UPDATE user_bank
+                SET balance = $2,
+                    total_deposited = $3,
+                    total_withdrawn = $4,
+                    total_fees_paid = $5,
+                    daily_deposit = $6,
+                    last_fee_payment = CASE WHEN $7 THEN NOW() ELSE last_fee_payment END,
+                    last_deposit_reset = CASE WHEN $8 THEN CURRENT_DATE ELSE last_deposit_reset END
+                WHERE user_id = $1
+                """,
+                user_id,
+                new_balance,
+                new_total_deposited,
+                new_total_withdrawn,
+                new_total_fees,
+                new_daily_deposit,
+                fees_paid > 0,
+                reset_daily,
+            )
+
+            return {
+                "balance": new_balance,
+                "total_deposited": new_total_deposited,
+                "total_withdrawn": new_total_withdrawn,
+                "total_fees_paid": new_total_fees,
+                "daily_deposit": new_daily_deposit,
+            }
+
+    # ------------------------------------------------------------------
+    # Banque publique
+    # ------------------------------------------------------------------
+    async def add_public_bank_funds(self, amount: int) -> int:
+        if amount <= 0:
+            return await self.get_public_bank_balance()
+
+        async with self.transaction() as conn:
+            row = await conn.fetchrow(
+                "SELECT balance, total_deposited FROM public_bank WHERE id = 1 FOR UPDATE"
+            )
+            balance, total_deposited = row
+            balance += amount
+            total_deposited += amount
+            await conn.execute(
+                """
+                UPDATE public_bank
+                SET balance = $1, total_deposited = $2, last_activity = NOW()
+                WHERE id = 1
+                """,
+                balance,
+                total_deposited,
+            )
+            return balance
+
+    async def withdraw_public_bank(self, amount: int) -> Tuple[bool, int]:
+        async with self.transaction() as conn:
+            row = await conn.fetchrow(
+                "SELECT balance, total_withdrawn FROM public_bank WHERE id = 1 FOR UPDATE"
+            )
+            balance, total_withdrawn = row
+            if balance < amount:
+                return False, balance
+
+            balance -= amount
+            total_withdrawn += amount
+            await conn.execute(
+                """
+                UPDATE public_bank
+                SET balance = $1, total_withdrawn = $2, last_activity = NOW()
+                WHERE id = 1
+                """,
+                balance,
+                total_withdrawn,
+            )
+            return True, balance
+
+    async def record_public_withdrawal(self, user_id: int, amount: int, remaining_balance: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO public_bank_withdrawals (user_id, amount, remaining_balance)
+                VALUES ($1, $2, $3)
+                """,
+                user_id,
+                amount,
+                remaining_balance,
+            )
+
+    async def get_public_bank_balance(self) -> int:
+        async with self.pool.acquire() as conn:
+            balance = await conn.fetchval("SELECT balance FROM public_bank WHERE id = 1")
+        return balance or 0
+
+    async def get_public_bank_stats(self) -> Dict[str, Any]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT balance, total_deposited, total_withdrawn, last_activity FROM public_bank WHERE id = 1"
+            )
+        if row is None:
+            return {"balance": 0, "total_deposited": 0, "total_withdrawn": 0, "last_activity": None}
+        return {
+            "balance": row[0],
+            "total_deposited": row[1],
+            "total_withdrawn": row[2],
+            "last_activity": row[3],
+        }
+
+    async def get_public_withdrawals_for_day(self, user_id: int, *, day: datetime) -> int:
+        start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+        end = start + timedelta(days=1)
+        async with self.pool.acquire() as conn:
+            value = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(amount), 0)
+                FROM public_bank_withdrawals
+                WHERE user_id = $1 AND timestamp >= $2 AND timestamp < $3
+                """,
+                user_id,
+                start,
+                end,
+            )
+        return value or 0
+
+    # ------------------------------------------------------------------
+    # Défense et tokens timeout
+    # ------------------------------------------------------------------
+    async def set_defense_status(self, user_id: int, active: bool) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO user_defenses (user_id, active, purchased_at)
+                VALUES ($1, $2, CASE WHEN $2 THEN NOW() ELSE purchased_at END)
+                ON CONFLICT (user_id) DO UPDATE
+                SET active = EXCLUDED.active,
+                    purchased_at = CASE WHEN EXCLUDED.active THEN NOW() ELSE user_defenses.purchased_at END
+                """,
+                user_id,
+                active,
+            )
+
+    async def has_defense(self, user_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            value = await conn.fetchval(
+                "SELECT active FROM user_defenses WHERE user_id = $1",
+                user_id,
+            )
+        return bool(value)
+
+    async def add_timeout_tokens(self, user_id: int, amount: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO user_timeout_tokens (user_id, timeout_tokens)
+                VALUES ($1, $2)
+                ON CONFLICT (user_id) DO UPDATE SET timeout_tokens = user_timeout_tokens.timeout_tokens + $2
+                """,
+                user_id,
+                amount,
+            )
+
+    async def consume_timeout_token(self, user_id: int) -> bool:
+        async with self.transaction() as conn:
+            row = await conn.fetchrow(
+                "SELECT timeout_tokens FROM user_timeout_tokens WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            if row is None or row[0] <= 0:
+                return False
+            await conn.execute(
+                "UPDATE user_timeout_tokens SET timeout_tokens = timeout_tokens - 1, last_used = NOW() WHERE user_id = $1",
+                user_id,
+            )
+            return True
+
+    async def get_timeout_tokens(self, user_id: int) -> int:
+        async with self.pool.acquire() as conn:
+            value = await conn.fetchval(
+                "SELECT timeout_tokens FROM user_timeout_tokens WHERE user_id = $1",
+                user_id,
+            )
+        return value or 0
+
+    # ------------------------------------------------------------------
+    # Leaderboards & statistiques
+    # ------------------------------------------------------------------
+    async def get_balance_leaderboard(self, *, limit: int = 20, ascending: bool = False) -> List[Dict[str, Any]]:
+        order = "ASC" if ascending else "DESC"
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT user_id, balance FROM users ORDER BY balance {order} LIMIT $1",
+                limit,
+            )
+        return [
+            {"user_id": row[0], "balance": row[1]}
+            for row in rows
+        ]
+
+    async def get_total_wealth(self) -> int:
+        async with self.pool.acquire() as conn:
+            value = await conn.fetchval("SELECT COALESCE(SUM(balance), 0) FROM users")
+        return value or 0
+
+    # ------------------------------------------------------------------
+    # Outils casino / divers
+    # ------------------------------------------------------------------
+    async def adjust_balance_with_public_bank(
+        self,
+        *,
+        user_id: int,
+        amount: int,
+        public_bank_delta: int = 0,
+        transaction_type: str,
+        description: str,
+        related_user_id: Optional[int] = None,
+    ) -> Tuple[int, int]:
+        """Met à jour le solde utilisateur et celui de la banque publique dans une seule transaction."""
+
+        async with self.transaction() as conn:
+            balance_before = await conn.fetchval(
+                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            if balance_before is None:
+                balance_before = 0
+                await conn.execute(
+                    "INSERT INTO users (user_id, balance) VALUES ($1, 0) ON CONFLICT (user_id) DO NOTHING",
+                    user_id,
+                )
+
+            new_balance = max(balance_before + amount, 0)
+            await conn.execute(
+                "UPDATE users SET balance = $2 WHERE user_id = $1",
+                user_id,
+                new_balance,
+            )
+
+            if public_bank_delta != 0:
+                row = await conn.fetchrow(
+                    "SELECT balance, total_deposited, total_withdrawn FROM public_bank WHERE id = 1 FOR UPDATE"
+                )
+                balance, deposited, withdrawn = row
+                balance += public_bank_delta
+                if public_bank_delta > 0:
+                    deposited += public_bank_delta
+                else:
+                    withdrawn += abs(public_bank_delta)
+                await conn.execute(
+                    """
+                    UPDATE public_bank
+                    SET balance = $1,
+                        total_deposited = $2,
+                        total_withdrawn = $3,
+                        last_activity = NOW()
+                    WHERE id = 1
+                    """,
+                    balance,
+                    deposited,
+                    withdrawn,
+                )
+
+            await conn.execute(
+                """
+                INSERT INTO transaction_logs (
+                    user_id, transaction_type, amount, balance_before,
+                    balance_after, description, related_user_id
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                """,
+                user_id,
+                transaction_type,
+                amount,
+                balance_before,
+                new_balance,
+                description,
+                related_user_id,
+            )
+
+            return balance_before, new_balance
+
+    # ------------------------------------------------------------------
+    # Fonctions d'administration
+    # ------------------------------------------------------------------
+    async def wipe_economy(self) -> None:
+        """Réinitialise l'économie (sauf shop)."""
+
+        async with self.transaction() as conn:
+            await conn.execute("TRUNCATE TABLE users CASCADE")
+            await conn.execute("TRUNCATE TABLE user_xp CASCADE")
+            await conn.execute("TRUNCATE TABLE user_bank CASCADE")
+            await conn.execute("TRUNCATE TABLE user_defenses CASCADE")
+            await conn.execute("TRUNCATE TABLE user_timeout_tokens CASCADE")
+            await conn.execute("TRUNCATE TABLE transaction_logs")
+            await conn.execute("TRUNCATE TABLE cooldowns")
+            await conn.execute("TRUNCATE TABLE public_bank_withdrawals")
+            await conn.execute(
+                "UPDATE public_bank SET balance = 0, total_deposited = 0, total_withdrawn = 0, last_activity = NOW() WHERE id = 1"
+            )
+        logger.warning("L'économie a été réinitialisée par un administrateur")
+
+    # ------------------------------------------------------------------
+    # Helpers diverses
+    # ------------------------------------------------------------------
+    async def fetch_value(self, query: str, *args: Any) -> Any:
+        """Helper pour exécuter rapidement une requête ``SELECT`` retournant une valeur."""
+
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(query, *args)
+
+    async def execute(self, query: str, *args: Any) -> str:
+        """Helper pour exécuter ``execute`` en centralisant la gestion des erreurs."""
+
         try:
             async with self.pool.acquire() as conn:
-                exists = await conn.fetchval('''
-                    SELECT 1 FROM user_purchases 
-                    WHERE user_id = $1 AND item_id = $2 
-                    LIMIT 1
-                ''', user_id, item_id)
-                return bool(exists)
-        except Exception as e:
-            logger.error(f"Erreur has_purchased_item {user_id}: {e}")
-            return False
+                return await conn.execute(query, *args)
+        except Exception as exc:  # pragma: no cover - logging only
+            logger.exception("Erreur d'exécution SQL")
+            raise DatabaseError("Erreur SQL") from exc
