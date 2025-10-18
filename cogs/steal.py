@@ -1,226 +1,146 @@
-import discord
-from discord.ext import commands
-from datetime import datetime, timezone, timedelta
-import random
-import logging
+"""Système de vol entre joueurs."""
+from __future__ import annotations
 
-from config import (
-    STEAL_SUCCESS_RATE, STEAL_PERCENTAGE, STEAL_FAIL_PENALTY_PERCENTAGE,
-    STEAL_COOLDOWN_HOURS, STEAL_COOLDOWN_SECONDS, Colors, Emojis
-)
-from utils.embeds import create_error_embed, create_success_embed
+import logging
+import random
+import time
+from typing import Dict
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+from config import STEAL_COOLDOWN, STEAL_FAIL_PENALTY_PERCENTAGE, STEAL_PERCENTAGE, STEAL_SUCCESS_RATE
+from utils import embeds
 
 logger = logging.getLogger(__name__)
 
+
+class StealCooldown:
+    def __init__(self, duration: int) -> None:
+        self.duration = duration
+        self._storage: Dict[int, float] = {}
+
+    def remaining(self, user_id: int) -> float:
+        now = time.monotonic()
+        expires = self._storage.get(user_id, 0.0)
+        return max(0.0, expires - now)
+
+    def set(self, user_id: int) -> None:
+        self._storage[user_id] = time.monotonic() + self.duration
+
+
 class Steal(commands.Cog):
-    """Système de vol avec défense intégrée"""
-    
-    def __init__(self, bot):
+    def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.db = None
-        self.cooldowns = {}
-        
-        self.SUCCESS_RATE = STEAL_SUCCESS_RATE
-        self.STEAL_PERCENTAGE = STEAL_PERCENTAGE
-        self.FAIL_PENALTY_PERCENTAGE = FAIL_PENALTY_PERCENTAGE
-        self.COOLDOWN_HOURS = STEAL_COOLDOWN_HOURS
-        self.COOLDOWN_SECONDS = STEAL_COOLDOWN_SECONDS
-        
-    async def cog_load(self):
-        self.db = self.bot.database
-        logger.info(f"✅ Cog Steal initialisé avec système de défense")
+        self.database = bot.database
+        self.cooldown = StealCooldown(STEAL_COOLDOWN)
 
-    async def _check_defense(self, user_id: int) -> bool:
-        """Vérifie si l'utilisateur a une défense active"""
-        if not self.db or not self.db.pool:
-            return False
-        
-        try:
-            async with self.db.pool.acquire() as conn:
-                has_defense = await conn.fetchval("""
-                    SELECT 1 FROM user_defenses 
-                    WHERE user_id = $1 AND active = TRUE
-                """, user_id)
-                return bool(has_defense)
-        except Exception as e:
-            logger.error(f"Erreur check defense: {e}")
-            return False
+    async def attempt(self, thief: discord.Member, target: discord.Member) -> discord.Embed:
+        if thief == target:
+            return embeds.error_embed("Tu ne peux pas te voler toi-même.")
+        if target.bot:
+            return embeds.error_embed("Les bots ne peuvent pas être volés.")
 
-    def is_on_cooldown(self, user_id: int) -> bool:
-        if user_id not in self.cooldowns:
-            return False
-        now = datetime.now(timezone.utc)
-        last_steal = self.cooldowns[user_id]
-        cooldown_end = last_steal + timedelta(seconds=self.COOLDOWN_SECONDS)
-        return now < cooldown_end
+        remaining = self.cooldown.remaining(thief.id)
+        if remaining > 0:
+            return embeds.cooldown_embed("/steal", remaining)
 
-    def get_cooldown_remaining(self, user_id: int) -> int:
-        if user_id not in self.cooldowns:
-            return 0
-        now = datetime.now(timezone.utc)
-        last_steal = self.cooldowns[user_id]
-        cooldown_end = last_steal + timedelta(seconds=self.COOLDOWN_SECONDS)
-        if now >= cooldown_end:
-            return 0
-        return int((cooldown_end - now).total_seconds())
+        target_balance = await self.database.fetch_balance(target.id)
+        if target_balance <= 0:
+            return embeds.error_embed("La cible n'a pas d'argent.")
 
-    def set_cooldown(self, user_id: int):
-        self.cooldowns[user_id] = datetime.now(timezone.utc)
-
-    @commands.command(name='voler', aliases=['steal', 'rob'])
-    @commands.cooldown(1, STEAL_COOLDOWN_SECONDS, commands.BucketType.user)
-    async def steal_cmd(self, ctx, target: discord.Member):
-        """Tente de voler des PrissBucks"""
-        thief = ctx.author
-        victim = target
-        
-        if thief.id == victim.id:
-            embed = create_error_embed("Vol impossible", "Tu ne peux pas te voler toi-même !")
-            await ctx.send(embed=embed)
-            return
-            
-        if victim.bot:
-            embed = create_error_embed("Vol impossible", "Tu ne peux pas voler un bot !")
-            await ctx.send(embed=embed)
-            return
-
-        # VÉRIFIER DÉFENSE
-        if await self._check_defense(victim.id):
-            embed = discord.Embed(
-                title="🛡️ Défense active !",
-                description=f"**{victim.display_name}** est protégé par une défense anti-vol !\n\nTon attaque est bloquée.",
-                color=Colors.ERROR
+        if await self.database.has_defense(target.id):
+            penalty = max(int(target_balance * STEAL_PERCENTAGE * STEAL_FAIL_PENALTY_PERCENTAGE), 1)
+            before, after = await self.database.increment_balance(thief.id, -penalty)
+            await self.database.add_public_bank_funds(penalty)
+            await self.bot.transaction_logs.log(
+                thief.id,
+                "steal_blocked",
+                -penalty,
+                before,
+                after,
+                description=f"Défense active sur {target.display_name}",
             )
-            embed.add_field(
-                name="💡 Comment obtenir une défense ?",
-                value="Utilise `/buy_defense` pour acheter ta propre protection (2000 PB)",
-                inline=False
-            )
-            await ctx.send(embed=embed)
-            return
+            self.cooldown.set(thief.id)
+            return embeds.error_embed("La défense de ta cible t'a repoussé !")
 
-        if self.is_on_cooldown(thief.id):
-            remaining = self.get_cooldown_remaining(thief.id)
-            time_str = self.format_cooldown_time(remaining)
-            embed = discord.Embed(
-                title=f"{Emojis.COOLDOWN} Cooldown actif !",
-                description=f"Tu pourras utiliser `voler` dans **{time_str}**",
-                color=Colors.WARNING
-            )
-            await ctx.send(embed=embed)
-            return
+        steal_amount = max(int(target_balance * STEAL_PERCENTAGE), 1)
+        success = random.random() < STEAL_SUCCESS_RATE
 
-        try:
-            thief_balance = await self.db.get_balance(thief.id)
-            victim_balance = await self.db.get_balance(victim.id)
-            
-            if thief_balance < 10:
-                embed = create_error_embed(
-                    "Solde insuffisant",
-                    "Tu dois avoir au moins **10 PrissBucks** pour voler !"
-                )
-                await ctx.send(embed=embed)
-                return
-                
-            if victim_balance < 10:
-                embed = create_error_embed(
-                    "Cible invalide", 
-                    f"{victim.display_name} n'a pas assez de PrissBucks (minimum 10)."
-                )
-                await ctx.send(embed=embed)
-                return
+        penalty_amount = 0
+        async with self.database.transaction() as conn:
+            thief_balance = await conn.fetchval(
+                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                thief.id,
+            ) or 0
+            victim_balance = await conn.fetchval(
+                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                target.id,
+            ) or 0
+            if victim_balance < steal_amount:
+                steal_amount = victim_balance
+            if steal_amount <= 0:
+                return embeds.error_embed("La cible est fauchée.")
 
-            steal_amount = max(1, int(victim_balance * (self.STEAL_PERCENTAGE / 100)))
-            penalty_amount = max(1, int(thief_balance * (self.FAIL_PENALTY_PERCENTAGE / 100)))
-            
-            success = random.randint(1, 100) <= self.SUCCESS_RATE
-            
             if success:
-                # VOL RÉUSSI
-                success_transfer = await self.db.transfer(victim.id, thief.id, steal_amount)
-                
-                if success_transfer:
-                    new_thief_balance = thief_balance + steal_amount
-                    new_victim_balance = victim_balance - steal_amount
-                    
-                    embed = discord.Embed(
-                        title="🎯 Vol réussi !",
-                        description=f"**{thief.display_name}** a volé **{steal_amount:,} PrissBucks** à **{victim.display_name}** !",
-                        color=Colors.SUCCESS
-                    )
-                    embed.add_field(
-                        name="💰 Butin",
-                        value=f"**+{steal_amount:,}** PrissBucks volés",
-                        inline=True
-                    )
-                    embed.add_field(
-                        name="💳 Nouveau solde",
-                        value=f"**{new_thief_balance:,}** PrissBucks",
-                        inline=True
-                    )
-                    embed.set_footer(text=f"Prochaine tentative dans {self.COOLDOWN_HOURS}h")
-                    
-                    logger.info(f"Vol réussi: {thief} a volé {steal_amount} à {victim}")
-                else:
-                    embed = create_error_embed("Erreur", "Échec du transfert lors du vol.")
-                    await ctx.send(embed=embed)
-                    return
+                await conn.execute("UPDATE users SET balance = balance - $1 WHERE user_id = $2", steal_amount, target.id)
+                await conn.execute(
+                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                    steal_amount,
+                    thief.id,
+                )
             else:
-                # VOL ÉCHOUÉ
-                success_transfer = await self.db.transfer(thief.id, victim.id, penalty_amount)
-                
-                if success_transfer:
-                    new_thief_balance = thief_balance - penalty_amount
-                    new_victim_balance = victim_balance + penalty_amount
-                    
-                    embed = discord.Embed(
-                        title="❌ Vol échoué !",
-                        description=f"**{thief.display_name}** s'est fait prendre en essayant de voler **{victim.display_name}** !",
-                        color=Colors.ERROR
-                    )
-                    embed.add_field(
-                        name="💸 Pénalité",
-                        value=f"**-{penalty_amount:,}** PrissBucks perdus",
-                        inline=True
-                    )
-                    embed.add_field(
-                        name="💳 Nouveau solde",
-                        value=f"**{new_thief_balance:,}** PrissBucks",
-                        inline=True
-                    )
-                    embed.add_field(
-                        name="🎁 Bonus victime",
-                        value=f"{victim.display_name} gagne **{penalty_amount:,}** PrissBucks !",
-                        inline=False
-                    )
-                    embed.set_footer(text=f"Prochaine tentative dans {self.COOLDOWN_HOURS}h")
-                    
-                    logger.info(f"Vol échoué: {thief} a perdu {penalty_amount} au profit de {victim}")
-                else:
-                    embed = create_error_embed("Erreur", "Échec du transfert lors de la pénalité.")
-                    await ctx.send(embed=embed)
-                    return
+                penalty = max(int(steal_amount * STEAL_FAIL_PENALTY_PERCENTAGE), 1)
+                if thief_balance < penalty:
+                    penalty = thief_balance
+                await conn.execute("UPDATE users SET balance = balance - $1 WHERE user_id = $2", penalty, thief.id)
+                penalty_amount = penalty
 
-            self.set_cooldown(thief.id)
-            await ctx.send(embed=embed)
-            
-        except Exception as e:
-            logger.error(f"Erreur vol {thief.id} -> {victim.id}: {e}")
-            embed = create_error_embed("Erreur", "Erreur lors de la tentative de vol.")
-            await ctx.send(embed=embed)
+        if not success and penalty_amount:
+            await self.database.add_public_bank_funds(penalty_amount)
 
-    def format_cooldown_time(self, seconds: int) -> str:
-        if seconds <= 0:
-            return "Disponible"
-        hours = seconds // 3600
-        minutes = (seconds % 3600) // 60
-        secs = seconds % 60
-        if hours > 0:
-            return f"{hours}h {minutes}min {secs}s"
-        elif minutes > 0:
-            return f"{minutes}min {secs}s"
+        if success:
+            await self.bot.transaction_logs.log(
+                thief.id,
+                "steal_success",
+                steal_amount,
+                thief_balance,
+                thief_balance + steal_amount,
+                description=f"Vol réussi sur {target.display_name}",
+            )
+            await self.bot.transaction_logs.log(
+                target.id,
+                "steal_loss",
+                -steal_amount,
+                victim_balance,
+                victim_balance - steal_amount,
+                description=f"Vol par {thief.display_name}",
+            )
+            self.cooldown.set(thief.id)
+            return embeds.success_embed(f"Tu as volé {embeds.format_currency(steal_amount)} à {target.display_name} !")
         else:
-            return f"{secs}s"
+            await self.bot.transaction_logs.log(
+                thief.id,
+                "steal_fail",
+                -penalty_amount,
+                thief_balance,
+                thief_balance - penalty_amount,
+                description=f"Échec de vol sur {target.display_name}",
+            )
+            self.cooldown.set(thief.id)
+            return embeds.error_embed("Échec du vol, tu payes une lourde amende.")
 
-async def setup(bot):
+    @commands.command(name="steal")
+    async def steal_prefix(self, ctx: commands.Context, target: discord.Member) -> None:
+        embed = await self.attempt(ctx.author, target)
+        await ctx.send(embed=embed)
+
+    @app_commands.command(name="steal", description="Tenter de voler un joueur")
+    async def steal_slash(self, interaction: discord.Interaction, cible: discord.Member) -> None:
+        embed = await self.attempt(interaction.user, cible)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Steal(bot))
