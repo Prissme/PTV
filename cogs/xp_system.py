@@ -1,52 +1,46 @@
-"""Système d'expérience et de niveaux."""
+"""Gestion de l'expérience : gains automatiques et classements XP."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import random
 import time
-from typing import Dict, Optional
 
 import discord
-from discord import app_commands
 from discord.ext import commands
 
-from config import (
-    MAX_LEADERBOARD_LIMIT,
-    XP_BASE_PER_MESSAGE,
-    XP_COOLDOWN,
-    XP_LEVEL_BASE,
-    XP_LEVEL_MULTIPLIER,
-    XP_ROLE_BOOSTS,
-)
+from config import LEADERBOARD_LIMIT, XP_COOLDOWN, XP_LEVEL_BASE, XP_LEVEL_MULTIPLIER, XP_PER_MESSAGE
 from utils import embeds
 
 logger = logging.getLogger(__name__)
 
 
 def compute_level(total_xp: int) -> int:
-    """Calcule le niveau à partir de l'expérience totale."""
+    """Calcule le niveau en appliquant une progression exponentielle simple."""
 
     level = 1
-    xp_needed = XP_LEVEL_BASE
+    requirement = XP_LEVEL_BASE
     remaining = total_xp
-    while remaining >= xp_needed:
-        remaining -= xp_needed
+
+    while remaining >= requirement:
+        remaining -= requirement
         level += 1
-        xp_needed = int(xp_needed * XP_LEVEL_MULTIPLIER)
+        requirement = int(requirement * XP_LEVEL_MULTIPLIER)
     return level
 
 
-class XPCooldown:
+class CooldownCache:
+    """Cache en mémoire pour limiter les gains d'XP."""
+
     def __init__(self, duration: int) -> None:
         self.duration = duration
-        self._storage: Dict[int, float] = {}
+        self._storage: dict[int, float] = {}
 
     def remaining(self, user_id: int) -> float:
-        now = time.monotonic()
-        expires = self._storage.get(user_id, 0.0)
-        return max(0.0, expires - now)
+        return max(0.0, self._storage.get(user_id, 0.0) - time.monotonic())
 
-    def set(self, user_id: int) -> None:
+    def trigger(self, user_id: int) -> None:
         self._storage[user_id] = time.monotonic() + self.duration
 
     def cleanup(self) -> None:
@@ -57,97 +51,109 @@ class XPCooldown:
 
 
 class XPSystem(commands.Cog):
-    """Gestion des gains d'XP sur les messages et des classements."""
+    """Système XP minimaliste : gain automatique, profil et classement."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.database = bot.database
-        self.cooldown = XPCooldown(XP_COOLDOWN)
-        self._cleanup_task: Optional[asyncio.Task] = None
+        self.cooldown = CooldownCache(XP_COOLDOWN)
+        self._cleanup_task: asyncio.Task[None] | None = None
 
     async def cog_load(self) -> None:
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+        logger.info("Cog XP chargé")
 
     async def cog_unload(self) -> None:
         if self._cleanup_task:
             self._cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._cleanup_task
 
     async def _cleanup_loop(self) -> None:
         while True:
             await asyncio.sleep(300)
             self.cooldown.cleanup()
 
+    # ------------------------------------------------------------------
+    # Gestion des gains automatiques
+    # ------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or not message.guild:
             return
-        if len(message.content) < 3:
+        if not message.content.strip():
             return
         if self.cooldown.remaining(message.author.id) > 0:
             return
 
-        self.cooldown.set(message.author.id)
-        record = await self.database.get_user_xp(message.author.id)
-        boost_key = record.get("xp_boost_role")
-        multiplier = XP_ROLE_BOOSTS.get(str(boost_key).upper(), 0.0) if boost_key else 0.0
-        gained = int(XP_BASE_PER_MESSAGE * (1 + multiplier))
+        self.cooldown.trigger(message.author.id)
+        await self.database.ensure_user(message.author.id)
 
-        new_total = record["total_xp"] + gained
+        gain = random.randint(*XP_PER_MESSAGE)
+        total_xp, current_level = await self.database.get_user_xp(message.author.id)
+        new_total = total_xp + gain
         new_level = compute_level(new_total)
-        result = await self.database.add_user_xp(message.author.id, gained, new_level=new_level)
 
-        if result["new_level"] > result["previous_level"]:
+        previous_total, previous_level = await self.database.update_user_xp(
+            message.author.id,
+            total_xp=new_total,
+            level=new_level,
+        )
+        logger.debug(
+            "XP gain",
+            extra={
+                "user_id": message.author.id,
+                "gain": gain,
+                "total_before": previous_total,
+                "total_after": new_total,
+                "level_before": previous_level,
+                "level_after": new_level,
+            },
+        )
+
+        if new_level > current_level:
             await message.channel.send(
                 embed=embeds.success_embed(
-                    f"{message.author.mention} passe niveau {result['new_level']}!",
-                    title="Level Up",
+                    f"{message.author.mention} est désormais niveau {new_level}!",
+                    title="Level up",
                 )
             )
 
     # ------------------------------------------------------------------
     # Commandes XP
     # ------------------------------------------------------------------
-    async def send_profile(self, ctx_or_inter, member: discord.Member) -> None:
-        record = await self.database.get_user_xp(member.id)
-        level = compute_level(record["total_xp"])
-        embed = embeds.info_embed(
-            f"Niveau **{level}**\nXP total : {record['total_xp']:,}",
-            title=f"Profil XP de {member.display_name}",
+    @commands.command(name="rank")
+    async def rank(self, ctx: commands.Context, member: discord.Member | None = None) -> None:
+        target = member or ctx.author
+        total_xp, level = await self.database.get_user_xp(target.id)
+        next_level_requirement = _next_requirement(level)
+        embed = embeds.xp_profile_embed(
+            member=target,
+            level=level,
+            total_xp=total_xp,
+            next_requirement=next_level_requirement,
         )
-        await ctx_or_inter.send(embed=embed)
-
-    @commands.command(name="xp")
-    async def xp_prefix(self, ctx: commands.Context, member: Optional[discord.Member] = None) -> None:
-        await self.send_profile(ctx, member or ctx.author)
-
-    @app_commands.command(name="xp", description="Afficher ton niveau et ton XP")
-    async def xp_slash(self, interaction: discord.Interaction, membre: Optional[discord.Member] = None) -> None:
-        await interaction.response.defer(ephemeral=True)
-        await self.send_profile(interaction.followup, membre or interaction.user)
+        await ctx.send(embed=embed)
 
     @commands.command(name="xpleaderboard", aliases=("xplb",))
-    async def xp_leaderboard_prefix(self, ctx: commands.Context, limit: int = 10) -> None:
-        limit = max(1, min(limit, MAX_LEADERBOARD_LIMIT))
-        rows = await self.database.get_xp_leaderboard(limit=limit)
+    async def xp_leaderboard(self, ctx: commands.Context) -> None:
+        rows = await self.database.get_xp_leaderboard(LEADERBOARD_LIMIT)
         embed = embeds.leaderboard_embed(
-            "Classement XP",
-            [(row["user_id"], row["total_xp"]) for row in rows],
-            self.bot,
+            title="Classement XP",
+            entries=[(row["user_id"], row["total_xp"]) for row in rows],
+            bot=self.bot,
             symbol="XP",
         )
         await ctx.send(embed=embed)
 
-    @app_commands.command(name="xpleaderboard", description="Voir le classement XP")
-    async def xp_leaderboard_slash(self, interaction: discord.Interaction, limit: int = 10) -> None:
-        limit = max(1, min(limit, MAX_LEADERBOARD_LIMIT))
-        rows = await self.database.get_xp_leaderboard(limit=limit)
-        embed = embeds.leaderboard_embed(
-            "Classement XP",
-            [(row["user_id"], row["total_xp"]) for row in rows],
-            self.bot,
-            symbol="XP",
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+def _next_requirement(level: int) -> int:
+    """Calcule l'XP nécessaire pour atteindre le niveau suivant."""
+
+    requirement = XP_LEVEL_BASE
+    for _ in range(1, level):
+        requirement = int(requirement * XP_LEVEL_MULTIPLIER)
+    return requirement
 
 
 async def setup(bot: commands.Bot) -> None:
