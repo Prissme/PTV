@@ -1,4 +1,4 @@
-"""Aide personnalisée."""
+"""Commande d'aide adaptée à la version minimaliste du bot."""
 from __future__ import annotations
 
 import discord
@@ -8,48 +8,31 @@ from utils import embeds
 
 
 class Help(commands.Cog):
+    """Affiche un résumé des commandes disponibles."""
+
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
     @commands.command(name="help")
-    async def help_prefix(self, ctx: commands.Context) -> None:
-        await ctx.send(embed=self._build_help_embed(ctx.guild))
+    async def help_command(self, ctx: commands.Context) -> None:
+        await ctx.send(embed=self._build_help_embed())
 
-    @commands.hybrid_command(name="help", with_app_command=True, description="Afficher l'aide")
-    async def help_hybrid(self, ctx: commands.Context) -> None:
-        await ctx.send(embed=self._build_help_embed(ctx.guild))
-
-    def _build_help_embed(self, guild: discord.Guild | None) -> discord.Embed:
+    def _build_help_embed(self) -> discord.Embed:
         embed = embeds.info_embed(
-            "Commandes principales disponibles.",
+            "Commandes disponibles :",
             title="EcoBot — Aide",
         )
         embed.add_field(
             name="Économie",
-            value="`/balance`, `/daily`, `/give`, `e!balance`, `e!give`",
+            value="`e!balance`, `e!daily`, `e!leaderboard`",
             inline=False,
         )
         embed.add_field(
-            name="Banque",
-            value="`/bank`, `/deposit`, `/withdraw`, `/publicbank`, `/public_withdraw`",
+            name="XP",
+            value="`e!rank`, `e!xpleaderboard`",
             inline=False,
         )
-        embed.add_field(
-            name="Boutique",
-            value="`/shop`, `/buy`, `/inventory`",
-            inline=False,
-        )
-        embed.add_field(
-            name="Jeux",
-            value="`/roulette`, `/rps`, `/steal`",
-            inline=False,
-        )
-        embed.add_field(
-            name="Classements",
-            value="`/leaderboard`, `/poorest`, `/xpleaderboard`, `/rank`",
-            inline=False,
-        )
-        embed.set_footer(text="Utilise /help pour voir cette aide à tout moment.")
+        embed.set_footer(text="Toutes les commandes utilisent le préfixe e!")
         return embed
 
 
