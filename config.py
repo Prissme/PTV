@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+from typing import Final, Tuple
 
 from dotenv import load_dotenv
 
@@ -61,4 +63,83 @@ class Emojis:
     DAILY = "🎰"
     LEADERBOARD = "🏆"
     XP = "✨"
+
+
+# ---------------------------------------------------------------------------
+# Animaux (Pets)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PetDefinition:
+    name: str
+    rarity: str
+    image_url: str
+    base_income_per_hour: int
+    drop_rate: float
+    is_huge: bool = False
+
+
+PET_EGG_PRICE: Final[int] = 500
+HUGE_PET_NAME: Final[str] = "ÉNORME SHELLY"
+
+PET_DEFINITIONS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="Shelly",
+        rarity="Common",
+        image_url="https://example.com/document43.png",
+        base_income_per_hour=10,
+        drop_rate=0.50,
+    ),
+    PetDefinition(
+        name="Colt",
+        rarity="Common",
+        image_url="https://example.com/document44.png",
+        base_income_per_hour=15,
+        drop_rate=0.25,
+    ),
+    PetDefinition(
+        name="Barley",
+        rarity="Rare",
+        image_url="https://example.com/document45.png",
+        base_income_per_hour=30,
+        drop_rate=0.15,
+    ),
+    PetDefinition(
+        name="Poco",
+        rarity="Rare",
+        image_url="https://example.com/document46.png",
+        base_income_per_hour=60,
+        drop_rate=0.06,
+    ),
+    PetDefinition(
+        name="Rosa",
+        rarity="Super Rare",
+        image_url="https://example.com/document47.png",
+        base_income_per_hour=150,
+        drop_rate=0.03,
+    ),
+    PetDefinition(
+        name=HUGE_PET_NAME,
+        rarity="Mythic",
+        image_url="https://example.com/document48.png",
+        base_income_per_hour=500,
+        drop_rate=0.01,
+        is_huge=True,
+    ),
+)
+
+PET_RARITY_COLORS: Final[dict[str, int]] = {
+    "Common": 0x95A5A6,
+    "Rare": 0x3498DB,
+    "Super Rare": 0x9B59B6,
+    "Mythic": 0xF1C40F,
+}
+
+PET_RARITY_ORDER: Final[dict[str, int]] = {
+    "Common": 0,
+    "Rare": 1,
+    "Super Rare": 2,
+    "Mythic": 3,
+}
 
