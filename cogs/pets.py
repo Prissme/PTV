@@ -123,11 +123,11 @@ class Pets(commands.Cog):
         await ctx.invoke(self.openbox)
 
     @commands.cooldown(1, 5, commands.BucketType.user)
-    @commands.command(name="openbox", aliases=("buyegg", "openegg"))
+    @commands.command(name="openbox", aliases=("buyegg", "openegg", "egg"))
     async def openbox(self, ctx: commands.Context) -> None:
         await self._open_pet_egg(ctx)
 
-    @commands.command(name="pets", aliases=("collection",))
+    @commands.command(name="pets", aliases=("collection", "inventory"))
     async def pets_command(self, ctx: commands.Context) -> None:
         records = await self.database.get_user_pets(ctx.author.id)
         pets = self._sort_pets_for_display(records)
@@ -162,7 +162,7 @@ class Pets(commands.Cog):
         embed = embeds.pet_claim_embed(member=ctx.author, pet=pet_data, amount=amount, elapsed_seconds=elapsed)
         await ctx.send(embed=embed)
 
-    @commands.command(name="petsstats")
+    @commands.command(name="petstats", aliases=("petsstats",))
     async def pets_stats(self, ctx: commands.Context) -> None:
         total_openings, counts = await self.database.get_pet_opening_counts()
         counts = {int(key): int(value) for key, value in counts.items()}
