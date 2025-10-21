@@ -6,14 +6,62 @@ import logging
 import signal
 import sys
 from contextlib import suppress
+from typing import Optional
 
 import discord
+from aiohttp import web
 from discord.ext import commands
 
 from config import DATABASE_URL, LOG_LEVEL, OWNER_ID, PREFIX, TOKEN
 from database.db import Database, DatabaseError
 
 logger = logging.getLogger(__name__)
+
+
+class HealthCheckServer:
+    """Expose un endpoint HTTP minimal utilisé par Koyeb pour le health check."""
+
+    def __init__(self, *, host: str = "0.0.0.0", port: int = 8000) -> None:
+        self._host = host
+        self._port = port
+        self._app = web.Application()
+        self._app.router.add_get("/", self.health_check)
+        self._runner: Optional[web.AppRunner] = None
+        self._site: Optional[web.TCPSite] = None
+        self._logger = logging.getLogger(f"{__name__}.HealthCheckServer")
+
+    async def health_check(self, request: web.Request) -> web.Response:
+        return web.Response(text="OK", status=200)
+
+    async def start(self) -> None:
+        if self._runner is not None:
+            return
+
+        try:
+            runner = web.AppRunner(self._app)
+            await runner.setup()
+            site = web.TCPSite(runner, self._host, self._port)
+            await site.start()
+        except Exception:
+            self._logger.exception("Échec du démarrage du serveur HTTP de health check")
+            await self.stop()
+            raise
+
+        self._runner = runner
+        self._site = site
+        self._logger.info(
+            "Serveur de health check opérationnel sur %s:%s", self._host, self._port
+        )
+
+    async def stop(self) -> None:
+        if self._site is not None:
+            await self._site.stop()
+            self._site = None
+
+        if self._runner is not None:
+            await self._runner.cleanup()
+            self._runner = None
+            self._logger.info("Serveur de health check arrêté")
 
 
 def configure_logging() -> None:
@@ -29,9 +77,17 @@ def configure_logging() -> None:
 class EcoBot(commands.Bot):
     """Bot Discord spécialisé pour l'économie et l'XP."""
 
-    def __init__(self, database: Database, *, prefix: str, intents: discord.Intents) -> None:
+    def __init__(
+        self,
+        database: Database,
+        *,
+        prefix: str,
+        intents: discord.Intents,
+        health_server: Optional[HealthCheckServer] = None,
+    ) -> None:
         super().__init__(command_prefix=commands.when_mentioned_or(prefix), intents=intents, help_command=None)
         self.database = database
+        self.health_server = health_server
         self.initial_extensions: tuple[str, ...] = (
             "economy",
             "xp_system",
@@ -41,12 +97,31 @@ class EcoBot(commands.Bot):
         )
 
     async def setup_hook(self) -> None:  # pragma: no cover - cycle de vie discord.py
+        await super().setup_hook()
+
         for extension in self.initial_extensions:
             try:
                 await self.load_extension(f"cogs.{extension}")
                 logger.info("Extension chargée: %s", extension)
             except Exception:  # pragma: no cover - log uniquement
                 logger.exception("Impossible de charger l'extension %s", extension)
+
+        if self.health_server is not None:
+            try:
+                await self.health_server.start()
+            except Exception:
+                logger.exception(
+                    "Le serveur de health check n'a pas pu démarrer. Poursuite en mode dégradé."
+                )
+
+    async def close(self) -> None:  # pragma: no cover - cycle de vie discord.py
+        if self.health_server is not None:
+            try:
+                await self.health_server.stop()
+            except Exception:
+                logger.exception("Impossible d'arrêter proprement le serveur de health check")
+
+        await super().close()
 
     async def on_ready(self) -> None:  # pragma: no cover - callback Discord
         assert self.user is not None
@@ -87,7 +162,8 @@ async def start_bot() -> None:
     intents.message_content = True
     intents.members = True
 
-    bot = EcoBot(database, prefix=PREFIX, intents=intents)
+    health_server = HealthCheckServer()
+    bot = EcoBot(database, prefix=PREFIX, intents=intents, health_server=health_server)
 
     if OWNER_ID:
         bot.owner_ids = {OWNER_ID}

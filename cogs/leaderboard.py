@@ -14,7 +14,7 @@ class Leaderboard(commands.Cog):
         self.bot = bot
         self.database = bot.database
 
-    @commands.command(name="leaderboard")
+    @commands.command(name="leaderboard", aliases=("lb",))
     async def leaderboard(self, ctx: commands.Context) -> None:
         rows = await self.database.get_balance_leaderboard(LEADERBOARD_LIMIT)
         embed = embeds.leaderboard_embed(
