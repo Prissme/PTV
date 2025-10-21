@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Sequence
+from typing import Iterable, Mapping, Sequence
 
 import discord
 from discord.ext import commands
 
-from config import Colors, Emojis, PREFIX
+from config import Colors, Emojis, PREFIX, HUGE_PET_NAME, PET_RARITY_COLORS
 
 __all__ = [
     "format_currency",
@@ -20,6 +20,12 @@ __all__ = [
     "daily_embed",
     "leaderboard_embed",
     "xp_profile_embed",
+    "pet_animation_embed",
+    "pet_reveal_embed",
+    "pet_collection_embed",
+    "pet_equip_embed",
+    "pet_claim_embed",
+    "pet_stats_embed",
 ]
 
 
@@ -113,4 +119,149 @@ def xp_profile_embed(*, member: discord.Member, level: int, total_xp: int, next_
     )
     embed = _base_embed(f"{Emojis.XP} Profil XP", description, color=Colors.INFO)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    return embed
+
+
+def pet_animation_embed(*, title: str, description: str) -> discord.Embed:
+    return _base_embed(title, description, color=Colors.INFO)
+
+
+def _pet_title(name: str, rarity: str, is_huge: bool) -> str:
+    prefix = "✨ " if is_huge else ""
+    suffix = " ✨" if is_huge else ""
+    return f"{prefix}{name} ({rarity}){suffix}"
+
+
+def pet_reveal_embed(
+    *,
+    name: str,
+    rarity: str,
+    image_url: str,
+    income_per_hour: int,
+    is_huge: bool,
+) -> discord.Embed:
+    color = PET_RARITY_COLORS.get(rarity, Colors.INFO)
+    description = f"Revenus passifs : **{income_per_hour:,} PB/h**".replace(",", " ")
+    if is_huge and name == HUGE_PET_NAME:
+        description += "\n🎉 ÉNORME ! Tu as obtenu une ÉNORME SHELLY ! 🎉"
+    embed = _base_embed(_pet_title(name, rarity, is_huge), description, color=color)
+    embed.set_image(url=image_url)
+    return embed
+
+
+def pet_collection_embed(
+    *,
+    member: discord.Member,
+    pets: Sequence[Mapping[str, object]],
+    total_count: int,
+    total_income_per_hour: int,
+) -> discord.Embed:
+    embed = _base_embed("Ta collection de pets", "", color=Colors.GOLD if pets else Colors.NEUTRAL)
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+
+    if not pets:
+        embed.description = "Tu n'as encore aucun pet. Ouvre un œuf avec `e!openbox` !"
+    else:
+        lines: list[str] = []
+        for pet in pets:
+            name = str(pet["name"])
+            rarity = str(pet["rarity"])
+            is_active = bool(pet["is_active"])
+            is_huge = bool(pet["is_huge"])
+            income = int(pet["income"])
+            user_pet_id = int(pet["id"])
+            acquired_at = pet.get("acquired_at")
+            acquired_text = ""
+            if isinstance(acquired_at, datetime):
+                acquired_text = acquired_at.strftime("%d/%m/%Y")
+            star = "⭐ " if is_active else ""
+            huge = " ✨" if is_huge else ""
+            line = (
+                f"{star}**#{user_pet_id} {name}**{huge}\n"
+                f"Rareté : {rarity} — {income:,} PB/h".replace(",", " ")
+            )
+            if acquired_text:
+                line += f"\nObtenu le {acquired_text}"
+            lines.append(line)
+        embed.description = "\n\n".join(lines)
+
+    footer = (
+        f"Total de pets : {total_count} • Revenus par heure (actif) : {total_income_per_hour:,} PB/h"
+    ).replace(",", " ")
+    footer += " • Utilise e!equip [id] pour équiper un pet"
+    embed.set_footer(text=footer)
+    return embed
+
+
+def pet_equip_embed(*, member: discord.Member, pet: Mapping[str, object]) -> discord.Embed:
+    name = str(pet["name"])
+    rarity = str(pet["rarity"])
+    image_url = str(pet["image_url"])
+    income = int(pet["base_income_per_hour"])
+    is_huge = bool(pet.get("is_huge", False))
+    embed = pet_reveal_embed(
+        name=name,
+        rarity=rarity,
+        image_url=image_url,
+        income_per_hour=income,
+        is_huge=is_huge,
+    )
+    embed.title = f"Tu as équipé {name} !"
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    return embed
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    parts: list[str] = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if sec or not parts:
+        parts.append(f"{sec}s")
+    return " ".join(parts)
+
+
+def pet_claim_embed(
+    *,
+    member: discord.Member,
+    pet: Mapping[str, object],
+    amount: int,
+    elapsed_seconds: float,
+) -> discord.Embed:
+    name = str(pet["name"])
+    rarity = str(pet["rarity"])
+    image_url = str(pet["image_url"])
+    income = int(pet["base_income_per_hour"])
+    is_huge = bool(pet.get("is_huge", False))
+    color = PET_RARITY_COLORS.get(rarity, Colors.INFO)
+    description = (
+        f"{name} a généré **{amount:,} PB** en {_format_duration(elapsed_seconds)}."
+        if amount
+        else f"{name} vient juste de se mettre au travail. Reviens plus tard !"
+    ).replace(",", " ")
+    description += f"\nRevenus par heure : **{income:,} PB/h**".replace(",", " ")
+    embed = _base_embed(_pet_title(name, rarity, is_huge), description, color=color)
+    embed.set_thumbnail(url=image_url)
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    return embed
+
+
+def pet_stats_embed(
+    *,
+    total_openings: int,
+    stats: Iterable[tuple[str, int, float, float]],
+    huge_count: int,
+) -> discord.Embed:
+    description_lines = [f"Œufs ouverts : **{total_openings}**"]
+    for name, count, actual_rate, theoretical_rate in stats:
+        actual_text = f"{actual_rate:.2f}%" if total_openings else "-"
+        description_lines.append(
+            f"**{name}** — {count} obtentions • Réel : {actual_text} • Théorique : {theoretical_rate:.2f}%"
+        )
+    description_lines.append(f"Énormes Shellys en circulation : **{huge_count}**")
+    embed = _base_embed("Statistiques des pets", "\n".join(description_lines), color=Colors.INFO)
     return embed

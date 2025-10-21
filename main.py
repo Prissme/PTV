@@ -36,6 +36,7 @@ class EcoBot(commands.Bot):
             "economy",
             "xp_system",
             "leaderboard",
+            "pets",
             "help",
         )
 
