@@ -79,7 +79,12 @@ class Economy(commands.Cog):
 
         self.message_cooldown.trigger(message.author.id)
         await self.database.ensure_user(message.author.id)
-        await self.database.increment_balance(message.author.id, MESSAGE_REWARD)
+        await self.database.increment_balance(
+            message.author.id,
+            MESSAGE_REWARD,
+            transaction_type="message_reward",
+            description=f"Récompense de message {message.channel.id}:{message.id}",
+        )
 
     # ------------------------------------------------------------------
     # Commandes économie
@@ -104,7 +109,12 @@ class Economy(commands.Cog):
             return
 
         reward = random.randint(*DAILY_REWARD)
-        before, after = await self.database.increment_balance(ctx.author.id, reward)
+        before, after = await self.database.increment_balance(
+            ctx.author.id,
+            reward,
+            transaction_type="daily",
+            description="Récompense quotidienne",
+        )
         await self.database.set_last_daily(ctx.author.id, now)
         logger.debug(
             "Daily claim", extra={"user_id": ctx.author.id, "reward": reward, "before": before, "after": after}

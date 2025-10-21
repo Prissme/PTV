@@ -62,7 +62,12 @@ class Pets(commands.Cog):
             )
             return
 
-        await self.database.increment_balance(ctx.author.id, -PET_EGG_PRICE)
+        await self.database.increment_balance(
+            ctx.author.id,
+            -PET_EGG_PRICE,
+            transaction_type="pet_purchase",
+            description="Achat d'un œuf basique",
+        )
         pet_definition, pet_id = self._choose_pet()
         user_pet = await self.database.add_user_pet(ctx.author.id, pet_id, is_huge=pet_definition.is_huge)
         await self.database.record_pet_opening(ctx.author.id, pet_id)
