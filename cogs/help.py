@@ -18,20 +18,35 @@ class Help(commands.Cog):
         await ctx.send(embed=self._build_help_embed())
 
     def _build_help_embed(self) -> discord.Embed:
-        embed = embeds.info_embed(
-            "Commandes disponibles :",
-            title="EcoBot — Aide",
-        )
-        embed.add_field(
-            name="Économie",
-            value="`e!balance`, `e!daily`, `e!leaderboard`",
-            inline=False,
-        )
-        embed.add_field(
-            name="XP",
-            value="`e!rank`, `e!xpleaderboard`",
-            inline=False,
-        )
+        lines = [
+            "╔═══════════════════════════════════╗",
+            "║    EcoBot - Commandes 📜          ║",
+            "╠═══════════════════════════════════╣",
+            "║ 💰 ÉCONOMIE                       ║",
+            "║ e!balance (bal)  - Voir ton solde ║",
+            "║ e!daily          - Récompense 24h ║",
+            "║ e!leaderboard    - Top richesses  ║",
+            "║                                   ║",
+            "║ ✨ EXPÉRIENCE                     ║",
+            "║ e!rank           - Ton profil XP  ║",
+            "║ e!xpleaderboard  - Top XP         ║",
+            "║                                   ║",
+            "║ 🐾 PETS                           ║",
+            "║ e!openbox (egg)  - Ouvrir un œuf  ║",
+            "║ e!pets (inventory) - Ta collection║",
+            "║ e!equip [id]     - Équiper un pet ║",
+            "║ e!claim          - Collecter PB   ║",
+            "║ e!petstats       - Statistiques   ║",
+            "║                                   ║",
+            "║ 🤝 ÉCHANGES                       ║",
+            "║ e!trade @user    - Échanger       ║",
+            "║ e!tradehistory   - Historique     ║",
+            "║                                   ║",
+            "║ ℹ️ e!help        - Cette aide     ║",
+            "╚═══════════════════════════════════╝",
+        ]
+        description = "\n".join(lines)
+        embed = embeds.info_embed(description, title="EcoBot — Aide")
         embed.set_footer(text="Toutes les commandes utilisent le préfixe e!")
         return embed
 
