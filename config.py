@@ -130,12 +130,12 @@ PET_DEFINITIONS: Tuple[PetDefinition, ...] = (
 )
 
 PET_EMOJIS: Final[dict[str, str]] = {
-    "Shelly": os.getenv("PET_EMOJI_SHELLY", "🟣"),
-    "Colt": os.getenv("PET_EMOJI_COLT", "🔫"),
-    "Barley": os.getenv("PET_EMOJI_BARLEY", "🍸"),
-    "Poco": os.getenv("PET_EMOJI_POCO", "🎵"),
-    "Rosa": os.getenv("PET_EMOJI_ROSA", "🌿"),
-    HUGE_PET_NAME: os.getenv("PET_EMOJI_HUGE_SHELLY", "🌟"),
+    "Shelly": os.getenv("PET_EMOJI_SHELLY", "<:Shelly:1430584949215596654>"),
+    "Colt": os.getenv("PET_EMOJI_COLT", "<:Colt:1430585480394838196>"),
+    "Barley": os.getenv("PET_EMOJI_BARLEY", "<:Barley:1430586754041381036>"),
+    "Poco": os.getenv("PET_EMOJI_POCO", "<:Poco:1430586108336672878>"),
+    "Rosa": os.getenv("PET_EMOJI_ROSA", "<:Rosa:1430584871406928075>"),
+    HUGE_PET_NAME: os.getenv("PET_EMOJI_HUGE_SHELLY", "<:HugeShelly:1430587331819212831>"),
     "default": os.getenv("PET_EMOJI_DEFAULT", "🐾"),
 }
 
