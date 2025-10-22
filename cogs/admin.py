@@ -56,6 +56,67 @@ class Admin(commands.Cog):
             },
         )
 
+    @commands.command(name="addpb")
+    @commands.is_owner()
+    async def add_pb(
+        self,
+        ctx: commands.Context,
+        user_id: int,
+        amount: int,
+        *,
+        reason: str | None = None,
+    ) -> None:
+        """Admin: Ajouter des PB via l'identifiant utilisateur."""
+
+        if amount <= 0:
+            await ctx.send(embed=embeds.warning_embed("Le montant doit être supérieur à 0."))
+            return
+
+        description = reason or f"Ajout manuel par {ctx.author.id}"
+
+        try:
+            before, after = await self.database.increment_balance(
+                user_id,
+                amount,
+                transaction_type="admin_grant",
+                description=description,
+            )
+        except DatabaseError as exc:
+            await ctx.send(embed=embeds.error_embed(str(exc)))
+            return
+
+        member = None
+        if ctx.guild is not None:
+            member = ctx.guild.get_member(user_id)
+        user_obj = member or self.bot.get_user(user_id)
+        if user_obj is None:
+            target_display = f"Utilisateur {user_id}"
+        else:
+            target_display = user_obj.mention
+
+        lines = [
+            f"Cible : {target_display}",
+            f"Ajout : {embeds.format_currency(amount)}",
+            f"Solde avant : {embeds.format_currency(before)}",
+            f"Solde après : {embeds.format_currency(after)}",
+        ]
+        if reason:
+            lines.append(f"Raison : {reason}")
+
+        await ctx.send(embed=embeds.success_embed("\n".join(lines), title="PB ajoutés"))
+
+        logger.info(
+            "Admin add_pb",
+            extra={
+                "admin_id": ctx.author.id,
+                "target_id": user_id,
+                "amount": amount,
+                "before": before,
+                "after": after,
+                "reason": reason,
+            },
+        )
+
     @commands.command(name="resetuser")
     @commands.is_owner()
     async def reset_user(self, ctx: commands.Context, user: discord.Member) -> None:

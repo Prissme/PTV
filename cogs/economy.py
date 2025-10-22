@@ -152,6 +152,84 @@ class Economy(commands.Cog):
             return " ".join(f"{MASTERMIND_EMOJIS[color]} {color.capitalize()}" for color in code)
         return " ".join(MASTERMIND_EMOJIS[color] for color in code)
 
+    @staticmethod
+    def _can_send_embeds(ctx: commands.Context) -> bool:
+        channel = ctx.channel
+        me = getattr(ctx, "me", None)
+        permissions_for = getattr(channel, "permissions_for", None)
+        if permissions_for is None or me is None:
+            return True
+
+        with contextlib.suppress(Exception):
+            permissions = permissions_for(me)
+            return getattr(permissions, "embed_links", True)
+
+        return True
+
+    def _mastermind_start_text(self) -> str:
+        palette_line = ", ".join(f"{emoji} {name.capitalize()}" for name, emoji in MASTERMIND_COLORS)
+        return (
+            "🧠 **Mastermind**\n"
+            f"Devine la combinaison de {MASTERMIND_CODE_LENGTH} couleurs pour décrocher des PB.\n"
+            f"Palette : {palette_line}\n"
+            "Les couleurs peuvent se répéter.\n"
+            f"Tu disposes de {MASTERMIND_MAX_ATTEMPTS} tentatives et de {MASTERMIND_RESPONSE_TIMEOUT}s entre chaque réponse.\n"
+            "Réponds avec les couleurs séparées par des espaces (ex : `rouge bleu vert jaune`).\n"
+            "Tape `stop` pour abandonner la partie."
+        )
+
+    @staticmethod
+    def _mastermind_feedback_text(
+        *,
+        attempt: int,
+        max_attempts: int,
+        guess_display: str,
+        well_placed: int,
+        misplaced: int,
+        attempts_left: int,
+    ) -> str:
+        return (
+            f"Tentative {attempt}/{max_attempts}\n"
+            f"Proposition : {guess_display}\n"
+            f"Bien placés : {well_placed}\n"
+            f"Présents mais mal placés : {misplaced}\n"
+            f"Tentatives restantes : {attempts_left}"
+        )
+
+    @staticmethod
+    def _mastermind_victory_text(
+        *,
+        attempts_used: int,
+        attempts_left: int,
+        secret_display: str,
+        reward: int,
+        balance_after: int,
+    ) -> str:
+        return (
+            "🏆 Mastermind — Victoire !\n"
+            f"Code craqué en {attempts_used} tentative(s).\n"
+            f"Tentatives restantes : {attempts_left}\n"
+            f"Combinaison : {secret_display}\n"
+            f"Récompense : {embeds.format_currency(reward)}\n"
+            f"Solde actuel : {embeds.format_currency(balance_after)}"
+        )
+
+    @staticmethod
+    def _mastermind_failure_text(*, reason: str, secret_display: str) -> str:
+        return (
+            "🧠 Mastermind — Échec\n"
+            f"{reason}\n"
+            f"Code secret : {secret_display}\n"
+            "Reviens tenter ta chance pour gagner des PB !"
+        )
+
+    @staticmethod
+    def _mastermind_cancelled_text() -> str:
+        return (
+            "🧠 Mastermind — Annulé\n"
+            "Partie annulée. Relance `e!mastermind` quand tu veux retenter ta chance !"
+        )
+
     def _parse_mastermind_guess(self, raw: str) -> tuple[list[str], str | None]:
         tokens = [token for token in raw.replace(",", " ").replace(";", " ").split() if token]
         if len(tokens) != MASTERMIND_CODE_LENGTH:
@@ -358,15 +436,19 @@ class Economy(commands.Cog):
 
         await self.database.ensure_user(ctx.author.id)
         secret = self._generate_mastermind_code()
-        await ctx.send(
-            embed=embeds.mastermind_start_embed(
-                member=ctx.author,
-                palette=MASTERMIND_COLORS,
-                code_length=MASTERMIND_CODE_LENGTH,
-                max_attempts=MASTERMIND_MAX_ATTEMPTS,
-                timeout=MASTERMIND_RESPONSE_TIMEOUT,
+        use_embeds = self._can_send_embeds(ctx)
+        if use_embeds:
+            await ctx.send(
+                embed=embeds.mastermind_start_embed(
+                    member=ctx.author,
+                    palette=MASTERMIND_COLORS,
+                    code_length=MASTERMIND_CODE_LENGTH,
+                    max_attempts=MASTERMIND_MAX_ATTEMPTS,
+                    timeout=MASTERMIND_RESPONSE_TIMEOUT,
+                )
             )
-        )
+        else:
+            await ctx.send(self._mastermind_start_text())
 
         attempts = 0
         while attempts < MASTERMIND_MAX_ATTEMPTS:
@@ -377,13 +459,21 @@ class Economy(commands.Cog):
                     check=lambda message: message.author == ctx.author and message.channel == ctx.channel,
                 )
             except asyncio.TimeoutError:
-                await ctx.send(
-                    embed=embeds.mastermind_failure_embed(
-                        member=ctx.author,
-                        reason="Temps écoulé !",
-                        secret_display=self._format_mastermind_code(secret, include_names=True),
+                secret_display = self._format_mastermind_code(secret, include_names=True)
+                if use_embeds:
+                    await ctx.send(
+                        embed=embeds.mastermind_failure_embed(
+                            member=ctx.author,
+                            reason="Temps écoulé !",
+                            secret_display=secret_display,
+                        )
                     )
-                )
+                else:
+                    await ctx.send(
+                        self._mastermind_failure_text(
+                            reason="Temps écoulé !", secret_display=secret_display
+                        )
+                    )
                 logger.debug(
                     "Mastermind timeout",
                     extra={
@@ -400,7 +490,10 @@ class Economy(commands.Cog):
 
             lowered = content.lower()
             if lowered in MASTERMIND_CANCEL_WORDS:
-                await ctx.send(embed=embeds.mastermind_cancelled_embed(member=ctx.author))
+                if use_embeds:
+                    await ctx.send(embed=embeds.mastermind_cancelled_embed(member=ctx.author))
+                else:
+                    await ctx.send(self._mastermind_cancelled_text())
                 logger.debug(
                     "Mastermind cancelled",
                     extra={
@@ -413,24 +506,40 @@ class Economy(commands.Cog):
 
             guess, error = self._parse_mastermind_guess(content)
             if error:
-                await ctx.send(embed=embeds.warning_embed(error))
+                if use_embeds:
+                    await ctx.send(embed=embeds.warning_embed(error))
+                else:
+                    await ctx.send(f"⚠️ {error}")
                 continue
 
             attempts += 1
             exact, misplaced = self._evaluate_mastermind_guess(secret, guess)
             attempts_left = MASTERMIND_MAX_ATTEMPTS - attempts
 
-            await ctx.send(
-                embed=embeds.mastermind_feedback_embed(
-                    member=ctx.author,
-                    attempt=attempts,
-                    max_attempts=MASTERMIND_MAX_ATTEMPTS,
-                    guess_display=self._format_mastermind_code(guess),
-                    well_placed=exact,
-                    misplaced=misplaced,
-                    attempts_left=attempts_left,
+            guess_display = self._format_mastermind_code(guess)
+            if use_embeds:
+                await ctx.send(
+                    embed=embeds.mastermind_feedback_embed(
+                        member=ctx.author,
+                        attempt=attempts,
+                        max_attempts=MASTERMIND_MAX_ATTEMPTS,
+                        guess_display=guess_display,
+                        well_placed=exact,
+                        misplaced=misplaced,
+                        attempts_left=attempts_left,
+                    )
                 )
-            )
+            else:
+                await ctx.send(
+                    self._mastermind_feedback_text(
+                        attempt=attempts,
+                        max_attempts=MASTERMIND_MAX_ATTEMPTS,
+                        guess_display=guess_display,
+                        well_placed=exact,
+                        misplaced=misplaced,
+                        attempts_left=attempts_left,
+                    )
+                )
 
             if exact == MASTERMIND_CODE_LENGTH:
                 base_reward = random.randint(*MASTERMIND_BASE_REWARD)
@@ -441,16 +550,28 @@ class Economy(commands.Cog):
                     transaction_type="mastermind_win",
                     description=f"Mastermind gagné en {attempts} tentatives",
                 )
-                await ctx.send(
-                    embed=embeds.mastermind_victory_embed(
-                        member=ctx.author,
-                        attempts_used=attempts,
-                        attempts_left=attempts_left,
-                        secret_display=self._format_mastermind_code(secret, include_names=True),
-                        reward=reward,
-                        balance_after=balance_after,
+                secret_display = self._format_mastermind_code(secret, include_names=True)
+                if use_embeds:
+                    await ctx.send(
+                        embed=embeds.mastermind_victory_embed(
+                            member=ctx.author,
+                            attempts_used=attempts,
+                            attempts_left=attempts_left,
+                            secret_display=secret_display,
+                            reward=reward,
+                            balance_after=balance_after,
+                        )
                     )
-                )
+                else:
+                    await ctx.send(
+                        self._mastermind_victory_text(
+                            attempts_used=attempts,
+                            attempts_left=attempts_left,
+                            secret_display=secret_display,
+                            reward=reward,
+                            balance_after=balance_after,
+                        )
+                    )
                 logger.debug(
                     "Mastermind win",
                     extra={
@@ -464,13 +585,22 @@ class Economy(commands.Cog):
                 )
                 return
 
-        await ctx.send(
-            embed=embeds.mastermind_failure_embed(
-                member=ctx.author,
-                reason="Toutes les tentatives ont été utilisées.",
-                secret_display=self._format_mastermind_code(secret, include_names=True),
+        secret_display = self._format_mastermind_code(secret, include_names=True)
+        if use_embeds:
+            await ctx.send(
+                embed=embeds.mastermind_failure_embed(
+                    member=ctx.author,
+                    reason="Toutes les tentatives ont été utilisées.",
+                    secret_display=secret_display,
+                )
             )
-        )
+        else:
+            await ctx.send(
+                self._mastermind_failure_text(
+                    reason="Toutes les tentatives ont été utilisées.",
+                    secret_display=secret_display,
+                )
+            )
         logger.debug(
             "Mastermind loss",
             extra={
