@@ -25,6 +25,7 @@ class Help(commands.Cog):
             "║ 💰 ÉCONOMIE                       ║",
             "║ e!balance (bal)  - Voir ton solde ║",
             "║ e!daily          - Récompense 24h ║",
+            "║ e!give @user montant - Donner PB  ║",
             "║ e!leaderboard    - Top richesses  ║",
             "║                                   ║",
             "║ ✨ EXPÉRIENCE                     ║",

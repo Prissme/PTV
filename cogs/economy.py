@@ -15,6 +15,7 @@ from discord.ext import commands
 
 from config import DAILY_COOLDOWN, DAILY_REWARD, MESSAGE_COOLDOWN, MESSAGE_REWARD, PREFIX
 from utils import embeds
+from database.db import DatabaseError
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +233,52 @@ class Economy(commands.Cog):
         )
         embed = embeds.daily_embed(ctx.author, amount=reward)
         await ctx.send(embed=embed)
+
+    @commands.command(name="give")
+    async def give(self, ctx: commands.Context, member: discord.Member, amount: int) -> None:
+        if member.bot:
+            await ctx.send(embed=embeds.error_embed("Tu ne peux pas donner de PB à un bot."))
+            return
+        if member == ctx.author:
+            await ctx.send(embed=embeds.error_embed("Impossible de te donner des PB."))
+            return
+        if amount <= 0:
+            await ctx.send(embed=embeds.error_embed("Le montant doit être supérieur à 0."))
+            return
+
+        await self.database.ensure_user(ctx.author.id)
+        await self.database.ensure_user(member.id)
+
+        balance = await self.database.fetch_balance(ctx.author.id)
+        if balance < amount:
+            await ctx.send(
+                embed=embeds.error_embed("Tu n'as pas assez de PB pour ce transfert."),
+            )
+            return
+
+        try:
+            transfer = await self.database.transfer_balance(
+                sender_id=ctx.author.id,
+                recipient_id=member.id,
+                amount=amount,
+                send_transaction_type="give_send",
+                receive_transaction_type="give_receive",
+                send_description=f"Transfert vers {member.id}",
+                receive_description=f"Transfert reçu de {ctx.author.id}",
+            )
+        except DatabaseError:
+            await ctx.send(
+                embed=embeds.error_embed("Transfert impossible pour le moment. Réessaie plus tard."),
+            )
+            return
+
+        lines = [
+            f"{ctx.author.mention} → {member.mention}",
+            f"Montant : {embeds.format_currency(amount)}",
+            f"Ton solde : {embeds.format_currency(transfer['sender']['after'])}",
+            f"Solde de {member.display_name} : {embeds.format_currency(transfer['recipient']['after'])}",
+        ]
+        await ctx.send(embed=embeds.success_embed("\n".join(lines), title="Transfert réussi"))
 
     @commands.cooldown(1, 6, commands.BucketType.user)
     @commands.command(name="slots", aliases=("slot", "machine"))

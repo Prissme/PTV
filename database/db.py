@@ -308,6 +308,84 @@ class Database:
 
         return before, after
 
+    async def transfer_balance(
+        self,
+        *,
+        sender_id: int,
+        recipient_id: int,
+        amount: int,
+        send_transaction_type: str,
+        receive_transaction_type: str,
+        send_description: str | None = None,
+        receive_description: str | None = None,
+    ) -> dict[str, dict[str, int]]:
+        if sender_id == recipient_id:
+            raise DatabaseError("Impossible de transférer des PB vers soi-même")
+        if amount <= 0:
+            raise ValueError("Le montant transféré doit être strictement positif")
+
+        await self.ensure_user(sender_id)
+        await self.ensure_user(recipient_id)
+
+        async with self.transaction() as connection:
+            sender_row = await connection.fetchrow(
+                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                sender_id,
+            )
+            recipient_row = await connection.fetchrow(
+                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                recipient_id,
+            )
+
+            if sender_row is None or recipient_row is None:
+                raise DatabaseError("Utilisateur introuvable lors du transfert")
+
+            sender_before = int(sender_row["balance"])
+            if sender_before < amount:
+                raise DatabaseError("Solde insuffisant pour effectuer le transfert")
+
+            recipient_before = int(recipient_row["balance"])
+
+            sender_after = sender_before - amount
+            recipient_after = recipient_before + amount
+
+            await connection.execute(
+                "UPDATE users SET balance = $1 WHERE user_id = $2",
+                sender_after,
+                sender_id,
+            )
+            await self.record_transaction(
+                connection=connection,
+                user_id=sender_id,
+                transaction_type=send_transaction_type,
+                amount=-amount,
+                balance_before=sender_before,
+                balance_after=sender_after,
+                description=send_description,
+                related_user_id=recipient_id,
+            )
+
+            await connection.execute(
+                "UPDATE users SET balance = $1 WHERE user_id = $2",
+                recipient_after,
+                recipient_id,
+            )
+            await self.record_transaction(
+                connection=connection,
+                user_id=recipient_id,
+                transaction_type=receive_transaction_type,
+                amount=amount,
+                balance_before=recipient_before,
+                balance_after=recipient_after,
+                description=receive_description,
+                related_user_id=sender_id,
+            )
+
+        return {
+            "sender": {"before": sender_before, "after": sender_after},
+            "recipient": {"before": recipient_before, "after": recipient_after},
+        }
+
     async def get_last_daily(self, user_id: int) -> Optional[datetime]:
         row = await self.pool.fetchrow("SELECT last_daily FROM users WHERE user_id = $1", user_id)
         return row["last_daily"] if row else None
