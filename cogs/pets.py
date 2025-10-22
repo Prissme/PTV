@@ -11,6 +11,7 @@ from discord.ext import commands
 
 from config import PET_DEFINITIONS, PET_EGG_PRICE, PET_RARITY_ORDER, PetDefinition
 from utils import embeds
+from database.db import DatabaseError
 
 logger = logging.getLogger(__name__)
 
@@ -83,12 +84,15 @@ class Pets(commands.Cog):
             await message.edit(embed=embeds.pet_animation_embed(title=title, description=description))
 
         await asyncio.sleep(1.2)
+        market_values = await self.database.get_pet_market_values()
+        market_value = int(market_values.get(pet_id, 0))
         reveal_embed = embeds.pet_reveal_embed(
             name=pet_definition.name,
             rarity=pet_definition.rarity,
             image_url=pet_definition.image_url,
             income_per_hour=pet_definition.base_income_per_hour,
             is_huge=pet_definition.is_huge,
+            market_value=market_value,
         )
         reveal_embed.set_footer(
             text=(
@@ -97,11 +101,18 @@ class Pets(commands.Cog):
         )
         await message.edit(embed=reveal_embed)
 
-    def _sort_pets_for_display(self, records: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    def _sort_pets_for_display(
+        self,
+        records: Iterable[Mapping[str, Any]],
+        market_values: Mapping[int, int] | None = None,
+    ) -> List[Dict[str, Any]]:
         converted = []
         for record in records:
             data = self._convert_record(record)
             data["income"] = int(data.get("base_income_per_hour", 0))
+            pet_identifier = int(data.get("pet_id", 0))
+            if market_values:
+                data["market_value"] = int(market_values.get(pet_identifier, 0))
             converted.append(data)
 
         converted.sort(
@@ -135,8 +146,9 @@ class Pets(commands.Cog):
     @commands.command(name="pets", aliases=("collection", "inventory"))
     async def pets_command(self, ctx: commands.Context) -> None:
         records = await self.database.get_user_pets(ctx.author.id)
-        pets = self._sort_pets_for_display(records)
-        active_income = next((int(pet["income"]) for pet in pets if pet.get("is_active")), 0)
+        market_values = await self.database.get_pet_market_values()
+        pets = self._sort_pets_for_display(records, market_values)
+        active_income = sum(int(pet["income"]) for pet in pets if pet.get("is_active"))
         embed = embeds.pet_collection_embed(
             member=ctx.author,
             pets=pets,
@@ -147,24 +159,44 @@ class Pets(commands.Cog):
 
     @commands.command(name="equip")
     async def equip(self, ctx: commands.Context, pet_id: int) -> None:
-        row = await self.database.set_active_pet(ctx.author.id, pet_id)
+        try:
+            row, activated, active_count = await self.database.set_active_pet(ctx.author.id, pet_id)
+        except DatabaseError as exc:
+            await ctx.send(embed=embeds.error_embed(str(exc)))
+            return
+
         if row is None:
             await ctx.send(embed=embeds.error_embed("Pet introuvable. Vérifie l'identifiant avec `e!pets`."))
             return
 
         pet_data = self._convert_record(row)
-        embed = embeds.pet_equip_embed(member=ctx.author, pet=pet_data)
+        market_values = await self.database.get_pet_market_values()
+        pet_identifier = int(pet_data.get("pet_id", 0))
+        pet_data["market_value"] = int(market_values.get(pet_identifier, 0))
+        embed = embeds.pet_equip_embed(member=ctx.author, pet=pet_data, activated=activated, active_count=active_count)
         await ctx.send(embed=embed)
 
     @commands.command(name="claim")
     async def claim(self, ctx: commands.Context) -> None:
-        amount, row, elapsed = await self.database.claim_active_pet_income(ctx.author.id)
-        if row is None:
+        amount, rows, elapsed = await self.database.claim_active_pet_income(ctx.author.id)
+        if not rows:
             await ctx.send(embed=embeds.error_embed("Tu dois équiper un pet avant de pouvoir collecter ses revenus."))
             return
 
-        pet_data = self._convert_record(row)
-        embed = embeds.pet_claim_embed(member=ctx.author, pet=pet_data, amount=amount, elapsed_seconds=elapsed)
+        market_values = await self.database.get_pet_market_values()
+        pets_data: List[Dict[str, Any]] = []
+        for row in rows:
+            data = self._convert_record(row)
+            pet_identifier = int(data.get("pet_id", 0))
+            data["market_value"] = int(market_values.get(pet_identifier, 0))
+            pets_data.append(data)
+
+        embed = embeds.pet_claim_embed(
+            member=ctx.author,
+            pets=pets_data,
+            amount=amount,
+            elapsed_seconds=elapsed,
+        )
         await ctx.send(embed=embed)
 
     @commands.command(name="petstats", aliases=("petsstats",))

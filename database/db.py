@@ -491,26 +491,64 @@ class Database:
             user_id,
         )
 
-    async def set_active_pet(self, user_id: int, user_pet_id: int) -> Optional[asyncpg.Record]:
+    async def set_active_pet(
+        self, user_id: int, user_pet_id: int
+    ) -> tuple[Optional[asyncpg.Record], bool, int]:
+        """Active ou désactive un pet pour un utilisateur.
+
+        Retourne un tuple ``(record, activé, total_actifs)``. ``record`` vaut ``None``
+        si le pet n'existe pas. ``activé`` indique si le pet a été équipé suite à
+        l'appel et ``total_actifs`` représente le nombre total de pets actuellement
+        équipés par l'utilisateur.
+        """
+
         async with self.transaction() as connection:
             pet_row = await connection.fetchrow(
-                "SELECT id FROM user_pets WHERE user_id = $1 AND id = $2 FOR UPDATE",
+                "SELECT id, is_active FROM user_pets WHERE user_id = $1 AND id = $2 FOR UPDATE",
                 user_id,
                 user_pet_id,
             )
             if pet_row is None:
-                return None
+                return None, False, 0
 
-            await connection.execute("UPDATE user_pets SET is_active = FALSE WHERE user_id = $1", user_id)
-            await connection.execute("UPDATE user_pets SET is_active = TRUE WHERE id = $1", user_pet_id)
-            await connection.execute("UPDATE users SET pet_last_claim = NOW() WHERE user_id = $1", user_id)
+            currently_active = bool(pet_row["is_active"])
+            active_count = int(
+                await connection.fetchval(
+                    "SELECT COUNT(*) FROM user_pets WHERE user_id = $1 AND is_active",
+                    user_id,
+                )
+                or 0
+            )
 
-        return await self.get_user_pet(user_id, user_pet_id)
+            if currently_active:
+                await connection.execute(
+                    "UPDATE user_pets SET is_active = FALSE WHERE id = $1",
+                    user_pet_id,
+                )
+                new_active_count = max(0, active_count - 1)
+            else:
+                if active_count >= 4:
+                    raise DatabaseError("Tu ne peux pas équiper plus de 4 pets simultanément.")
+                await connection.execute(
+                    "UPDATE user_pets SET is_active = TRUE WHERE id = $1",
+                    user_pet_id,
+                )
+                new_active_count = active_count + 1
 
-    async def claim_active_pet_income(self, user_id: int) -> tuple[int, Optional[asyncpg.Record], float]:
+            await connection.execute(
+                "UPDATE users SET pet_last_claim = NOW() WHERE user_id = $1",
+                user_id,
+            )
+
+        record = await self.get_user_pet(user_id, user_pet_id)
+        return record, not currently_active, new_active_count
+
+    async def claim_active_pet_income(
+        self, user_id: int
+    ) -> tuple[int, Sequence[asyncpg.Record], float]:
         await self.ensure_user(user_id)
         async with self.transaction() as connection:
-            row = await connection.fetchrow(
+            rows = await connection.fetch(
                 """
                 SELECT
                     up.id,
@@ -529,16 +567,18 @@ class Database:
                 JOIN pets AS p ON p.pet_id = up.pet_id
                 JOIN users AS u ON u.user_id = up.user_id
                 WHERE up.user_id = $1 AND up.is_active
+                ORDER BY up.id
                 FOR UPDATE
                 """,
                 user_id,
             )
 
-            if row is None:
-                return 0, None, 0.0
+            if not rows:
+                return 0, [], 0.0
 
+            first_row = rows[0]
             now = datetime.now(timezone.utc)
-            last_claim: Optional[datetime] = row["pet_last_claim"]
+            last_claim: Optional[datetime] = first_row["pet_last_claim"]
             elapsed_seconds = (now - last_claim).total_seconds() if last_claim else 0.0
             if elapsed_seconds <= 0:
                 await connection.execute(
@@ -546,20 +586,20 @@ class Database:
                     now,
                     user_id,
                 )
-                return 0, row, 0.0
+                return 0, rows, 0.0
 
-            hourly_income = int(row["base_income_per_hour"])
+            hourly_income = sum(int(row["base_income_per_hour"]) for row in rows)
             if hourly_income <= 0:
                 await connection.execute(
                     "UPDATE users SET pet_last_claim = $1 WHERE user_id = $2",
                     now,
                     user_id,
                 )
-                return 0, row, elapsed_seconds
+                return 0, rows, elapsed_seconds
 
             income = int(hourly_income * (elapsed_seconds / 3600))
             if income <= 0:
-                return 0, row, elapsed_seconds
+                return 0, rows, elapsed_seconds
 
             consumed_seconds = int((income / hourly_income) * 3600)
             if last_claim is None:
@@ -569,7 +609,7 @@ class Database:
                 if new_claim_time > now:
                     new_claim_time = now
 
-            before_balance = int(row["balance"])
+            before_balance = int(first_row["balance"])
             after_balance = before_balance + income
 
             await connection.execute(
@@ -585,10 +625,10 @@ class Database:
                 amount=income,
                 balance_before=before_balance,
                 balance_after=after_balance,
-                description=f"Revenus passifs de {row['name']}",
+                description=f"Revenus passifs ({len(rows)} pets)",
             )
 
-        return income, row, elapsed_seconds
+        return income, rows, elapsed_seconds
 
     async def record_pet_opening(self, user_id: int, pet_id: int) -> None:
         await self.ensure_user(user_id)
@@ -609,6 +649,98 @@ class Database:
     async def count_huge_pets(self) -> int:
         value = await self.pool.fetchval("SELECT COUNT(*) FROM user_pets WHERE is_huge")
         return int(value or 0)
+
+    async def get_pet_market_values(self) -> Dict[int, int]:
+        """Calcule le prix moyen des pets selon les échanges terminés."""
+
+        rows = await self.pool.fetch(
+            """
+            SELECT
+                t.id,
+                t.user_a_id,
+                t.user_b_id,
+                t.user_a_pb,
+                t.user_b_pb,
+                tp.user_pet_id,
+                tp.from_user_id,
+                tp.to_user_id,
+                up.pet_id
+            FROM trades AS t
+            LEFT JOIN trade_pets AS tp ON tp.trade_id = t.id
+            LEFT JOIN user_pets AS up ON up.id = tp.user_pet_id
+            WHERE t.status = 'completed'
+            ORDER BY t.id
+            """
+        )
+
+        trade_map: Dict[int, Dict[str, object]] = {}
+        for row in rows:
+            trade_id = int(row["id"])
+            trade = trade_map.setdefault(
+                trade_id,
+                {
+                    "user_a_id": int(row["user_a_id"]),
+                    "user_b_id": int(row["user_b_id"]),
+                    "user_a_pb": int(row["user_a_pb"]),
+                    "user_b_pb": int(row["user_b_pb"]),
+                    "pets": [],
+                },
+            )
+
+            user_pet_id = row["user_pet_id"]
+            pet_id = row["pet_id"]
+            if user_pet_id is None or pet_id is None:
+                continue
+
+            pets: list[dict[str, int]] = trade.setdefault("pets", [])  # type: ignore[assignment]
+            pets.append(
+                {
+                    "pet_id": int(pet_id),
+                    "from_user_id": int(row["from_user_id"]),
+                    "to_user_id": int(row["to_user_id"]),
+                }
+            )
+
+        totals: Dict[int, tuple[float, int]] = {}
+
+        for trade in trade_map.values():
+            pets: list[dict[str, int]] = trade["pets"]  # type: ignore[assignment]
+            if not pets:
+                continue
+
+            user_a_id = int(trade["user_a_id"])
+            user_b_id = int(trade["user_b_id"])
+            user_a_pb = int(trade["user_a_pb"])
+            user_b_pb = int(trade["user_b_pb"])
+
+            pets_from_a = [pet for pet in pets if pet["from_user_id"] == user_a_id]
+            pets_from_b = [pet for pet in pets if pet["from_user_id"] == user_b_id]
+
+            if (
+                user_a_pb > 0
+                and user_b_pb == 0
+                and pets_from_b
+                and not pets_from_a
+            ):
+                price_per_pet = user_a_pb / len(pets_from_b)
+                targets = pets_from_b
+            elif (
+                user_b_pb > 0
+                and user_a_pb == 0
+                and pets_from_a
+                and not pets_from_b
+            ):
+                price_per_pet = user_b_pb / len(pets_from_a)
+                targets = pets_from_a
+            else:
+                continue
+
+            for pet in targets:
+                pet_id = pet["pet_id"]
+                total, count = totals.get(pet_id, (0.0, 0))
+                totals[pet_id] = (total + price_per_pet, count + 1)
+
+        return {pet_id: int(round(total / count)) for pet_id, (total, count) in totals.items() if count}
 
     # ------------------------------------------------------------------
     # Historique financier
