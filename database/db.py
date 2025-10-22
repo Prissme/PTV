@@ -8,13 +8,17 @@ from typing import Any, AsyncIterator, Dict, Iterable, Mapping, Optional, Sequen
 
 import asyncpg
 
-__all__ = ["Database", "DatabaseError"]
+__all__ = ["Database", "DatabaseError", "InsufficientBalanceError"]
 
 logger = logging.getLogger(__name__)
 
 
 class DatabaseError(RuntimeError):
     """Erreur levée lorsqu'une opération PostgreSQL échoue."""
+
+
+class InsufficientBalanceError(DatabaseError):
+    """Erreur dédiée lorsqu'un solde utilisateur est insuffisant."""
 
 
 class Database:
@@ -342,7 +346,7 @@ class Database:
 
             sender_before = int(sender_row["balance"])
             if sender_before < amount:
-                raise DatabaseError("Solde insuffisant pour effectuer le transfert")
+                raise InsufficientBalanceError("Solde insuffisant pour effectuer le transfert")
 
             recipient_before = int(recipient_row["balance"])
 

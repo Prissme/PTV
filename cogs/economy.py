@@ -7,6 +7,7 @@ import logging
 import random
 import time
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Sequence
 
@@ -15,7 +16,7 @@ from discord.ext import commands
 
 from config import DAILY_COOLDOWN, DAILY_REWARD, MESSAGE_COOLDOWN, MESSAGE_REWARD, PREFIX
 from utils import embeds
-from database.db import DatabaseError
+from database.db import Database, DatabaseError, InsufficientBalanceError
 
 logger = logging.getLogger(__name__)
 
@@ -46,33 +47,254 @@ SLOT_SPECIAL_COMBOS: dict[tuple[str, ...], tuple[int, str]] = {
 SLOT_MIN_BET = 50
 SLOT_MAX_BET = 5000
 
-MASTERMIND_COLOR_DEFINITIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    ("rouge", "🔴", ("r", "red")),
-    ("bleu", "🔵", ("b", "blue")),
-    ("vert", "🟢", ("v", "green", "g")),
-    ("jaune", "🟡", ("j", "yellow", "y")),
-    ("violet", "🟣", ("violet", "violette", "pourpre", "purple", "p")),
-    ("orange", "🟠", ("o",)),
-)
-MASTERMIND_COLORS: tuple[tuple[str, str], ...] = tuple(
-    (name, emoji) for name, emoji, _ in MASTERMIND_COLOR_DEFINITIONS
-)
-MASTERMIND_ALIASES: dict[str, str] = {}
-for color_name, _emoji, aliases in MASTERMIND_COLOR_DEFINITIONS:
-    MASTERMIND_ALIASES[color_name] = color_name
-    for alias in aliases:
-        MASTERMIND_ALIASES[alias.lower()] = color_name
 
-MASTERMIND_COLOR_NAMES: tuple[str, ...] = tuple(name for name, _ in MASTERMIND_COLORS)
-MASTERMIND_EMOJIS: dict[str, str] = {name: emoji for name, emoji in MASTERMIND_COLORS}
-MASTERMIND_CODE_LENGTH = 4
-MASTERMIND_MAX_ATTEMPTS = 8
-MASTERMIND_RESPONSE_TIMEOUT = 60
-MASTERMIND_BASE_REWARD = (120, 200)
-MASTERMIND_ATTEMPT_BONUS = 20
-MASTERMIND_CANCEL_WORDS = {"stop", "annuler", "cancel"}
-MASTERMIND_COOLDOWN = 60
-MASTERMIND_AVAILABLE_NAMES = ", ".join(name.capitalize() for name in MASTERMIND_COLOR_NAMES)
+@dataclass(frozen=True)
+class MastermindColor:
+    name: str
+    emoji: str
+    aliases: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class MastermindConfig:
+    colors: tuple[MastermindColor, ...]
+    code_length: int = 4
+    max_attempts: int = 8
+    response_timeout: int = 60
+    base_reward: tuple[int, int] = (120, 200)
+    attempt_bonus: int = 20
+    cancel_words: frozenset[str] = frozenset({"stop", "annuler", "cancel"})
+    cooldown: int = 60
+
+    @property
+    def palette(self) -> tuple[tuple[str, str], ...]:
+        return tuple((color.name, color.emoji) for color in self.colors)
+
+
+class MastermindHelper:
+    def __init__(self, config: MastermindConfig) -> None:
+        self.config = config
+        self._color_names: tuple[str, ...] = tuple(color.name for color in config.colors)
+        self._emoji_map: dict[str, str] = {color.name: color.emoji for color in config.colors}
+        alias_map: dict[str, str] = {}
+        for color in config.colors:
+            alias_map[color.name.lower()] = color.name
+            for alias in color.aliases:
+                alias_map[alias.lower()] = color.name
+        self._alias_map = alias_map
+        self._cancel_words = {word.lower() for word in config.cancel_words}
+        self.available_names = ", ".join(color.name.capitalize() for color in config.colors)
+
+    @property
+    def palette(self) -> tuple[tuple[str, str], ...]:
+        return self.config.palette
+
+    def generate_code(self) -> list[str]:
+        return [random.choice(self._color_names) for _ in range(self.config.code_length)]
+
+    def format_code(self, code: Sequence[str], *, include_names: bool = False) -> str:
+        if include_names:
+            return " ".join(f"{self._emoji_map[color]} {color.capitalize()}" for color in code)
+        return " ".join(self._emoji_map[color] for color in code)
+
+    def parse_guess(self, raw: str) -> tuple[list[str], str | None]:
+        tokens = [token for token in raw.replace(",", " ").replace(";", " ").split() if token]
+        if len(tokens) != self.config.code_length:
+            return [], f"Ta combinaison doit contenir exactement {self.config.code_length} couleurs."
+
+        guess: list[str] = []
+        for token in tokens:
+            canonical = self._alias_map.get(token.lower())
+            if canonical is None:
+                return [], f"Couleur inconnue `{token}`. Choisis parmi : {self.available_names}."
+            guess.append(canonical)
+
+        return guess, None
+
+    @staticmethod
+    def evaluate_guess(secret: Sequence[str], guess: Sequence[str]) -> tuple[int, int]:
+        exact = sum(s == g for s, g in zip(secret, guess))
+        secret_counts = Counter(secret)
+        guess_counts = Counter(guess)
+        color_matches = sum(min(secret_counts[color], guess_counts[color]) for color in secret_counts)
+        misplaced = color_matches - exact
+        return exact, misplaced
+
+    def is_cancel_message(self, content: str) -> bool:
+        return content.lower() in self._cancel_words
+
+
+MASTERMIND_COLORS: tuple[MastermindColor, ...] = (
+    MastermindColor("rouge", "🔴", ("r", "red")),
+    MastermindColor("bleu", "🔵", ("b", "blue")),
+    MastermindColor("vert", "🟢", ("v", "green", "g")),
+    MastermindColor("jaune", "🟡", ("j", "yellow", "y")),
+    MastermindColor("violet", "🟣", ("violet", "violette", "pourpre", "purple", "p")),
+    MastermindColor("orange", "🟠", ("o",)),
+)
+MASTERMIND_CONFIG = MastermindConfig(colors=MASTERMIND_COLORS)
+MASTERMIND_HELPER = MastermindHelper(MASTERMIND_CONFIG)
+
+
+class MastermindSession:
+    """Gestion d'une partie de Mastermind."""
+
+    def __init__(
+        self,
+        ctx: commands.Context,
+        helper: MastermindHelper,
+        database: Database,
+    ) -> None:
+        self.ctx = ctx
+        self.bot: commands.Bot = ctx.bot
+        self.helper = helper
+        self.database = database
+        self.secret = helper.generate_code()
+        self.attempts = 0
+        self._logger = logger.getChild("MastermindSession")
+
+    async def play(self) -> None:
+        await self.database.ensure_user(self.ctx.author.id)
+        await self.ctx.send(
+            embed=embeds.mastermind_start_embed(
+                member=self.ctx.author,
+                palette=self.helper.palette,
+                code_length=self.helper.config.code_length,
+                max_attempts=self.helper.config.max_attempts,
+                timeout=self.helper.config.response_timeout,
+            )
+        )
+
+        while self.attempts < self.helper.config.max_attempts:
+            try:
+                guess_message = await self.bot.wait_for(
+                    "message",
+                    timeout=self.helper.config.response_timeout,
+                    check=lambda message: message.author == self.ctx.author
+                    and message.channel == self.ctx.channel,
+                )
+            except asyncio.TimeoutError:
+                await self._handle_timeout()
+                return
+
+            content = guess_message.content.strip()
+            if not content:
+                continue
+
+            if content.startswith(PREFIX):
+                continue
+
+            if self.helper.is_cancel_message(content):
+                await self._handle_cancel()
+                return
+
+            guess, error = self.helper.parse_guess(content)
+            if error:
+                await self.ctx.send(embed=embeds.warning_embed(error))
+                continue
+
+            self.attempts += 1
+            exact, misplaced = self.helper.evaluate_guess(self.secret, guess)
+            attempts_left = self.helper.config.max_attempts - self.attempts
+
+            await self.ctx.send(
+                embed=embeds.mastermind_feedback_embed(
+                    member=self.ctx.author,
+                    attempt=self.attempts,
+                    max_attempts=self.helper.config.max_attempts,
+                    guess_display=self.helper.format_code(guess),
+                    well_placed=exact,
+                    misplaced=misplaced,
+                    attempts_left=attempts_left,
+                )
+            )
+
+            if exact == self.helper.config.code_length:
+                await self._handle_victory(attempts_left)
+                return
+
+        await self._handle_failure()
+
+    async def _handle_victory(self, attempts_left: int) -> None:
+        base_reward = random.randint(*self.helper.config.base_reward)
+        reward = base_reward + attempts_left * self.helper.config.attempt_bonus
+        _, balance_after = await self.database.increment_balance(
+            self.ctx.author.id,
+            reward,
+            transaction_type="mastermind_win",
+            description=f"Mastermind gagné en {self.attempts} tentatives",
+        )
+
+        await self.ctx.send(
+            embed=embeds.mastermind_victory_embed(
+                member=self.ctx.author,
+                attempts_used=self.attempts,
+                attempts_left=attempts_left,
+                secret_display=self._secret_display(),
+                reward=reward,
+                balance_after=balance_after,
+            )
+        )
+        self._logger.debug(
+            "Mastermind win",
+            extra={
+                "user_id": self.ctx.author.id,
+                "secret": "-".join(self.secret),
+                "attempts": self.attempts,
+                "reward": reward,
+                "base_reward": base_reward,
+                "attempts_left": attempts_left,
+            },
+        )
+
+    async def _handle_timeout(self) -> None:
+        await self.ctx.send(
+            embed=embeds.mastermind_failure_embed(
+                member=self.ctx.author,
+                reason="Temps écoulé !",
+                secret_display=self._secret_display(),
+            )
+        )
+        self._logger.debug(
+            "Mastermind timeout",
+            extra={
+                "user_id": self.ctx.author.id,
+                "secret": "-".join(self.secret),
+                "attempts": self.attempts,
+            },
+        )
+
+    async def _handle_failure(self) -> None:
+        await self.ctx.send(
+            embed=embeds.mastermind_failure_embed(
+                member=self.ctx.author,
+                reason="Toutes les tentatives ont été utilisées.",
+                secret_display=self._secret_display(),
+            )
+        )
+        self._logger.debug(
+            "Mastermind loss",
+            extra={
+                "user_id": self.ctx.author.id,
+                "secret": "-".join(self.secret),
+                "attempts": self.attempts,
+            },
+        )
+
+    async def _handle_cancel(self) -> None:
+        await self.ctx.send(embed=embeds.mastermind_cancelled_embed(member=self.ctx.author))
+        self._logger.debug(
+            "Mastermind cancelled",
+            extra={
+                "user_id": self.ctx.author.id,
+                "secret": "-".join(self.secret),
+                "attempts": self.attempts,
+            },
+        )
+
+    def _secret_display(self) -> str:
+        return self.helper.format_code(self.secret, include_names=True)
+
 
 
 class CooldownManager:
@@ -105,6 +327,7 @@ class Economy(commands.Cog):
         self.database = bot.database
         self.message_cooldown = CooldownManager(MESSAGE_COOLDOWN)
         self._cleanup_task: asyncio.Task[None] | None = None
+        self.mastermind_helper = MASTERMIND_HELPER
 
     async def cog_load(self) -> None:
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
@@ -142,37 +365,6 @@ class Economy(commands.Cog):
             return multiplier, message or default_message
 
         return 0, default_message
-
-    def _generate_mastermind_code(self) -> list[str]:
-        return [random.choice(MASTERMIND_COLOR_NAMES) for _ in range(MASTERMIND_CODE_LENGTH)]
-
-    def _format_mastermind_code(self, code: Sequence[str], *, include_names: bool = False) -> str:
-        if include_names:
-            return " ".join(f"{MASTERMIND_EMOJIS[color]} {color.capitalize()}" for color in code)
-        return " ".join(MASTERMIND_EMOJIS[color] for color in code)
-
-    def _parse_mastermind_guess(self, raw: str) -> tuple[list[str], str | None]:
-        tokens = [token for token in raw.replace(",", " ").replace(";", " ").split() if token]
-        if len(tokens) != MASTERMIND_CODE_LENGTH:
-            return [], f"Ta combinaison doit contenir exactement {MASTERMIND_CODE_LENGTH} couleurs."
-
-        guess: list[str] = []
-        for token in tokens:
-            canonical = MASTERMIND_ALIASES.get(token.lower())
-            if canonical is None:
-                return [], f"Couleur inconnue `{token}`. Choisis parmi : {MASTERMIND_AVAILABLE_NAMES}."
-            guess.append(canonical)
-
-        return guess, None
-
-    @staticmethod
-    def _evaluate_mastermind_guess(secret: Sequence[str], guess: Sequence[str]) -> tuple[int, int]:
-        exact = sum(s == g for s, g in zip(secret, guess))
-        secret_counts = Counter(secret)
-        guess_counts = Counter(guess)
-        color_matches = sum(min(secret_counts[color], guess_counts[color]) for color in secret_counts)
-        misplaced = color_matches - exact
-        return exact, misplaced
 
     # ------------------------------------------------------------------
     # Récompenses de messages
@@ -233,16 +425,21 @@ class Economy(commands.Cog):
         embed = embeds.daily_embed(ctx.author, amount=reward)
         await ctx.send(embed=embed)
 
+    @staticmethod
+    def _validate_give_request(author: discord.Member, target: discord.Member, amount: int) -> str | None:
+        if target.bot:
+            return "Tu ne peux pas donner de PB à un bot."
+        if target == author:
+            return "Impossible de te donner des PB."
+        if amount <= 0:
+            return "Le montant doit être supérieur à 0."
+        return None
+
     @commands.command(name="give")
     async def give(self, ctx: commands.Context, member: discord.Member, amount: int) -> None:
-        if member.bot:
-            await ctx.send(embed=embeds.error_embed("Tu ne peux pas donner de PB à un bot."))
-            return
-        if member == ctx.author:
-            await ctx.send(embed=embeds.error_embed("Impossible de te donner des PB."))
-            return
-        if amount <= 0:
-            await ctx.send(embed=embeds.error_embed("Le montant doit être supérieur à 0."))
+        error = self._validate_give_request(ctx.author, member, amount)
+        if error:
+            await ctx.send(embed=embeds.error_embed(error))
             return
 
         await self.database.ensure_user(ctx.author.id)
@@ -265,6 +462,9 @@ class Economy(commands.Cog):
                 send_description=f"Transfert vers {member.id}",
                 receive_description=f"Transfert reçu de {ctx.author.id}",
             )
+        except InsufficientBalanceError:
+            await ctx.send(embed=embeds.error_embed("Tu n'as pas assez de PB pour ce transfert."))
+            return
         except DatabaseError:
             await ctx.send(
                 embed=embeds.error_embed("Transfert impossible pour le moment. Réessaie plus tard."),
@@ -349,143 +549,18 @@ class Economy(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    @commands.cooldown(1, MASTERMIND_COOLDOWN, commands.BucketType.user)
+    @commands.cooldown(1, MASTERMIND_CONFIG.cooldown, commands.BucketType.user)
     @commands.command(name="mastermind", aliases=("mm", "code"))
     async def mastermind(self, ctx: commands.Context) -> None:
         """Mini-jeu de Mastermind pour gagner quelques PB."""
+        session = MastermindSession(ctx, self.mastermind_helper, self.database)
         try:
-            await self.database.ensure_user(ctx.author.id)
-            secret = self._generate_mastermind_code()
-            
-            # Envoyer le message de départ
+            await session.play()
+        except Exception as exc:  # pragma: no cover - log unexpected runtime errors
+            logger.exception("Erreur dans Mastermind", exc_info=exc)
             await ctx.send(
-                embed=embeds.mastermind_start_embed(
-                    member=ctx.author,
-                    palette=MASTERMIND_COLORS,
-                    code_length=MASTERMIND_CODE_LENGTH,
-                    max_attempts=MASTERMIND_MAX_ATTEMPTS,
-                    timeout=MASTERMIND_RESPONSE_TIMEOUT,
-                )
+                embed=embeds.error_embed("Une erreur est survenue. Réessaie dans quelques instants.")
             )
-
-            attempts = 0
-            while attempts < MASTERMIND_MAX_ATTEMPTS:
-                try:
-                    guess_message = await self.bot.wait_for(
-                        "message",
-                        timeout=MASTERMIND_RESPONSE_TIMEOUT,
-                        check=lambda message: message.author == ctx.author and message.channel == ctx.channel,
-                    )
-                except asyncio.TimeoutError:
-                    secret_display = self._format_mastermind_code(secret, include_names=True)
-                    await ctx.send(
-                        embed=embeds.mastermind_failure_embed(
-                            member=ctx.author,
-                            reason="Temps écoulé !",
-                            secret_display=secret_display,
-                        )
-                    )
-                    logger.debug(
-                        "Mastermind timeout",
-                        extra={
-                            "user_id": ctx.author.id,
-                            "secret": "-".join(secret),
-                            "attempts": attempts,
-                        },
-                    )
-                    return
-
-                content = guess_message.content.strip()
-                if not content:
-                    continue
-
-                lowered = content.lower()
-                if lowered in MASTERMIND_CANCEL_WORDS:
-                    await ctx.send(embed=embeds.mastermind_cancelled_embed(member=ctx.author))
-                    logger.debug(
-                        "Mastermind cancelled",
-                        extra={
-                            "user_id": ctx.author.id,
-                            "secret": "-".join(secret),
-                            "attempts": attempts,
-                        },
-                    )
-                    return
-
-                guess, error = self._parse_mastermind_guess(content)
-                if error:
-                    await ctx.send(embed=embeds.warning_embed(error))
-                    continue
-
-                attempts += 1
-                exact, misplaced = self._evaluate_mastermind_guess(secret, guess)
-                attempts_left = MASTERMIND_MAX_ATTEMPTS - attempts
-
-                guess_display = self._format_mastermind_code(guess)
-                await ctx.send(
-                    embed=embeds.mastermind_feedback_embed(
-                        member=ctx.author,
-                        attempt=attempts,
-                        max_attempts=MASTERMIND_MAX_ATTEMPTS,
-                        guess_display=guess_display,
-                        well_placed=exact,
-                        misplaced=misplaced,
-                        attempts_left=attempts_left,
-                    )
-                )
-
-                if exact == MASTERMIND_CODE_LENGTH:
-                    base_reward = random.randint(*MASTERMIND_BASE_REWARD)
-                    reward = base_reward + attempts_left * MASTERMIND_ATTEMPT_BONUS
-                    _, balance_after = await self.database.increment_balance(
-                        ctx.author.id,
-                        reward,
-                        transaction_type="mastermind_win",
-                        description=f"Mastermind gagné en {attempts} tentatives",
-                    )
-                    secret_display = self._format_mastermind_code(secret, include_names=True)
-                    await ctx.send(
-                        embed=embeds.mastermind_victory_embed(
-                            member=ctx.author,
-                            attempts_used=attempts,
-                            attempts_left=attempts_left,
-                            secret_display=secret_display,
-                            reward=reward,
-                            balance_after=balance_after,
-                        )
-                    )
-                    logger.debug(
-                        "Mastermind win",
-                        extra={
-                            "user_id": ctx.author.id,
-                            "secret": "-".join(secret),
-                            "attempts": attempts,
-                            "reward": reward,
-                            "base_reward": base_reward,
-                            "attempts_left": attempts_left,
-                        },
-                    )
-                    return
-
-            secret_display = self._format_mastermind_code(secret, include_names=True)
-            await ctx.send(
-                embed=embeds.mastermind_failure_embed(
-                    member=ctx.author,
-                    reason="Toutes les tentatives ont été utilisées.",
-                    secret_display=secret_display,
-                )
-            )
-            logger.debug(
-                "Mastermind loss",
-                extra={
-                    "user_id": ctx.author.id,
-                    "secret": "-".join(secret),
-                    "attempts": attempts,
-                },
-            )
-        except Exception as e:
-            logger.exception("Erreur dans Mastermind", exc_info=e)
-            await ctx.send(embed=embeds.error_embed("Une erreur est survenue. Réessaie dans quelques instants."))
 
 
 async def setup(bot: commands.Bot) -> None:
