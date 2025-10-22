@@ -19,6 +19,11 @@ __all__ = [
     "balance_embed",
     "daily_embed",
     "slot_machine_embed",
+    "mastermind_start_embed",
+    "mastermind_feedback_embed",
+    "mastermind_victory_embed",
+    "mastermind_failure_embed",
+    "mastermind_cancelled_embed",
     "leaderboard_embed",
     "xp_profile_embed",
     "pet_animation_embed",
@@ -130,6 +135,97 @@ def slot_machine_embed(
         color = Colors.ERROR
 
     embed = _base_embed("🎰 Machine à sous", "\n".join(lines), color=color)
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    return embed
+
+
+def mastermind_start_embed(
+    *,
+    member: discord.Member,
+    palette: Sequence[tuple[str, str]],
+    code_length: int,
+    max_attempts: int,
+    timeout: int,
+) -> discord.Embed:
+    palette_line = ", ".join(f"{emoji} {name.capitalize()}" for name, emoji in palette)
+    description = (
+        f"Devine la combinaison de **{code_length}** couleurs pour décrocher des PB.\n"
+        f"Palette : {palette_line}\n"
+        "Les couleurs peuvent se répéter.\n"
+        f"Tu disposes de **{max_attempts}** tentatives et de {timeout}s entre chaque réponse.\n"
+        "Réponds avec les couleurs séparées par des espaces (ex : `rouge bleu vert jaune`).\n"
+        "Tape `stop` pour abandonner la partie."
+    )
+    embed = _base_embed("🧠 Mastermind", description, color=Colors.INFO)
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    return embed
+
+
+def mastermind_feedback_embed(
+    *,
+    member: discord.Member,
+    attempt: int,
+    max_attempts: int,
+    guess_display: str,
+    well_placed: int,
+    misplaced: int,
+    attempts_left: int,
+) -> discord.Embed:
+    lines = [
+        f"Tentative {attempt}/{max_attempts}",
+        f"Proposition : {guess_display}",
+        f"Bien placés : **{well_placed}**",
+        f"Présents mais mal placés : **{misplaced}**",
+        f"Tentatives restantes : **{attempts_left}**",
+    ]
+    embed = _base_embed("🧠 Mastermind", "\n".join(lines), color=Colors.INFO)
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    return embed
+
+
+def mastermind_victory_embed(
+    *,
+    member: discord.Member,
+    attempts_used: int,
+    attempts_left: int,
+    secret_display: str,
+    reward: int,
+    balance_after: int,
+) -> discord.Embed:
+    lines = [
+        f"Code craqué en **{attempts_used}** tentative(s) !",
+        f"Tentatives restantes : **{attempts_left}**",
+        f"Combinaison : {secret_display}",
+        f"Récompense : **{format_currency(reward)}**",
+        f"Solde actuel : {format_currency(balance_after)}",
+    ]
+    embed = _base_embed("🏆 Mastermind — Victoire !", "\n".join(lines), color=Colors.SUCCESS)
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    return embed
+
+
+def mastermind_failure_embed(
+    *,
+    member: discord.Member,
+    reason: str,
+    secret_display: str,
+) -> discord.Embed:
+    lines = [
+        reason,
+        f"Code secret : {secret_display}",
+        "Reviens tenter ta chance pour gagner des PB !",
+    ]
+    embed = _base_embed("🧠 Mastermind — Échec", "\n".join(lines), color=Colors.ERROR)
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    return embed
+
+
+def mastermind_cancelled_embed(*, member: discord.Member) -> discord.Embed:
+    embed = _base_embed(
+        "🧠 Mastermind — Annulé",
+        "Partie annulée. Relance `e!mastermind` quand tu veux retenter ta chance !",
+        color=Colors.WARNING,
+    )
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
     return embed
 
