@@ -18,6 +18,7 @@ __all__ = [
     "info_embed",
     "balance_embed",
     "daily_embed",
+    "slot_machine_embed",
     "leaderboard_embed",
     "xp_profile_embed",
     "pet_animation_embed",
@@ -91,6 +92,45 @@ def daily_embed(member: discord.Member, *, amount: int) -> discord.Embed:
     embed = _base_embed(f"{Emojis.DAILY} Récompense quotidienne", description, color=Colors.SUCCESS)
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.set_footer(text="Reviens demain pour récupérer ta prochaine récompense !")
+    return embed
+
+
+def slot_machine_embed(
+    *,
+    member: discord.Member,
+    bet: int,
+    reels: Sequence[str],
+    payout: int,
+    multiplier: int,
+    balance_after: int,
+    result_text: str,
+) -> discord.Embed:
+    net = payout - bet
+    gain_line = format_currency(payout) if payout else "0 PB"
+    multiplier_text = f" (x{multiplier})" if multiplier else ""
+
+    lines = [
+        f"**Rouleaux :** {' | '.join(reels)}",
+        f"**Mise :** {format_currency(bet)}",
+        f"**Gain :** {gain_line}{multiplier_text}",
+        f"**Solde actuel :** {format_currency(balance_after)}",
+        "",
+    ]
+    if result_text:
+        lines.append(result_text)
+
+    if net > 0:
+        lines.append(f"Profit net : **+{format_currency(net)}**")
+        color = Colors.GOLD
+    elif net == 0:
+        lines.append("Équilibre parfait : mise récupérée.")
+        color = Colors.INFO
+    else:
+        lines.append(f"Perte : **-{format_currency(-net)}**")
+        color = Colors.ERROR
+
+    embed = _base_embed("🎰 Machine à sous", "\n".join(lines), color=color)
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
     return embed
 
 

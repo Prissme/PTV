@@ -6,7 +6,9 @@ import contextlib
 import logging
 import random
 import time
+from collections import Counter
 from datetime import datetime, timezone
+from typing import Sequence
 
 import discord
 from discord.ext import commands
@@ -15,6 +17,33 @@ from config import DAILY_COOLDOWN, DAILY_REWARD, MESSAGE_COOLDOWN, MESSAGE_REWAR
 from utils import embeds
 
 logger = logging.getLogger(__name__)
+
+
+SLOT_REELS: tuple[str, ...] = ("🍒", "🍋", "🍇", "🔔", "⭐", "💎", "7️⃣")
+SLOT_WEIGHTS: tuple[int, ...] = (24, 22, 18, 12, 10, 8, 6)
+SLOT_TRIPLE_REWARDS: dict[str, tuple[int, str]] = {
+    "🍒": (4, "Triplé de 🍒 ! C'est juteux."),
+    "🍋": (5, "Un trio acidulé de 🍋 !"),
+    "🍇": (6, "Raisin royal 🍇🍇🍇 !"),
+    "🔔": (8, "Les cloches 🔔🔔🔔 sonnent la victoire !"),
+    "⭐": (12, "Étoiles alignées ⭐⭐⭐ !"),
+    "💎": (18, "Pluie de diamants 💎💎💎 !"),
+    "7️⃣": (25, "Jackpot 7️⃣7️⃣7️⃣ !"),
+}
+SLOT_PAIR_REWARDS: dict[str, tuple[int, str]] = {
+    "🍒": (1, "Paire de 🍒 — mise sauvée !"),
+    "🍋": (1, "Une paire de 🍋, ça passe tout juste."),
+    "🍇": (1, "Deux 🍇 pour rester à flot."),
+    "🔔": (2, "Deux cloches 🔔, ça rapporte."),
+    "⭐": (2, "Deux ⭐ scintillent pour toi."),
+    "💎": (3, "Deux 💎, joli butin !"),
+    "7️⃣": (4, "Deux 7️⃣, presque le jackpot !"),
+}
+SLOT_SPECIAL_COMBOS: dict[tuple[str, ...], tuple[int, str]] = {
+    tuple(sorted(("⭐", "💎", "7️⃣"))): (10, "Combo premium ⭐ 💎 7️⃣ !"),
+}
+SLOT_MIN_BET = 50
+SLOT_MAX_BET = 5000
 
 
 class CooldownManager:
@@ -62,6 +91,29 @@ class Economy(commands.Cog):
         while True:
             await asyncio.sleep(300)
             self.message_cooldown.cleanup()
+
+    def _evaluate_slots(self, reels: Sequence[str]) -> tuple[int, str]:
+        """Calcule le multiplicateur et le texte de résultat pour une combinaison."""
+
+        default_message = "Pas de combinaison gagnante cette fois-ci."
+        sorted_combo = tuple(sorted(reels))
+        special = SLOT_SPECIAL_COMBOS.get(sorted_combo)
+        if special:
+            multiplier, message = special
+            return multiplier, message or default_message
+
+        if len(set(reels)) == 1:
+            symbol = reels[0]
+            multiplier, message = SLOT_TRIPLE_REWARDS.get(symbol, (0, ""))
+            return multiplier, message or default_message
+
+        counts = Counter(reels)
+        most_common_symbol, count = counts.most_common(1)[0]
+        if count == 2:
+            multiplier, message = SLOT_PAIR_REWARDS.get(most_common_symbol, (0, ""))
+            return multiplier, message or default_message
+
+        return 0, default_message
 
     # ------------------------------------------------------------------
     # Récompenses de messages
@@ -120,6 +172,77 @@ class Economy(commands.Cog):
             "Daily claim", extra={"user_id": ctx.author.id, "reward": reward, "before": before, "after": after}
         )
         embed = embeds.daily_embed(ctx.author, amount=reward)
+        await ctx.send(embed=embed)
+
+    @commands.cooldown(1, 6, commands.BucketType.user)
+    @commands.command(name="slots", aliases=("slot", "machine"))
+    async def slots(self, ctx: commands.Context, bet: int = 100) -> None:
+        """Jeu de machine à sous simple pour miser ses PB."""
+
+        if bet <= 0:
+            await ctx.send(embed=embeds.error_embed("La mise doit être un nombre positif."))
+            return
+        if bet < SLOT_MIN_BET or bet > SLOT_MAX_BET:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    (
+                        "La mise doit être comprise entre "
+                        f"{embeds.format_currency(SLOT_MIN_BET)} et {embeds.format_currency(SLOT_MAX_BET)}."
+                    )
+                )
+            )
+            return
+
+        await self.database.ensure_user(ctx.author.id)
+        balance = await self.database.fetch_balance(ctx.author.id)
+        if balance < bet:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Tu n'as pas assez de PB pour cette mise. Tente un montant plus faible ou récupère ton daily !"
+                )
+            )
+            return
+
+        _, balance_after_bet = await self.database.increment_balance(
+            ctx.author.id,
+            -bet,
+            transaction_type="slots_bet",
+            description=f"Mise machine à sous ({embeds.format_currency(bet)})",
+        )
+
+        reels = random.choices(SLOT_REELS, weights=SLOT_WEIGHTS, k=3)
+        multiplier, message = self._evaluate_slots(reels)
+        payout = bet * multiplier
+        final_balance = balance_after_bet
+        if payout:
+            _, final_balance = await self.database.increment_balance(
+                ctx.author.id,
+                payout,
+                transaction_type="slots_win",
+                description=f"Gain machine à sous (x{multiplier})",
+            )
+
+        logger.debug(
+            "Slot machine spin",
+            extra={
+                "user_id": ctx.author.id,
+                "bet": bet,
+                "reels": " ".join(reels),
+                "multiplier": multiplier,
+                "payout": payout,
+                "balance_after": final_balance,
+            },
+        )
+
+        embed = embeds.slot_machine_embed(
+            member=ctx.author,
+            bet=bet,
+            reels=reels,
+            payout=payout,
+            multiplier=multiplier,
+            balance_after=final_balance,
+            result_text=message,
+        )
         await ctx.send(embed=embed)
 
 
