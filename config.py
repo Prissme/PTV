@@ -129,6 +129,16 @@ PET_DEFINITIONS: Tuple[PetDefinition, ...] = (
     ),
 )
 
+PET_EMOJIS: Final[dict[str, str]] = {
+    "Shelly": os.getenv("PET_EMOJI_SHELLY", "🟣"),
+    "Colt": os.getenv("PET_EMOJI_COLT", "🔫"),
+    "Barley": os.getenv("PET_EMOJI_BARLEY", "🍸"),
+    "Poco": os.getenv("PET_EMOJI_POCO", "🎵"),
+    "Rosa": os.getenv("PET_EMOJI_ROSA", "🌿"),
+    HUGE_PET_NAME: os.getenv("PET_EMOJI_HUGE_SHELLY", "🌟"),
+    "default": os.getenv("PET_EMOJI_DEFAULT", "🐾"),
+}
+
 PET_RARITY_COLORS: Final[dict[str, int]] = {
     "Common": 0x95A5A6,
     "Rare": 0x3498DB,

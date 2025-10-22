@@ -7,7 +7,7 @@ from typing import Iterable, Mapping, Optional, Sequence
 import discord
 from discord.ext import commands
 
-from config import Colors, Emojis, PREFIX, HUGE_PET_NAME, PET_RARITY_COLORS
+from config import Colors, Emojis, PREFIX, HUGE_PET_NAME, PET_EMOJIS, PET_RARITY_COLORS
 
 __all__ = [
     "format_currency",
@@ -130,10 +130,16 @@ def pet_animation_embed(*, title: str, description: str) -> discord.Embed:
     return _base_embed(title, description, color=Colors.INFO)
 
 
+def _pet_emoji(name: str) -> str:
+    return PET_EMOJIS.get(name, PET_EMOJIS.get("default", "🐾"))
+
+
 def _pet_title(name: str, rarity: str, is_huge: bool) -> str:
-    prefix = "✨ " if is_huge else ""
-    suffix = " ✨" if is_huge else ""
-    return f"{prefix}{name} ({rarity}){suffix}"
+    display_name = f"{_pet_emoji(name)} {name}".strip()
+    title = f"{display_name} ({rarity})"
+    if is_huge:
+        return f"✨ {title} ✨"
+    return title
 
 
 def pet_reveal_embed(
@@ -143,11 +149,14 @@ def pet_reveal_embed(
     image_url: str,
     income_per_hour: int,
     is_huge: bool,
+    market_value: int = 0,
 ) -> discord.Embed:
     color = PET_RARITY_COLORS.get(rarity, Colors.INFO)
     description = f"Revenus passifs : **{income_per_hour:,} PB/h**".replace(",", " ")
     if is_huge and name == HUGE_PET_NAME:
         description += "\n🎉 ÉNORME ! Tu as obtenu une ÉNORME SHELLY ! 🎉"
+    if market_value > 0:
+        description += f"\nValeur marché : **{format_currency(market_value)}**"
     embed = _base_embed(_pet_title(name, rarity, is_huge), description, color=color)
     embed.set_image(url=image_url)
     return embed
@@ -174,16 +183,19 @@ def pet_collection_embed(
             is_huge = bool(pet["is_huge"])
             income = int(pet["income"])
             user_pet_id = int(pet["id"])
+            market_value = int(pet.get("market_value", 0))
             acquired_at = pet.get("acquired_at")
             acquired_text = ""
             if isinstance(acquired_at, datetime):
                 acquired_text = acquired_at.strftime("%d/%m/%Y")
-            star = "⭐ " if is_active else ""
+            star = "⭐" if is_active else ""
             huge = " ✨" if is_huge else ""
-            line = (
-                f"{star}**#{user_pet_id} {name}**{huge}\n"
-                f"Rareté : {rarity} — {income:,} PB/h".replace(",", " ")
-            )
+            header_parts = [part for part in (star, _pet_emoji(name), f"**#{user_pet_id} {name}**{huge}") if part]
+            header = " ".join(header_parts)
+            stats_line = f"Rareté : {rarity} — {income:,} PB/h".replace(",", " ")
+            if market_value > 0:
+                stats_line += f" — Valeur : {format_currency(market_value)}"
+            line = f"{header}\n{stats_line}"
             if acquired_text:
                 line += f"\nObtenu le {acquired_text}"
             lines.append(line)
@@ -192,25 +204,40 @@ def pet_collection_embed(
     footer = (
         f"Total de pets : {total_count} • Revenus par heure (actif) : {total_income_per_hour:,} PB/h"
     ).replace(",", " ")
-    footer += " • Utilise e!equip [id] pour équiper un pet"
+    footer += " • Utilise e!equip [id] pour gérer tes pets (max 4 actifs)"
     embed.set_footer(text=footer)
     return embed
 
 
-def pet_equip_embed(*, member: discord.Member, pet: Mapping[str, object]) -> discord.Embed:
+def pet_equip_embed(
+    *,
+    member: discord.Member,
+    pet: Mapping[str, object],
+    activated: bool,
+    active_count: int,
+) -> discord.Embed:
     name = str(pet["name"])
     rarity = str(pet["rarity"])
     image_url = str(pet["image_url"])
     income = int(pet["base_income_per_hour"])
     is_huge = bool(pet.get("is_huge", False))
-    embed = pet_reveal_embed(
-        name=name,
-        rarity=rarity,
-        image_url=image_url,
-        income_per_hour=income,
-        is_huge=is_huge,
-    )
-    embed.title = f"Tu as équipé {name} !"
+    market_value = int(pet.get("market_value", 0))
+
+    status_symbol = "✅" if activated else "🛌"
+    title = f"{status_symbol} {_pet_title(name, rarity, is_huge)}"
+    color = Colors.SUCCESS if activated else Colors.INFO
+    lines = [
+        "Ce pet génère désormais des revenus passifs !" if activated else "Ce pet se repose pour le moment.",
+        f"Rareté : {rarity}",
+        f"Revenus : {income:,} PB/h".replace(",", " "),
+    ]
+    if market_value > 0:
+        lines.append(f"Valeur marché : {format_currency(market_value)}")
+    lines.append(f"Pets actifs : **{active_count}/4**")
+
+    embed = _base_embed(title, "\n".join(lines), color=color)
+    if image_url:
+        embed.set_thumbnail(url=image_url)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
     return embed
 
@@ -232,25 +259,67 @@ def _format_duration(seconds: float) -> str:
 def pet_claim_embed(
     *,
     member: discord.Member,
-    pet: Mapping[str, object],
+    pets: Sequence[Mapping[str, object]],
     amount: int,
     elapsed_seconds: float,
 ) -> discord.Embed:
-    name = str(pet["name"])
-    rarity = str(pet["rarity"])
-    image_url = str(pet["image_url"])
-    income = int(pet["base_income_per_hour"])
-    is_huge = bool(pet.get("is_huge", False))
-    color = PET_RARITY_COLORS.get(rarity, Colors.INFO)
-    description = (
-        f"{name} a généré **{amount:,} PB** en {_format_duration(elapsed_seconds)}."
-        if amount
-        else f"{name} vient juste de se mettre au travail. Reviens plus tard !"
-    ).replace(",", " ")
-    description += f"\nRevenus par heure : **{income:,} PB/h**".replace(",", " ")
-    embed = _base_embed(_pet_title(name, rarity, is_huge), description, color=color)
-    embed.set_thumbnail(url=image_url)
+    total_income = sum(int(pet.get("base_income_per_hour", 0)) for pet in pets)
+    duration = _format_duration(elapsed_seconds)
+    if amount > 0:
+        description = f"Tes pets ont généré **{amount:,} PB** en {duration}."
+    else:
+        description = "Tes pets viennent juste de se mettre au travail. Reviens plus tard !"
+    description = description.replace(",", " ")
+
+    color = Colors.SUCCESS if amount else Colors.INFO
+    embed = _base_embed("Récolte des pets", description, color=color)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+
+    shares: list[int] = []
+    remaining = amount
+    for index, pet in enumerate(pets):
+        income = int(pet.get("base_income_per_hour", 0))
+        if amount > 0 and total_income > 0:
+            if index == len(pets) - 1:
+                share = remaining
+            else:
+                share = int(round(amount * (income / total_income)))
+                share = max(0, min(remaining, share))
+                remaining -= share
+        else:
+            share = 0
+        shares.append(max(0, share))
+
+    if amount > 0 and shares:
+        diff = amount - sum(shares)
+        if diff > 0:
+            shares[-1] += diff
+
+    lines: list[str] = []
+    for pet, share in zip(pets, shares):
+        name = str(pet.get("name", "Pet"))
+        rarity = str(pet.get("rarity", "?"))
+        income = int(pet.get("base_income_per_hour", 0))
+        is_huge = bool(pet.get("is_huge", False))
+        market_value = int(pet.get("market_value", 0))
+        line_parts = [
+            f"{_pet_emoji(name)} **{name}** ({rarity}{' ✨' if is_huge else ''})",
+            f"{income:,} PB/h".replace(",", " "),
+        ]
+        if share > 0:
+            line_parts.append(f"+{format_currency(share)}")
+        if market_value > 0:
+            line_parts.append(f"Valeur : {format_currency(market_value)}")
+        lines.append(" • ".join(part for part in line_parts if part))
+
+    if lines:
+        embed.add_field(name="Détails", value="\n".join(lines), inline=False)
+
+    if pets:
+        first_image = str(pets[0].get("image_url", ""))
+        if first_image:
+            embed.set_thumbnail(url=first_image)
+
     return embed
 
 
@@ -284,7 +353,9 @@ def _trade_offer_lines(offer: Mapping[str, object]) -> str:
         rarity = str(pet.get("rarity", "?"))
         is_huge = bool(pet.get("is_huge", False))
         huge = " ✨" if is_huge else ""
-        lines.append(f"• #{user_pet_id} {name}{huge} ({rarity})")
+        emoji = _pet_emoji(name)
+        emoji_prefix = f"{emoji} " if emoji else ""
+        lines.append(f"• {emoji_prefix}#{user_pet_id} {name}{huge} ({rarity})")
 
     if not lines:
         lines.append("• Rien pour le moment")
