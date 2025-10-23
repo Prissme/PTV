@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Iterable, Mapping, Optional, Sequence
+from typing import Collection, Iterable, Mapping, Optional, Sequence
 
 import discord
 from discord.ext import commands
@@ -15,6 +15,7 @@ from config import (
     PET_RARITY_COLORS,
     PREFIX,
     GradeDefinition,
+    PetDefinition,
 )
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "pet_animation_embed",
     "pet_reveal_embed",
     "pet_collection_embed",
+    "pet_index_embed",
     "pet_equip_embed",
     "pet_claim_embed",
     "pet_stats_embed",
@@ -333,7 +335,7 @@ def grade_profile_embed(
 
 def grade_completed_embed(
     *,
-    member: discord.Member,
+    member: discord.abc.User,
     grade_name: str,
     grade_level: int,
     total_grades: int,
@@ -395,13 +397,12 @@ def pet_reveal_embed(
 
 def pet_collection_embed(
     *,
-    member: discord.Member,
+    member: discord.abc.User,
     pets: Sequence[Mapping[str, object]],
     total_count: int,
     total_income_per_hour: int,
     page: int = 1,
     page_count: int = 1,
-    pet_index: Sequence[Mapping[str, object]] | None = None,
     huge_descriptions: Mapping[str, str] | None = None,
 ) -> discord.Embed:
     embed = _base_embed("Ta collection de pets", "", color=Colors.GOLD if pets else Colors.NEUTRAL)
@@ -453,26 +454,59 @@ def pet_collection_embed(
         f"Total de pets : {total_count} • Revenus par heure (actif) : {total_income_per_hour:,} PB/h"
     ).replace(",", " ")
     footer += " • Utilise e!equip [id] pour gérer tes pets (max 4 actifs)"
+    footer += " • Consulte ta progression avec e!index"
     footer += f" • Page {current_page}/{total_pages}"
     embed.set_footer(text=footer)
-    if pet_index:
-        index_lines: list[str] = []
-        for entry in pet_index:
-            name = str(entry.get("name", ""))
-            if not name:
-                continue
-            unlocked = bool(entry.get("unlocked"))
-            is_huge = bool(entry.get("is_huge"))
-            emoji = _pet_emoji(name)
-            status = "✅" if unlocked else "🔒"
-            line = f"{status} {emoji} {name}"
-            if is_huge:
-                description = huge_info.get(name)
-                if description:
-                    line += f" — {description}"
-            index_lines.append(line)
-        if index_lines:
-            embed.add_field(name="Index des pets", value="\n".join(index_lines), inline=False)
+    return embed
+
+
+def pet_index_embed(
+    *,
+    member: discord.abc.User,
+    pet_definitions: Sequence[PetDefinition],
+    owned_names: Collection[str],
+    huge_descriptions: Mapping[str, str] | None = None,
+) -> discord.Embed:
+    embed = _base_embed("Index des pets", "", color=Colors.INFO)
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+
+    huge_info = dict(huge_descriptions or {})
+    total_pets = len(pet_definitions)
+    unlocked_count = sum(1 for definition in pet_definitions if definition.name in owned_names)
+    if total_pets:
+        progress_ratio = unlocked_count / total_pets
+        embed.description = (
+            "Ta progression actuelle dans l'index : **"
+            f"{unlocked_count}/{total_pets}** pets découverts ("
+            f"{progress_ratio:.0%})."
+        )
+    else:
+        embed.description = "Aucun pet n'est encore enregistré dans l'index."
+
+    lines: list[str] = []
+    for definition in pet_definitions:
+        name = definition.name
+        if not name:
+            continue
+        rarity = definition.rarity
+        is_huge = definition.is_huge
+        emoji = _pet_emoji(name)
+        status = "✅" if name in owned_names else "🔒"
+        line = f"{status} {emoji} **{name}** — Rareté : {rarity}"
+        if is_huge:
+            description = huge_info.get(name)
+            if description:
+                line += f"\n✨ Comment l'obtenir : {description}"
+        lines.append(line)
+
+    if lines:
+        embed.add_field(name="Catalogue", value="\n".join(lines), inline=False)
+
+    embed.set_footer(
+        text=(
+            "Les pets dorés comptent également pour l'index. Ouvre un œuf avec e!openbox ou fusionne avec e!goldify !"
+        )
+    )
     return embed
 
 
