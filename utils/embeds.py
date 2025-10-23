@@ -387,7 +387,7 @@ def pet_reveal_embed(
         description += "\n🎉 Incroyable ! Tu as obtenu **Huge Shelly** ! 🎉"
     if is_gold:
         description += f"\n🥇 Variante or ! Puissance x{GOLD_PET_MULTIPLIER}."
-    if market_value > 0:
+    if market_value > 0 and not is_huge:
         description += f"\nValeur marché : **{format_currency(market_value)}**"
     embed = _base_embed(_pet_title(name, rarity, is_huge, is_gold), description, color=color)
     embed.set_image(url=image_url)
@@ -402,10 +402,13 @@ def pet_collection_embed(
     total_income_per_hour: int,
     page: int = 1,
     page_count: int = 1,
+    pet_index: Sequence[Mapping[str, object]] | None = None,
+    huge_descriptions: Mapping[str, str] | None = None,
 ) -> discord.Embed:
     embed = _base_embed("Ta collection de pets", "", color=Colors.GOLD if pets else Colors.NEUTRAL)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
 
+    huge_info = dict(huge_descriptions or {})
     if not pets:
         embed.description = "Tu n'as encore aucun pet. Ouvre un œuf avec `e!openbox` !"
     else:
@@ -433,11 +436,15 @@ def pet_collection_embed(
             stats_line = f"Rareté : {rarity} — {income:,} PB/h".replace(",", " ")
             if is_gold:
                 stats_line += f" — Variante or x{GOLD_PET_MULTIPLIER}"
-            if market_value > 0:
+            if market_value > 0 and not is_huge:
                 stats_line += f" — Valeur : {format_currency(market_value)}"
             line = f"{header}\n{stats_line}"
             if acquired_text:
                 line += f"\nObtenu le {acquired_text}"
+            if is_huge:
+                description = huge_info.get(name)
+                if description:
+                    line += f"\nComment l'obtenir : {description}"
             lines.append(line)
         embed.description = "\n\n".join(lines)
 
@@ -449,6 +456,24 @@ def pet_collection_embed(
     footer += " • Utilise e!equip [id] pour gérer tes pets (max 4 actifs)"
     footer += f" • Page {current_page}/{total_pages}"
     embed.set_footer(text=footer)
+    if pet_index:
+        index_lines: list[str] = []
+        for entry in pet_index:
+            name = str(entry.get("name", ""))
+            if not name:
+                continue
+            unlocked = bool(entry.get("unlocked"))
+            is_huge = bool(entry.get("is_huge"))
+            emoji = _pet_emoji(name)
+            status = "✅" if unlocked else "🔒"
+            line = f"{status} {emoji} {name}"
+            if is_huge:
+                description = huge_info.get(name)
+                if description:
+                    line += f" — {description}"
+            index_lines.append(line)
+        if index_lines:
+            embed.add_field(name="Index des pets", value="\n".join(index_lines), inline=False)
     return embed
 
 
@@ -477,7 +502,7 @@ def pet_equip_embed(
     ]
     if is_gold:
         lines.append(f"Variante or : puissance x{GOLD_PET_MULTIPLIER}")
-    if market_value > 0:
+    if market_value > 0 and not is_huge:
         lines.append(f"Valeur marché : {format_currency(market_value)}")
     lines.append(f"Pets actifs : **{active_count}/4**")
 
