@@ -32,8 +32,21 @@ class Help(commands.Cog):
 
     def _build_help_embed(self) -> discord.Embed:
         embed = embeds.info_embed(
-            "Voici un aperçu des commandes disponibles. Toutes utilisent le préfixe `e!`.",
+            "Bienvenue sur EcoBot ! Toutes les commandes utilisent le préfixe `e!`.",
             title="EcoBot — Aide",
+        )
+
+        embed.add_field(
+            name="🚀 Bien démarrer",
+            value="\n".join(
+                (
+                    "1️⃣ Commence par **e!daily** pour récupérer ta récompense et lancer ton épargne.",
+                    "2️⃣ Ouvre un premier œuf avec **e!openbox** pour obtenir un pet compagnon.",
+                    "3️⃣ Équipe ton meilleur pet via **e!equip [id]** puis collecte tes gains avec **e!claim**.",
+                    "4️⃣ Suis ta progression et les pets manquants avec **e!index**.",
+                )
+            ),
+            inline=False,
         )
 
         embed.add_field(
@@ -68,7 +81,8 @@ class Help(commands.Cog):
                 (
                     "**e!openbox** [œuf] — Ouvre un œuf pour obtenir un pet.",
                     "**e!eggs** (zones) — Consulte les zones et œufs disponibles.",
-                    "**e!pets** (inventory) — Visualise ta collection.",
+                    "**e!pets** (inventory) — Visualise ton inventaire actuel.",
+                    "**e!index** (petindex, dex) — Parcours l'index complet et les pets manquants.",
                     "**e!equip** [id] — Équipe un pet pour augmenter tes gains.",
                     "**e!goldify** (gold, fusion) — Fusionne tes pets en version or.",
                     "**e!claim** — Récupère les PB générés par tes pets.",
@@ -102,7 +116,11 @@ class Help(commands.Cog):
             inline=False,
         )
 
-        embed.set_footer(text="Besoin d'un rappel ? Utilise e!help à tout moment.")
+        embed.set_footer(
+            text=(
+                "Besoin d'un rappel ? Utilise e!help à tout moment. Astuce : démarre chaque journée avec e!daily !"
+            )
+        )
         return embed
 
 

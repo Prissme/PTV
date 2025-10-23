@@ -50,18 +50,43 @@ class GradeSystem(commands.Cog):
     @commands.Cog.listener()
     async def on_grade_quest_progress(
         self,
-        member: discord.Member,
+        member: discord.abc.User,
         quest_type: str,
         amount: int,
         channel: QuestChannel = None,
     ) -> None:
-        if not isinstance(member, discord.Member):
-            return
-        await self._apply_progress(member, quest_type, amount, channel)
+        resolved = await self._resolve_member(member, channel)
+        await self._apply_progress(resolved or member, quest_type, amount, channel)
+
+    async def _resolve_member(
+        self, user: discord.abc.User, channel: QuestChannel
+    ) -> Optional[discord.Member]:
+        if isinstance(user, discord.Member):
+            return user
+
+        guild: Optional[discord.Guild] = None
+        if isinstance(channel, discord.abc.GuildChannel):
+            guild = channel.guild
+
+        if guild is None:
+            for candidate in self.bot.guilds:
+                member = candidate.get_member(user.id)
+                if member is not None:
+                    return member
+        else:
+            member = guild.get_member(user.id)
+            if member is not None:
+                return member
+            with contextlib.suppress(discord.HTTPException):
+                fetched = await guild.fetch_member(user.id)
+                if isinstance(fetched, discord.Member):
+                    return fetched
+
+        return None
 
     async def _apply_progress(
         self,
-        member: discord.Member,
+        member: discord.abc.User,
         quest_type: str,
         amount: int,
         channel: QuestChannel,
@@ -140,7 +165,7 @@ class GradeSystem(commands.Cog):
 
     async def _handle_grade_completion(
         self,
-        member: discord.Member,
+        member: discord.abc.User,
         *,
         grade_definition: GradeDefinition,
         new_grade_level: int,
@@ -176,15 +201,16 @@ class GradeSystem(commands.Cog):
         if destination is None:
             with contextlib.suppress(discord.HTTPException):
                 destination = await member.create_dm()
-            if destination is None and member.guild and member.guild.system_channel:
-                destination = member.guild.system_channel
+            if destination is None and isinstance(member, discord.Member):
+                if member.guild and member.guild.system_channel:
+                    destination = member.guild.system_channel
 
         if destination is not None:
             with contextlib.suppress(discord.HTTPException):
                 await destination.send(embed=embed)
 
-    async def _assign_grade_role(self, member: discord.Member, grade_level: int) -> None:
-        if member.guild is None:
+    async def _assign_grade_role(self, member: discord.abc.User, grade_level: int) -> None:
+        if not isinstance(member, discord.Member) or member.guild is None:
             return
         roles_to_remove = []
         target_role: Optional[discord.Role] = None

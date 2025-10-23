@@ -6,7 +6,7 @@ import contextlib
 import logging
 import math
 import random
-from typing import Any, Dict, Iterable, List, Mapping
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 
 import discord
 from discord.ext import commands
@@ -48,7 +48,6 @@ class PetInventoryView(discord.ui.View):
         pets: Iterable[Mapping[str, Any]],
         total_income: int,
         per_page: int = 8,
-        pet_index: Iterable[Mapping[str, Any]] | None = None,
         huge_descriptions: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__(timeout=120)
@@ -57,9 +56,6 @@ class PetInventoryView(discord.ui.View):
         self._pets: List[Dict[str, Any]] = [dict(pet) for pet in pets]
         self._per_page = max(1, per_page)
         self._total_income = int(total_income)
-        self._pet_index: tuple[Dict[str, Any], ...] = tuple(
-            dict(entry) for entry in (pet_index or ())
-        )
         self._huge_descriptions: Dict[str, str] = dict(huge_descriptions or {})
         self.page_count = max(1, math.ceil(len(self._pets) / self._per_page))
         self.page = 0
@@ -81,7 +77,6 @@ class PetInventoryView(discord.ui.View):
             total_income_per_hour=self._total_income,
             page=self.page + 1,
             page_count=self.page_count,
-            pet_index=self._pet_index,
             huge_descriptions=self._huge_descriptions,
         )
 
@@ -214,6 +209,25 @@ class Pets(commands.Cog):
 
         data["base_income_per_hour"] = int(effective_income)
         return data
+
+    @staticmethod
+    def _resolve_member(ctx: commands.Context) -> Optional[discord.Member]:
+        if isinstance(ctx.author, discord.Member):
+            return ctx.author
+        guild = ctx.guild
+        if guild is not None:
+            member = guild.get_member(ctx.author.id)
+            if member is not None:
+                return member
+        return None
+
+    def _dispatch_grade_progress(
+        self, ctx: commands.Context, quest_type: str, amount: int
+    ) -> None:
+        member = self._resolve_member(ctx)
+        if member is None:
+            return
+        self.bot.dispatch("grade_quest_progress", member, quest_type, amount, ctx.channel)
 
     def _resolve_egg(self, raw: str | None) -> PetEggDefinition | None:
         if not self._eggs:
@@ -420,8 +434,7 @@ class Pets(commands.Cog):
         if pet_definition.name == HUGE_PET_NAME:
             await self._send_huge_shelly_alert(ctx)
 
-        if isinstance(ctx.author, discord.Member):
-            self.bot.dispatch("grade_quest_progress", ctx.author, "egg", 1, ctx.channel)
+        self._dispatch_grade_progress(ctx, "egg", 1)
 
     def _sort_pets_for_display(
         self,
@@ -516,19 +529,6 @@ class Pets(commands.Cog):
         market_values = await self.database.get_pet_market_values()
         pets = self._sort_pets_for_display(records, market_values)
         active_income = sum(int(pet["income"]) for pet in pets if pet.get("is_active"))
-        owned_names = {
-            str(pet.get("name", "")).strip()
-            for pet in pets
-            if str(pet.get("name", "")).strip()
-        }
-        pet_index = [
-            {
-                "name": definition.name,
-                "unlocked": definition.name in owned_names,
-                "is_huge": definition.is_huge,
-            }
-            for definition in self._definitions
-        ]
         per_page = 8
         total_count = len(pets)
         page_count = max(1, math.ceil(total_count / per_page))
@@ -540,7 +540,6 @@ class Pets(commands.Cog):
                 total_income_per_hour=active_income,
                 page=1,
                 page_count=1,
-                pet_index=pet_index,
                 huge_descriptions=HUGE_PET_SOURCES,
             )
             await ctx.send(embed=embed)
@@ -550,12 +549,27 @@ class Pets(commands.Cog):
                 pets=pets,
                 total_income=active_income,
                 per_page=per_page,
-                pet_index=pet_index,
                 huge_descriptions=HUGE_PET_SOURCES,
             )
             embed = view.build_embed()
             message = await ctx.send(embed=embed, view=view)
             view.message = message
+
+    @commands.command(name="index", aliases=("petindex", "dex"))
+    async def pet_index_command(self, ctx: commands.Context) -> None:
+        records = await self.database.get_user_pets(ctx.author.id)
+        owned_names: Set[str] = {
+            str(record.get("name", "")).strip()
+            for record in records
+            if str(record.get("name", "")).strip()
+        }
+        embed = embeds.pet_index_embed(
+            member=ctx.author,
+            pet_definitions=self._definitions,
+            owned_names=owned_names,
+            huge_descriptions=HUGE_PET_SOURCES,
+        )
+        await ctx.send(embed=embed)
 
     @commands.command(name="equip")
     async def equip(self, ctx: commands.Context, pet_id: int) -> None:
@@ -639,8 +653,7 @@ class Pets(commands.Cog):
             )
         await ctx.send(embed=reveal_embed)
 
-        if isinstance(ctx.author, discord.Member):
-            self.bot.dispatch("grade_quest_progress", ctx.author, "gold", 1, ctx.channel)
+        self._dispatch_grade_progress(ctx, "gold", 1)
 
     @commands.command(name="claim")
     async def claim(self, ctx: commands.Context) -> None:
