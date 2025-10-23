@@ -28,11 +28,7 @@ __all__ = [
     "balance_embed",
     "daily_embed",
     "slot_machine_embed",
-    "mastermind_start_embed",
-    "mastermind_feedback_embed",
-    "mastermind_victory_embed",
-    "mastermind_failure_embed",
-    "mastermind_cancelled_embed",
+    "mastermind_board_embed",
     "leaderboard_embed",
     "grade_profile_embed",
     "grade_completed_embed",
@@ -149,94 +145,52 @@ def slot_machine_embed(
     return embed
 
 
-def mastermind_start_embed(
+def mastermind_board_embed(
     *,
     member: discord.Member,
     palette: Sequence[tuple[str, str]],
     code_length: int,
     max_attempts: int,
     timeout: int,
+    attempts: Sequence[tuple[int, str, int, int]],
+    attempts_left: int,
+    current_selection: str,
+    status_lines: Sequence[str] | None = None,
+    color: int = Colors.INFO,
 ) -> discord.Embed:
     palette_line = ", ".join(f"{emoji} {name.capitalize()}" for name, emoji in palette)
-    description = (
-        f"Devine la combinaison de **{code_length}** couleurs pour décrocher des PB.\n"
-        f"Palette : {palette_line}\n"
-        "Les couleurs peuvent se répéter.\n"
-        f"Tu disposes de **{max_attempts}** tentatives et de {timeout}s pour jouer.\n"
-        "Clique sur les boutons colorés pour composer ta combinaison puis valide-la.\n"
-        "Utilise le bouton Abandonner si tu souhaites arrêter la partie."
-    )
-    embed = _base_embed("🧠 Mastermind", description, color=Colors.INFO)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
-    return embed
-
-
-def mastermind_feedback_embed(
-    *,
-    member: discord.Member,
-    attempt: int,
-    max_attempts: int,
-    guess_display: str,
-    well_placed: int,
-    misplaced: int,
-    attempts_left: int,
-) -> discord.Embed:
-    lines = [
-        f"Tentative {attempt}/{max_attempts}",
-        f"Proposition : {guess_display}",
-        f"Bien placés : **{well_placed}**",
-        f"Présents mais mal placés : **{misplaced}**",
-        f"Tentatives restantes : **{attempts_left}**",
+    description_lines = [
+        f"Devine la combinaison de **{code_length}** couleurs pour décrocher des PB.",
+        f"Palette : {palette_line}",
+        "Les couleurs peuvent se répéter.",
+        f"Tu disposes de **{max_attempts}** tentatives et de {timeout}s par interaction.",
+        "Compose ta tentative avec les boutons ci-dessous puis valide-la.",
     ]
-    embed = _base_embed("🧠 Mastermind", "\n".join(lines), color=Colors.INFO)
+    embed = _base_embed("🧠 Mastermind", "\n".join(description_lines), color=color)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
-    return embed
 
+    if attempts:
+        history_lines = [
+            f"**{attempt}.** {guess} • ✅ {well} • ⚪ {misplaced}"
+            for attempt, guess, well, misplaced in attempts
+        ]
+        embed.add_field(
+            name="Historique des tentatives",
+            value="\n".join(history_lines),
+            inline=False,
+        )
 
-def mastermind_victory_embed(
-    *,
-    member: discord.Member,
-    attempts_used: int,
-    attempts_left: int,
-    secret_display: str,
-    reward: int,
-    balance_after: int,
-) -> discord.Embed:
-    lines = [
-        f"Code craqué en **{attempts_used}** tentative(s) !",
-        f"Tentatives restantes : **{attempts_left}**",
-        f"Combinaison : {secret_display}",
-        f"Récompense : **{format_currency(reward)}**",
-        f"Solde actuel : {format_currency(balance_after)}",
-    ]
-    embed = _base_embed("🏆 Mastermind — Victoire !", "\n".join(lines), color=Colors.SUCCESS)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
-    return embed
+    progress_value = f"Tentatives utilisées : **{len(attempts)}/{max_attempts}**"
+    state_lines = [progress_value]
+    state_lines.append(f"Sélection : {current_selection}")
+    state_lines.append(f"Tentatives restantes : **{max(0, attempts_left)}**")
 
+    field_name = "Tentative en cours" if attempts_left > 0 else "Partie terminée"
+    embed.add_field(name=field_name, value="\n".join(state_lines), inline=False)
 
-def mastermind_failure_embed(
-    *,
-    member: discord.Member,
-    reason: str,
-    secret_display: str,
-) -> discord.Embed:
-    lines = [
-        reason,
-        f"Code secret : {secret_display}",
-        "Reviens tenter ta chance pour gagner des PB !",
-    ]
-    embed = _base_embed("🧠 Mastermind — Échec", "\n".join(lines), color=Colors.ERROR)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
-    return embed
+    if status_lines:
+        embed.add_field(name="Résultat", value="\n".join(status_lines), inline=False)
 
-
-def mastermind_cancelled_embed(*, member: discord.Member) -> discord.Embed:
-    embed = _base_embed(
-        "🧠 Mastermind — Annulé",
-        "Partie annulée. Relance `e!mastermind` quand tu veux retenter ta chance !",
-        color=Colors.WARNING,
-    )
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
     return embed
 
 
@@ -475,6 +429,7 @@ def pet_claim_embed(
     pets: Sequence[Mapping[str, object]],
     amount: int,
     elapsed_seconds: float,
+    booster: Mapping[str, float] | None = None,
 ) -> discord.Embed:
     total_income = sum(int(pet.get("base_income_per_hour", 0)) for pet in pets)
     duration = _format_duration(elapsed_seconds)
@@ -530,6 +485,20 @@ def pet_claim_embed(
 
     if lines:
         embed.add_field(name="Détails", value="\n".join(lines), inline=False)
+
+    if booster:
+        multiplier = float(booster.get("multiplier", 1.0))
+        if multiplier > 1.0:
+            extra_amount = int(booster.get("extra", 0))
+            remaining = float(booster.get("remaining_seconds", 0.0))
+            booster_lines = [f"Multiplicateur actif : x{multiplier:g}"]
+            if extra_amount > 0:
+                booster_lines.append(f"Bonus gagné : +{format_currency(extra_amount)}")
+            if remaining > 0:
+                booster_lines.append(f"Temps restant : {_format_duration(remaining)}")
+            else:
+                booster_lines.append("Le booster vient d'expirer !")
+            embed.add_field(name="Booster de pets", value="\n".join(booster_lines), inline=False)
 
     if pets:
         first_image = str(pets[0].get("image_url", ""))

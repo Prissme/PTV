@@ -17,11 +17,15 @@ from config import (
     PET_EGG_PRICE,
     PET_RARITY_ORDER,
     PetDefinition,
+    HUGE_PET_NAME,
 )
 from utils import embeds
 from database.db import DatabaseError
 
 logger = logging.getLogger(__name__)
+
+
+HUGE_SHELLY_ALERT_CHANNEL_ID = 1236724293631611022
 
 
 class Pets(commands.Cog):
@@ -70,6 +74,29 @@ class Pets(commands.Cog):
             if is_gold:
                 data["base_income_per_hour"] = base_income * multiplier
         return data
+
+    async def _send_huge_shelly_alert(self, ctx: commands.Context) -> None:
+        channel = self.bot.get_channel(HUGE_SHELLY_ALERT_CHANNEL_ID)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(HUGE_SHELLY_ALERT_CHANNEL_ID)
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                logger.warning("Canal Huge Shelly introuvable pour l'alerte hype")
+                return
+        if not isinstance(channel, discord.abc.Messageable):
+            logger.warning(
+                "Canal Huge Shelly non compatible pour l'envoi : %s",
+                type(channel).__name__,
+            )
+            return
+
+        hype_message = (
+            "🚨🚨🚨 **ALERTE ÉPIQUE !** 🚨🚨🚨\n"
+            f"**{ctx.author.display_name}** vient de PACK la **{HUGE_PET_NAME.upper()}** !!!\n"
+            "🔥🔥 FLAMMES, CRIS, HYPE ABSOLUE 🔥🔥\n"
+            f"{ctx.author.mention} rejoint le club des légendes, spammez les GGs et sortez les confettis !!!"
+        )
+        await channel.send(hype_message)
 
     async def _open_pet_egg(self, ctx: commands.Context) -> None:
         await self.database.ensure_user(ctx.author.id)
@@ -129,6 +156,9 @@ class Pets(commands.Cog):
             )
         )
         await message.edit(embed=reveal_embed)
+
+        if pet_definition.name == HUGE_PET_NAME:
+            await self._send_huge_shelly_alert(ctx)
 
         if isinstance(ctx.author, discord.Member):
             self.bot.dispatch("grade_quest_progress", ctx.author, "egg", 1, ctx.channel)
@@ -271,7 +301,7 @@ class Pets(commands.Cog):
 
     @commands.command(name="claim")
     async def claim(self, ctx: commands.Context) -> None:
-        amount, rows, elapsed = await self.database.claim_active_pet_income(ctx.author.id)
+        amount, rows, elapsed, booster_info = await self.database.claim_active_pet_income(ctx.author.id)
         if not rows:
             await ctx.send(embed=embeds.error_embed("Tu dois équiper un pet avant de pouvoir collecter ses revenus."))
             return
@@ -289,6 +319,7 @@ class Pets(commands.Cog):
             pets=pets_data,
             amount=amount,
             elapsed_seconds=elapsed,
+            booster=booster_info,
         )
         await ctx.send(embed=embed)
 

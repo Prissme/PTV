@@ -89,6 +89,18 @@ class Database:
             )
             await connection.execute(
                 """
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS pet_booster_multiplier
+                DOUBLE PRECISION NOT NULL DEFAULT 1
+                """
+            )
+            await connection.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS pet_booster_expires_at TIMESTAMPTZ"
+            )
+            await connection.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS pet_booster_activated_at TIMESTAMPTZ"
+            )
+            await connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS user_grades (
                     user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
                     grade_level INTEGER NOT NULL DEFAULT 0 CHECK (grade_level >= 0),
@@ -228,6 +240,78 @@ class Database:
             """,
             user_id,
         )
+
+    async def grant_pet_booster(
+        self,
+        user_id: int,
+        *,
+        multiplier: float,
+        duration_seconds: int,
+    ) -> tuple[float, datetime, bool, float]:
+        """Attribue ou prolonge un booster de pets pour un utilisateur.
+
+        Retourne un tuple ``(multiplicateur, expiration, prolongé, ancien_multiplicateur)``.
+        """
+
+        if duration_seconds <= 0:
+            raise ValueError("La durée d'un booster doit être positive")
+
+        await self.ensure_user(user_id)
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(seconds=duration_seconds)
+
+        async with self.transaction() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT
+                    pet_booster_multiplier,
+                    pet_booster_expires_at,
+                    pet_booster_activated_at
+                FROM users
+                WHERE user_id = $1
+                FOR UPDATE
+                """,
+                user_id,
+            )
+            if row is None:
+                raise DatabaseError("Utilisateur introuvable lors de l'attribution du booster")
+
+            current_multiplier = float(row.get("pet_booster_multiplier") or 1.0)
+            current_expires = row.get("pet_booster_expires_at")
+            current_activated = row.get("pet_booster_activated_at")
+
+            active = (
+                current_multiplier > 1
+                and isinstance(current_expires, datetime)
+                and current_expires > now
+            )
+            previous_multiplier = current_multiplier if active else 1.0
+
+            if active and multiplier <= current_multiplier:
+                extended = True
+                multiplier = current_multiplier
+                activated_at = current_activated or now
+                expires_at = current_expires + timedelta(seconds=duration_seconds)
+            else:
+                extended = active and multiplier <= current_multiplier
+                activated_at = now
+
+            await connection.execute(
+                """
+                UPDATE users
+                SET
+                    pet_booster_multiplier = $1,
+                    pet_booster_activated_at = $2,
+                    pet_booster_expires_at = $3
+                WHERE user_id = $4
+                """,
+                multiplier,
+                activated_at,
+                expires_at,
+                user_id,
+            )
+
+        return multiplier, expires_at, extended, previous_multiplier
 
     async def record_transaction(
         self,
@@ -852,7 +936,7 @@ class Database:
 
     async def claim_active_pet_income(
         self, user_id: int
-    ) -> tuple[int, Sequence[asyncpg.Record], float]:
+    ) -> tuple[int, Sequence[asyncpg.Record], float, dict[str, float]]:
         await self.ensure_user(user_id)
         async with self.transaction() as connection:
             rows = await connection.fetch(
@@ -870,7 +954,10 @@ class Database:
                     p.image_url,
                     p.base_income_per_hour,
                     u.pet_last_claim,
-                    u.balance
+                    u.balance,
+                    u.pet_booster_multiplier,
+                    u.pet_booster_expires_at,
+                    u.pet_booster_activated_at
                 FROM user_pets AS up
                 JOIN pets AS p ON p.pet_id = up.pet_id
                 JOIN users AS u ON u.user_id = up.user_id
@@ -882,7 +969,7 @@ class Database:
             )
 
             if not rows:
-                return 0, [], 0.0
+                return 0, [], 0.0, {}
 
             first_row = rows[0]
             now = datetime.now(timezone.utc)
@@ -894,7 +981,30 @@ class Database:
                     now,
                     user_id,
                 )
-                return 0, rows, 0.0
+                return 0, rows, 0.0, {}
+
+            booster_multiplier = float(first_row.get("pet_booster_multiplier") or 1.0)
+            booster_expires = first_row.get("pet_booster_expires_at")
+            booster_activated = first_row.get("pet_booster_activated_at")
+            booster_seconds = 0.0
+            booster_remaining = 0.0
+            booster_extra_amount = 0
+
+            if isinstance(booster_expires, datetime):
+                booster_remaining = (booster_expires - now).total_seconds()
+
+            if (
+                booster_multiplier > 1
+                and isinstance(booster_expires, datetime)
+                and isinstance(booster_activated, datetime)
+                and last_claim is not None
+            ):
+                interval_start = last_claim
+                interval_end = now
+                overlap_start = max(interval_start, booster_activated)
+                overlap_end = min(interval_end, booster_expires)
+                if overlap_end > overlap_start:
+                    booster_seconds = (overlap_end - overlap_start).total_seconds()
 
             hourly_income = sum(
                 int(row["base_income_per_hour"]) * (GOLD_PET_MULTIPLIER if bool(row["is_gold"]) else 1)
@@ -906,13 +1016,29 @@ class Database:
                     now,
                     user_id,
                 )
-                return 0, rows, elapsed_seconds
+                return 0, rows, elapsed_seconds, {}
 
-            income = int(hourly_income * (elapsed_seconds / 3600))
+            elapsed_hours = elapsed_seconds / 3600
+            base_amount = hourly_income * elapsed_hours
+            base_income_int = int(base_amount)
+
+            if booster_seconds > 0 and booster_multiplier > 1:
+                booster_hours = booster_seconds / 3600
+                booster_extra_amount = int(hourly_income * booster_hours * (booster_multiplier - 1))
+
+            income = base_income_int + booster_extra_amount
             if income <= 0:
-                return 0, rows, elapsed_seconds
+                return 0, rows, elapsed_seconds, {}
 
-            consumed_seconds = int((income / hourly_income) * 3600)
+            base_consumed_seconds = (
+                int((base_income_int / hourly_income) * 3600) if hourly_income else 0
+            )
+            booster_consumed_seconds = (
+                int(min(elapsed_seconds, booster_seconds)) if booster_extra_amount > 0 else 0
+            )
+            consumed_seconds = max(base_consumed_seconds, booster_consumed_seconds)
+            consumed_seconds = min(int(elapsed_seconds), consumed_seconds)
+
             if last_claim is None:
                 new_claim_time = now
             else:
@@ -939,7 +1065,32 @@ class Database:
                 description=f"Revenus passifs ({len(rows)} pets)",
             )
 
-        return income, rows, elapsed_seconds
+            if (
+                booster_multiplier > 1
+                and isinstance(booster_expires, datetime)
+                and booster_expires <= now
+            ):
+                await connection.execute(
+                    """
+                    UPDATE users
+                    SET
+                        pet_booster_multiplier = 1,
+                        pet_booster_activated_at = NULL,
+                        pet_booster_expires_at = NULL
+                    WHERE user_id = $1
+                    """,
+                    user_id,
+                )
+
+        booster_info: dict[str, float] = {}
+        if booster_multiplier > 1:
+            booster_info = {
+                "multiplier": booster_multiplier,
+                "extra": float(max(0, booster_extra_amount)),
+                "remaining_seconds": float(max(0.0, booster_remaining)),
+            }
+
+        return income, rows, elapsed_seconds, booster_info
 
     async def record_pet_opening(self, user_id: int, pet_id: int) -> None:
         await self.ensure_user(user_id)
