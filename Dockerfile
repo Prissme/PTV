@@ -19,7 +19,7 @@ RUN useradd --create-home --shell /bin/bash app \
 USER app
 
 # Exposer le port pour le health check
-EXPOSE 3000
+EXPOSE 8000
 
 # Commande par défaut pour lancer le bot
 CMD ["python", "main.py"]

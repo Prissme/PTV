@@ -4,11 +4,11 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator, Dict, Iterable, Mapping, Optional, Sequence
+from typing import Any, AsyncIterator, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import asyncpg
 
-from config import BASE_PET_SLOTS
+from config import BASE_PET_SLOTS, GOLD_PET_MULTIPLIER, GOLD_PET_COMBINE_REQUIRED
 
 __all__ = ["Database", "DatabaseError", "InsufficientBalanceError"]
 
@@ -120,7 +120,8 @@ class Database:
                     nickname TEXT,
                     acquired_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     is_active BOOLEAN NOT NULL DEFAULT FALSE,
-                    is_huge BOOLEAN NOT NULL DEFAULT FALSE
+                    is_huge BOOLEAN NOT NULL DEFAULT FALSE,
+                    is_gold BOOLEAN NOT NULL DEFAULT FALSE
                 )
                 """
             )
@@ -129,6 +130,9 @@ class Database:
             )
             await connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_pets_active ON user_pets(user_id) WHERE is_active"
+            )
+            await connection.execute(
+                "ALTER TABLE user_pets ADD COLUMN IF NOT EXISTS is_gold BOOLEAN NOT NULL DEFAULT FALSE"
             )
             await connection.execute(
                 """
@@ -620,21 +624,100 @@ class Database:
             "SELECT pet_id, name, rarity, image_url, base_income_per_hour, drop_rate FROM pets ORDER BY pet_id"
         )
 
-    async def add_user_pet(self, user_id: int, pet_id: int, *, is_huge: bool = False) -> asyncpg.Record:
+    async def add_user_pet(
+        self, user_id: int, pet_id: int, *, is_huge: bool = False, is_gold: bool = False
+    ) -> asyncpg.Record:
         await self.ensure_user(user_id)
         row = await self.pool.fetchrow(
             """
-            INSERT INTO user_pets (user_id, pet_id, is_huge)
-            VALUES ($1, $2, $3)
-            RETURNING id, user_id, pet_id, is_active, is_huge, acquired_at
+            INSERT INTO user_pets (user_id, pet_id, is_huge, is_gold)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, user_id, pet_id, is_active, is_huge, is_gold, acquired_at
             """,
             user_id,
             pet_id,
             is_huge,
+            is_gold,
         )
         if row is None:
             raise DatabaseError("Impossible de créer l'entrée user_pet")
         return row
+
+    async def upgrade_pet_to_gold(
+        self, user_id: int, pet_id: int
+    ) -> tuple[asyncpg.Record, int]:
+        await self.ensure_user(user_id)
+        async with self.transaction() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT up.id
+                FROM user_pets AS up
+                WHERE up.user_id = $1
+                  AND up.pet_id = $2
+                  AND NOT up.is_gold
+                  AND NOT up.is_active
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM trade_pets AS tp
+                    JOIN trades AS t ON t.id = tp.trade_id
+                    WHERE tp.user_pet_id = up.id AND t.status = 'pending'
+                  )
+                ORDER BY up.acquired_at
+                FOR UPDATE
+                """,
+                user_id,
+                pet_id,
+            )
+
+            available_ids: List[int] = [int(row["id"]) for row in rows]
+            required = GOLD_PET_COMBINE_REQUIRED
+            if len(available_ids) < required:
+                raise DatabaseError(
+                    f"Tu as besoin d'au moins {required} exemplaires non équipés et non échangés de ce pet pour créer une version or."
+                )
+
+            consumed_ids = available_ids[:required]
+            await connection.execute(
+                "DELETE FROM user_pets WHERE id = ANY($1::INT[])",
+                consumed_ids,
+            )
+
+            inserted = await connection.fetchrow(
+                """
+                INSERT INTO user_pets (user_id, pet_id, is_gold)
+                VALUES ($1, $2, TRUE)
+                RETURNING id
+                """,
+                user_id,
+                pet_id,
+            )
+            if inserted is None:
+                raise DatabaseError("Impossible de créer le pet doré")
+
+            new_record = await connection.fetchrow(
+                """
+                SELECT
+                    up.id,
+                    up.nickname,
+                    up.is_active,
+                    up.is_huge,
+                    up.is_gold,
+                    up.acquired_at,
+                    p.pet_id,
+                    p.name,
+                    p.rarity,
+                    p.image_url,
+                    p.base_income_per_hour
+                FROM user_pets AS up
+                JOIN pets AS p ON p.pet_id = up.pet_id
+                WHERE up.id = $1
+                """,
+                int(inserted["id"]),
+            )
+
+        if new_record is None:
+            raise DatabaseError("Impossible de récupérer le pet doré généré")
+        return new_record, required
 
     async def get_user_pets(self, user_id: int) -> Sequence[asyncpg.Record]:
         return await self.pool.fetch(
@@ -644,6 +727,7 @@ class Database:
                 up.nickname,
                 up.is_active,
                 up.is_huge,
+                up.is_gold,
                 up.acquired_at,
                 p.pet_id,
                 p.name,
@@ -666,6 +750,7 @@ class Database:
                 up.nickname,
                 up.is_active,
                 up.is_huge,
+                up.is_gold,
                 up.acquired_at,
                 p.pet_id,
                 p.name,
@@ -688,6 +773,7 @@ class Database:
                 up.nickname,
                 up.is_active,
                 up.is_huge,
+                up.is_gold,
                 up.acquired_at,
                 p.pet_id,
                 p.name,
@@ -776,6 +862,7 @@ class Database:
                     up.nickname,
                     up.is_active,
                     up.is_huge,
+                    up.is_gold,
                     up.acquired_at,
                     p.pet_id,
                     p.name,
@@ -809,7 +896,10 @@ class Database:
                 )
                 return 0, rows, 0.0
 
-            hourly_income = sum(int(row["base_income_per_hour"]) for row in rows)
+            hourly_income = sum(
+                int(row["base_income_per_hour"]) * (GOLD_PET_MULTIPLIER if bool(row["is_gold"]) else 1)
+                for row in rows
+            )
             if hourly_income <= 0:
                 await connection.execute(
                     "UPDATE users SET pet_last_claim = $1 WHERE user_id = $2",
@@ -869,6 +959,10 @@ class Database:
 
     async def count_huge_pets(self) -> int:
         value = await self.pool.fetchval("SELECT COUNT(*) FROM user_pets WHERE is_huge")
+        return int(value or 0)
+
+    async def count_gold_pets(self) -> int:
+        value = await self.pool.fetchval("SELECT COUNT(*) FROM user_pets WHERE is_gold")
         return int(value or 0)
 
     async def get_pet_market_values(self) -> Dict[int, int]:
@@ -1125,6 +1219,7 @@ class Database:
                 tp.to_user_id,
                 up.user_id,
                 up.is_huge,
+                up.is_gold,
                 p.name,
                 p.rarity,
                 p.image_url
@@ -1180,6 +1275,7 @@ class Database:
                     up.user_id,
                     up.is_active,
                     up.is_huge,
+                    up.is_gold,
                     p.name,
                     p.rarity
                 FROM trade_pets AS tp
@@ -1212,6 +1308,7 @@ class Database:
                         "name": str(pet["name"]),
                         "rarity": str(pet["rarity"]),
                         "is_huge": bool(pet["is_huge"]),
+                        "is_gold": bool(pet["is_gold"]),
                     }
                 )
 

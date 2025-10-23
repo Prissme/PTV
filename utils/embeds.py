@@ -10,6 +10,7 @@ from discord.ext import commands
 from config import (
     Colors,
     Emojis,
+    GOLD_PET_MULTIPLIER,
     HUGE_PET_NAME,
     PET_EMOJIS,
     PET_RARITY_COLORS,
@@ -332,9 +333,11 @@ def _pet_emoji(name: str) -> str:
     return PET_EMOJIS.get(name, PET_EMOJIS.get("default", "🐾"))
 
 
-def _pet_title(name: str, rarity: str, is_huge: bool) -> str:
-    display_name = f"{_pet_emoji(name)} {name}".strip()
-    title = f"{display_name} ({rarity})"
+def _pet_title(name: str, rarity: str, is_huge: bool, is_gold: bool) -> str:
+    gold_marker = " 🥇" if is_gold else ""
+    display_name = f"{_pet_emoji(name)} {name}{gold_marker}".strip()
+    rarity_label = f"{rarity} Or" if is_gold else rarity
+    title = f"{display_name} ({rarity_label})"
     if is_huge:
         return f"✨ {title} ✨"
     return title
@@ -347,15 +350,18 @@ def pet_reveal_embed(
     image_url: str,
     income_per_hour: int,
     is_huge: bool,
+    is_gold: bool,
     market_value: int = 0,
 ) -> discord.Embed:
-    color = PET_RARITY_COLORS.get(rarity, Colors.INFO)
+    color = Colors.GOLD if is_gold else PET_RARITY_COLORS.get(rarity, Colors.INFO)
     description = f"Revenus passifs : **{income_per_hour:,} PB/h**".replace(",", " ")
     if is_huge and name == HUGE_PET_NAME:
         description += "\n🎉 ÉNORME ! Tu as obtenu une ÉNORME SHELLY ! 🎉"
+    if is_gold:
+        description += f"\n🥇 Variante or ! Puissance x{GOLD_PET_MULTIPLIER}."
     if market_value > 0:
         description += f"\nValeur marché : **{format_currency(market_value)}**"
-    embed = _base_embed(_pet_title(name, rarity, is_huge), description, color=color)
+    embed = _base_embed(_pet_title(name, rarity, is_huge, is_gold), description, color=color)
     embed.set_image(url=image_url)
     return embed
 
@@ -379,6 +385,7 @@ def pet_collection_embed(
             rarity = str(pet["rarity"])
             is_active = bool(pet["is_active"])
             is_huge = bool(pet["is_huge"])
+            is_gold = bool(pet.get("is_gold", False))
             income = int(pet["income"])
             user_pet_id = int(pet["id"])
             market_value = int(pet.get("market_value", 0))
@@ -388,9 +395,14 @@ def pet_collection_embed(
                 acquired_text = acquired_at.strftime("%d/%m/%Y")
             star = "⭐" if is_active else ""
             huge = " ✨" if is_huge else ""
-            header_parts = [part for part in (star, _pet_emoji(name), f"**#{user_pet_id} {name}**{huge}") if part]
+            gold = " 🥇" if is_gold else ""
+            header_parts = [
+                part for part in (star, _pet_emoji(name), f"**#{user_pet_id} {name}**{huge}{gold}") if part
+            ]
             header = " ".join(header_parts)
             stats_line = f"Rareté : {rarity} — {income:,} PB/h".replace(",", " ")
+            if is_gold:
+                stats_line += f" — Variante or x{GOLD_PET_MULTIPLIER}"
             if market_value > 0:
                 stats_line += f" — Valeur : {format_currency(market_value)}"
             line = f"{header}\n{stats_line}"
@@ -419,16 +431,19 @@ def pet_equip_embed(
     image_url = str(pet["image_url"])
     income = int(pet["base_income_per_hour"])
     is_huge = bool(pet.get("is_huge", False))
+    is_gold = bool(pet.get("is_gold", False))
     market_value = int(pet.get("market_value", 0))
 
     status_symbol = "✅" if activated else "🛌"
-    title = f"{status_symbol} {_pet_title(name, rarity, is_huge)}"
+    title = f"{status_symbol} {_pet_title(name, rarity, is_huge, is_gold)}"
     color = Colors.SUCCESS if activated else Colors.INFO
     lines = [
         "Ce pet génère désormais des revenus passifs !" if activated else "Ce pet se repose pour le moment.",
         f"Rareté : {rarity}",
         f"Revenus : {income:,} PB/h".replace(",", " "),
     ]
+    if is_gold:
+        lines.append(f"Variante or : puissance x{GOLD_PET_MULTIPLIER}")
     if market_value > 0:
         lines.append(f"Valeur marché : {format_currency(market_value)}")
     lines.append(f"Pets actifs : **{active_count}/4**")
@@ -499,11 +514,14 @@ def pet_claim_embed(
         rarity = str(pet.get("rarity", "?"))
         income = int(pet.get("base_income_per_hour", 0))
         is_huge = bool(pet.get("is_huge", False))
+        is_gold = bool(pet.get("is_gold", False))
         market_value = int(pet.get("market_value", 0))
         line_parts = [
-            f"{_pet_emoji(name)} **{name}** ({rarity}{' ✨' if is_huge else ''})",
+            f"{_pet_emoji(name)} **{name}** ({rarity}{' ✨' if is_huge else ''}{' 🥇' if is_gold else ''})",
             f"{income:,} PB/h".replace(",", " "),
         ]
+        if is_gold:
+            line_parts.append(f"x{GOLD_PET_MULTIPLIER}")
         if share > 0:
             line_parts.append(f"+{format_currency(share)}")
         if market_value > 0:
@@ -526,6 +544,7 @@ def pet_stats_embed(
     total_openings: int,
     stats: Iterable[tuple[str, int, float, float]],
     huge_count: int,
+    gold_count: int,
 ) -> discord.Embed:
     description_lines = [f"Œufs ouverts : **{total_openings}**"]
     for name, count, actual_rate, theoretical_rate in stats:
@@ -534,6 +553,7 @@ def pet_stats_embed(
             f"**{name}** — {count} obtentions • Réel : {actual_text} • Théorique : {theoretical_rate:.2f}%"
         )
     description_lines.append(f"Énormes Shellys en circulation : **{huge_count}**")
+    description_lines.append(f"Pets dorés en circulation : **{gold_count}**")
     embed = _base_embed("Statistiques des pets", "\n".join(description_lines), color=Colors.INFO)
     return embed
 
@@ -550,10 +570,13 @@ def _trade_offer_lines(offer: Mapping[str, object]) -> str:
         name = str(pet.get("name", "Pet"))
         rarity = str(pet.get("rarity", "?"))
         is_huge = bool(pet.get("is_huge", False))
+        is_gold = bool(pet.get("is_gold", False))
         huge = " ✨" if is_huge else ""
+        gold = " 🥇" if is_gold else ""
         emoji = _pet_emoji(name)
         emoji_prefix = f"{emoji} " if emoji else ""
-        lines.append(f"• {emoji_prefix}#{user_pet_id} {name}{huge} ({rarity})")
+        rarity_label = f"{rarity} Or" if is_gold else rarity
+        lines.append(f"• {emoji_prefix}#{user_pet_id} {name}{huge}{gold} ({rarity_label})")
 
     if not lines:
         lines.append("• Rien pour le moment")

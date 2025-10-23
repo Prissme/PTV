@@ -25,6 +25,7 @@ class TradePetState:
     name: str
     rarity: str
     is_huge: bool
+    is_gold: bool
     from_user_id: int
     to_user_id: int
 
@@ -35,6 +36,7 @@ class TradePetState:
             "name": self.name,
             "rarity": self.rarity,
             "is_huge": self.is_huge,
+            "is_gold": self.is_gold,
         }
 
 
@@ -262,6 +264,7 @@ class TradeView(discord.ui.View):
                         name=str(record.get("name")),
                         rarity=str(record.get("rarity")),
                         is_huge=bool(record.get("is_huge", False)),
+                        is_gold=bool(record.get("is_gold", False)),
                         from_user_id=interaction.user.id,
                         to_user_id=other_id,
                     )
@@ -502,6 +505,7 @@ class Trade(commands.Cog):
                         "name": item["name"],
                         "rarity": item["rarity"],
                         "is_huge": item["is_huge"],
+                        "is_gold": item["is_gold"],
                     }
                     for item in transfers
                     if item["from_user_id"] == user_id
@@ -514,6 +518,7 @@ class Trade(commands.Cog):
                         "name": item["name"],
                         "rarity": item["rarity"],
                         "is_huge": item["is_huge"],
+                        "is_gold": item["is_gold"],
                     }
                     for item in transfers
                     if item["to_user_id"] == user_id

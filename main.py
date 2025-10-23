@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 from contextlib import suppress
@@ -21,14 +22,30 @@ logger = logging.getLogger(__name__)
 class HealthCheckServer:
     """Expose un endpoint HTTP minimal utilisé par Koyeb pour le health check."""
 
-    def __init__(self, *, host: str = "0.0.0.0", port: int = 3000) -> None:
+    def __init__(self, *, host: str = "0.0.0.0", port: int | None = None) -> None:
         self._host = host
-        self._port = port
+        self._logger = logging.getLogger(f"{__name__}.HealthCheckServer")
+        resolved_port: Optional[int]
+        if port is not None:
+            resolved_port = port
+        else:
+            env_port = os.getenv("PORT")
+            resolved_port = None
+            if env_port:
+                try:
+                    resolved_port = int(env_port)
+                except ValueError:
+                    self._logger.warning(
+                        "Valeur de PORT invalide (%s), utilisation du port par défaut 8000",
+                        env_port,
+                    )
+            if resolved_port is None:
+                resolved_port = 8000
+        self._port = resolved_port
         self._app = web.Application()
         self._app.router.add_get("/", self.health_check)
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
-        self._logger = logging.getLogger(f"{__name__}.HealthCheckServer")
 
     async def health_check(self, request: web.Request) -> web.Response:
         return web.Response(text="Bot is alive", status=200)

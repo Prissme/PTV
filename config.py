@@ -9,6 +9,28 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _get_float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except ValueError:
+        return default
+    return max(0.0, min(1.0, parsed))
+
+
+def _get_int_env(name: str, default: int, *, minimum: int = 1) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return max(minimum, parsed)
+
 # ---------------------------------------------------------------------------
 # Informations essentielles
 # ---------------------------------------------------------------------------
@@ -125,6 +147,11 @@ class PetDefinition:
 
 
 PET_EGG_PRICE: Final[int] = 500
+GOLD_PET_MULTIPLIER: Final[int] = 3
+GOLD_PET_CHANCE: Final[float] = _get_float_env("PET_GOLD_CHANCE", 0.05)
+GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
+    "PET_GOLD_COMBINE_REQUIRED", 10, minimum=2
+)
 HUGE_PET_NAME: Final[str] = "ÉNORME SHELLY"
 
 PET_DEFINITIONS: Tuple[PetDefinition, ...] = (
