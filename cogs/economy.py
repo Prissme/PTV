@@ -9,12 +9,12 @@ import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional, Sequence
+from typing import Awaitable, Callable, Optional, Sequence
 
 import discord
 from discord.ext import commands
 
-from config import DAILY_COOLDOWN, DAILY_REWARD, MESSAGE_COOLDOWN, MESSAGE_REWARD, PREFIX
+from config import Colors, DAILY_COOLDOWN, DAILY_REWARD, MESSAGE_COOLDOWN, MESSAGE_REWARD, PREFIX
 from utils import embeds
 from database.db import Database, DatabaseError, InsufficientBalanceError
 
@@ -46,6 +46,43 @@ SLOT_SPECIAL_COMBOS: dict[tuple[str, ...], tuple[int, str]] = {
 }
 SLOT_MIN_BET = 50
 SLOT_MAX_BET = 5000
+
+PET_BOOSTER_MULTIPLIERS: tuple[float, ...] = (1.5, 2, 3, 5, 10, 100)
+PET_BOOSTER_DURATIONS_MINUTES: tuple[int, ...] = (1, 5, 10, 15, 30, 60, 180)
+
+
+def _build_booster_pool() -> tuple[tuple[float, int, int], ...]:
+    pool: list[tuple[float, int, int]] = []
+    for multiplier in PET_BOOSTER_MULTIPLIERS:
+        for minutes in PET_BOOSTER_DURATIONS_MINUTES:
+            weight = max(1, int(1_000_000 / (multiplier * minutes)))
+            pool.append((multiplier, minutes, weight))
+    return tuple(pool)
+
+
+_PET_BOOSTER_POOL = _build_booster_pool()
+PET_BOOSTER_CHOICES: tuple[tuple[float, int], ...] = tuple(
+    (multiplier, minutes) for multiplier, minutes, _ in _PET_BOOSTER_POOL
+)
+PET_BOOSTER_WEIGHTS: tuple[int, ...] = tuple(weight for _, _, weight in _PET_BOOSTER_POOL)
+PET_BOOSTER_DROP_RATES: dict[str, float] = {
+    "slots": 0.05,
+    "mastermind": 0.05,
+}
+
+
+def _format_seconds(seconds: float) -> str:
+    seconds_int = max(0, int(round(seconds)))
+    minutes, sec = divmod(seconds_int, 60)
+    hours, minutes = divmod(minutes, 60)
+    parts: list[str] = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if sec or not parts:
+        parts.append(f"{sec}s")
+    return " ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -144,6 +181,7 @@ class MastermindSession:
         ctx: commands.Context,
         helper: MastermindHelper,
         database: Database,
+        booster_callback: Callable[[commands.Context, str], Awaitable[bool]] | None = None,
     ) -> None:
         self.ctx = ctx
         self.bot: commands.Bot = ctx.bot
@@ -154,39 +192,58 @@ class MastermindSession:
         self.finished = False
         self.view: MastermindView | None = None
         self.message: discord.Message | None = None
+        self.booster_callback = booster_callback
+        self.booster_awarded = False
+        self.attempt_history: list[tuple[int, str, int, int]] = []
+        self.status_lines: list[str] = []
+        self.embed_color = Colors.INFO
         self._logger = logger.getChild("MastermindSession")
 
     async def start(self) -> None:
         await self.database.ensure_user(self.ctx.author.id)
         self.view = MastermindView(self)
-        embed = embeds.mastermind_start_embed(
+        embed = self.build_embed()
+        self.message = await self.ctx.send(embed=embed, view=self.view)
+        self.view.message = self.message
+        await self.view.refresh()
+        await self.view.wait()
+
+    def build_embed(self, *, current_guess: Sequence[str] | None = None) -> discord.Embed:
+        selection = (
+            self.helper.format_code(current_guess)
+            if current_guess
+            else "Aucune sélection"
+        )
+        attempts_left = max(0, self.helper.config.max_attempts - self.attempts)
+        if self.finished:
+            attempts_left = 0
+        return embeds.mastermind_board_embed(
             member=self.ctx.author,
             palette=self.helper.palette,
             code_length=self.helper.config.code_length,
             max_attempts=self.helper.config.max_attempts,
             timeout=self.helper.config.response_timeout,
+            attempts=tuple(self.attempt_history),
+            attempts_left=attempts_left,
+            current_selection=selection,
+            status_lines=list(self.status_lines),
+            color=self.embed_color,
         )
-        self.message = await self.ctx.send(embed=embed, view=self.view)
-        self.view.message = self.message
-        await self.view.refresh()
-        await self.view.wait()
 
     async def process_guess(self, guess: Sequence[str]) -> None:
         self.attempts += 1
         exact, misplaced = self.helper.evaluate_guess(self.secret, guess)
         attempts_left = self.helper.config.max_attempts - self.attempts
 
-        await self.ctx.send(
-            embed=embeds.mastermind_feedback_embed(
-                member=self.ctx.author,
-                attempt=self.attempts,
-                max_attempts=self.helper.config.max_attempts,
-                guess_display=self.helper.format_code(guess),
-                well_placed=exact,
-                misplaced=misplaced,
-                attempts_left=attempts_left,
-            )
-        )
+        guess_display = self.helper.format_code(guess)
+        self.attempt_history.append((self.attempts, guess_display, exact, misplaced))
+
+        if (
+            self.booster_callback is not None
+            and not self.booster_awarded
+            and await self.booster_callback(self.ctx, "mastermind")
+        ):
+            self.booster_awarded = True
 
         if exact == self.helper.config.code_length:
             await self._handle_victory(attempts_left)
@@ -210,7 +267,7 @@ class MastermindSession:
     async def finalize(self, interaction: Optional[discord.Interaction] = None) -> None:
         if self.view is None:
             return
-        await self.view.disable(interaction=interaction)
+        await self.view.refresh(interaction)
 
     async def _handle_victory(self, attempts_left: int) -> None:
         base_reward = random.randint(*self.helper.config.base_reward)
@@ -221,17 +278,14 @@ class MastermindSession:
             transaction_type="mastermind_win",
             description=f"Mastermind gagné en {self.attempts} tentatives",
         )
-
-        await self.ctx.send(
-            embed=embeds.mastermind_victory_embed(
-                member=self.ctx.author,
-                attempts_used=self.attempts,
-                attempts_left=attempts_left,
-                secret_display=self._secret_display(),
-                reward=reward,
-                balance_after=balance_after,
-            )
-        )
+        self.embed_color = Colors.SUCCESS
+        self.status_lines = [
+            f"Code craqué en **{self.attempts}** tentative(s) !",
+            f"Tentatives restantes : **{attempts_left}**",
+            f"Combinaison : {self._secret_display()}",
+            f"Récompense : **{embeds.format_currency(reward)}**",
+            f"Solde actuel : {embeds.format_currency(balance_after)}",
+        ]
         self._logger.debug(
             "Mastermind win",
             extra={
@@ -245,13 +299,12 @@ class MastermindSession:
         )
 
     async def _handle_timeout(self) -> None:
-        await self.ctx.send(
-            embed=embeds.mastermind_failure_embed(
-                member=self.ctx.author,
-                reason="Temps écoulé !",
-                secret_display=self._secret_display(),
-            )
-        )
+        self.embed_color = Colors.ERROR
+        self.status_lines = [
+            "Temps écoulé !",
+            f"Code secret : {self._secret_display()}",
+            "Reviens tenter ta chance pour gagner des PB !",
+        ]
         self._logger.debug(
             "Mastermind timeout",
             extra={
@@ -262,13 +315,12 @@ class MastermindSession:
         )
 
     async def _handle_failure(self) -> None:
-        await self.ctx.send(
-            embed=embeds.mastermind_failure_embed(
-                member=self.ctx.author,
-                reason="Toutes les tentatives ont été utilisées.",
-                secret_display=self._secret_display(),
-            )
-        )
+        self.embed_color = Colors.ERROR
+        self.status_lines = [
+            "Toutes les tentatives ont été utilisées.",
+            f"Code secret : {self._secret_display()}",
+            "Reviens tenter ta chance pour gagner des PB !",
+        ]
         self._logger.debug(
             "Mastermind loss",
             extra={
@@ -279,7 +331,8 @@ class MastermindSession:
         )
 
     async def _handle_cancel(self) -> None:
-        await self.ctx.send(embed=embeds.mastermind_cancelled_embed(member=self.ctx.author))
+        self.embed_color = Colors.WARNING
+        self.status_lines = ["Partie annulée. Relance `e!mastermind` quand tu veux retenter ta chance !"]
         self._logger.debug(
             "Mastermind cancelled",
             extra={
@@ -310,49 +363,26 @@ class MastermindView(discord.ui.View):
         self.add_item(self.CancelButton(self))
 
     async def refresh(self, interaction: Optional[discord.Interaction] = None) -> None:
-        attempts_display = self.session.attempts + 1
-        embed = embeds.mastermind_start_embed(
-            member=self.session.ctx.author,
-            palette=self.session.helper.palette,
-            code_length=self.session.helper.config.code_length,
-            max_attempts=self.session.helper.config.max_attempts,
-            timeout=self.session.helper.config.response_timeout,
-        )
-        selection = (
-            self.session.helper.format_code(self.current_guess)
-            if self.current_guess
-            else "Aucune sélection"
-        )
-        embed.add_field(
-            name="Tentative en cours",
-            value=(
-                f"{attempts_display}/{self.session.helper.config.max_attempts}\n"
-                f"Sélection : {selection}"
-            ),
-            inline=False,
-        )
+        embed = self.session.build_embed(current_guess=self.current_guess)
 
-        self.confirm_button.disabled = (
-            len(self.current_guess) != self.session.helper.config.code_length
-        )
-        self.clear_button.disabled = len(self.current_guess) == 0
+        if self.session.finished:
+            for item in self.children:
+                item.disabled = True
+        else:
+            code_length = self.session.helper.config.code_length
+            self.confirm_button.disabled = len(self.current_guess) != code_length
+            self.clear_button.disabled = len(self.current_guess) == 0
 
         if interaction is not None:
-            await interaction.response.edit_message(embed=embed, view=self)
+            if not interaction.response.is_done():
+                await interaction.response.edit_message(embed=embed, view=self)
+            else:
+                await interaction.message.edit(embed=embed, view=self)
         elif self.message is not None:
             await self.message.edit(embed=embed, view=self)
 
-    async def disable(self, *, interaction: Optional[discord.Interaction] = None) -> None:
-        for item in self.children:
-            item.disabled = True
-        if interaction is not None:
-            if not interaction.response.is_done():
-                await interaction.response.edit_message(view=self)
-            else:
-                await interaction.message.edit(view=self)
-        elif self.message is not None:
-            await self.message.edit(view=self)
-        self.stop()
+        if self.session.finished:
+            self.stop()
 
     async def handle_color(self, color_name: str, interaction: discord.Interaction) -> None:
         if self.session.finished:
@@ -496,6 +526,8 @@ class Economy(commands.Cog):
         self.message_cooldown = CooldownManager(MESSAGE_COOLDOWN)
         self._cleanup_task: asyncio.Task[None] | None = None
         self.mastermind_helper = MASTERMIND_HELPER
+        self._booster_choices = PET_BOOSTER_CHOICES
+        self._booster_weights = PET_BOOSTER_WEIGHTS
 
     async def cog_load(self) -> None:
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
@@ -533,6 +565,71 @@ class Economy(commands.Cog):
             return multiplier, message or default_message
 
         return 0, default_message
+
+    async def _maybe_award_pet_booster(self, ctx: commands.Context, source: str) -> bool:
+        drop_rate = PET_BOOSTER_DROP_RATES.get(source, 0.0)
+        if drop_rate <= 0 or random.random() > drop_rate:
+            return False
+
+        try:
+            multiplier, minutes = random.choices(
+                self._booster_choices, weights=self._booster_weights, k=1
+            )[0]
+        except IndexError:
+            return False
+
+        duration_seconds = minutes * 60
+        try:
+            (
+                new_multiplier,
+                expires_at,
+                extended,
+                previous_multiplier,
+            ) = await self.database.grant_pet_booster(
+                ctx.author.id,
+                multiplier=multiplier,
+                duration_seconds=duration_seconds,
+            )
+        except DatabaseError:
+            logger.exception("Impossible d'attribuer un booster de pets")
+            return False
+
+        remaining_seconds = max(0.0, (expires_at - datetime.now(timezone.utc)).total_seconds())
+        remaining_display = _format_seconds(remaining_seconds)
+        source_label = "Machine à sous" if source == "slots" else "Mastermind"
+
+        lines: list[str] = []
+        if extended and new_multiplier == previous_multiplier:
+            lines.append(
+                f"{ctx.author.mention}, ton booster x{new_multiplier:g} gagne **{minutes} minute(s)** supplémentaires !"
+            )
+        else:
+            lines.append(
+                f"{ctx.author.mention} décroche un booster x{new_multiplier:g} pendant **{minutes} minute(s)** grâce à {source_label} !"
+            )
+            if previous_multiplier > 1 and new_multiplier > previous_multiplier:
+                lines.append(
+                    f"Ton booster passe de x{previous_multiplier:g} à x{new_multiplier:g} !"
+                )
+        lines.append(f"Expiration dans {remaining_display}.")
+
+        await ctx.send(
+            embed=embeds.success_embed(
+                "\n".join(lines), title="🎁 Booster de pets obtenu"
+            )
+        )
+
+        logger.debug(
+            "pet_booster_awarded",
+            extra={
+                "user_id": ctx.author.id,
+                "source": source,
+                "multiplier": new_multiplier,
+                "minutes": minutes,
+                "extended": extended,
+            },
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Récompenses de messages
@@ -716,12 +813,18 @@ class Economy(commands.Cog):
             result_text=message,
         )
         await ctx.send(embed=embed)
+        await self._maybe_award_pet_booster(ctx, "slots")
 
     @commands.cooldown(1, MASTERMIND_CONFIG.cooldown, commands.BucketType.user)
     @commands.command(name="mastermind", aliases=("mm", "code"))
     async def mastermind(self, ctx: commands.Context) -> None:
         """Mini-jeu de Mastermind pour gagner quelques PB."""
-        session = MastermindSession(ctx, self.mastermind_helper, self.database)
+        session = MastermindSession(
+            ctx,
+            self.mastermind_helper,
+            self.database,
+            booster_callback=self._maybe_award_pet_booster,
+        )
         try:
             await session.start()
         except Exception as exc:  # pragma: no cover - log unexpected runtime errors
