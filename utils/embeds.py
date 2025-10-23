@@ -11,7 +11,6 @@ from config import (
     Colors,
     Emojis,
     GOLD_PET_MULTIPLIER,
-    HUGE_PET_NAME,
     PET_EMOJIS,
     PET_RARITY_COLORS,
     PREFIX,
@@ -383,8 +382,8 @@ def pet_reveal_embed(
 ) -> discord.Embed:
     color = Colors.GOLD if is_gold else PET_RARITY_COLORS.get(rarity, Colors.INFO)
     description = f"Revenus passifs : **{income_per_hour:,} PB/h**".replace(",", " ")
-    if is_huge and name == HUGE_PET_NAME:
-        description += "\n🎉 Incroyable ! Tu as obtenu **Huge Shelly** ! 🎉"
+    if is_huge:
+        description += f"\n🎉 Incroyable ! Tu as obtenu **{name}** ! 🎉"
     if is_gold:
         description += f"\n🥇 Variante or ! Puissance x{GOLD_PET_MULTIPLIER}."
     if market_value > 0 and not is_huge:

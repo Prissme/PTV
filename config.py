@@ -187,11 +187,14 @@ HUGE_PET_MULTIPLIER: Final[int] = 5
 HUGE_PET_MIN_INCOME: Final[int] = 500
 HUGE_GALE_NAME: Final[str] = "Huge Gale"
 HUGE_GRIFF_NAME: Final[str] = "Huge Griff"
+HUGE_KENJI_ONI_NAME: Final[str] = "Huge Kenji Oni"
 HUGE_GRIFF_MULTIPLIER: Final[int] = 3
 HUGE_GALE_MULTIPLIER: Final[int] = 100
+HUGE_KENJI_ONI_MULTIPLIER: Final[int] = 10
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, int]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
     HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
+    HUGE_KENJI_ONI_NAME: HUGE_KENJI_ONI_MULTIPLIER,
 }
 
 
@@ -210,6 +213,7 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     "Huge Trunk": "Peut apparaître dans l'œuf bio avec un taux minuscule.",
     HUGE_GRIFF_NAME: "Récompense spéciale lors d'événements ou de giveaways du staff.",
     HUGE_GALE_NAME: "Récompense finale du mode Millionaire Race (étape 20).",
+    HUGE_KENJI_ONI_NAME: "Récompense rarissime du Mastermind pour les esprits les plus vifs.",
 }
 
 _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
@@ -314,6 +318,14 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
         drop_rate=0.0,
         is_huge=True,
     ),
+    PetDefinition(
+        name=HUGE_KENJI_ONI_NAME,
+        rarity="Secret",
+        image_url="https://example.com/document56.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
 )
 
 PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
@@ -376,6 +388,7 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Huge Trunk": os.getenv("PET_EMOJI_HUGE_TRUNK", "<:HugeTrunk:1430876043400446013>"),
     HUGE_GALE_NAME: os.getenv("PET_EMOJI_HUGE_GALE", "<:HugeGale:1430981225375600641>"),
     HUGE_GRIFF_NAME: os.getenv("PET_EMOJI_HUGE_GRIFF", "<:HugeGriff:1431005620227670036>"),
+    HUGE_KENJI_ONI_NAME: os.getenv("PET_EMOJI_HUGE_KENJI_ONI", "<:HugeKenjiOni:1431057254337089576>"),
     "default": os.getenv("PET_EMOJI_DEFAULT", "🐾"),
 }
 
