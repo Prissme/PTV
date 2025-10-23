@@ -8,7 +8,13 @@ from typing import Any, AsyncIterator, Dict, Iterable, List, Mapping, Optional, 
 
 import asyncpg
 
-from config import BASE_PET_SLOTS, GOLD_PET_MULTIPLIER, GOLD_PET_COMBINE_REQUIRED
+from config import (
+    BASE_PET_SLOTS,
+    GOLD_PET_MULTIPLIER,
+    GOLD_PET_COMBINE_REQUIRED,
+    HUGE_PET_MIN_INCOME,
+    HUGE_PET_MULTIPLIER,
+)
 
 __all__ = ["Database", "DatabaseError", "InsufficientBalanceError"]
 
@@ -914,6 +920,28 @@ class Database:
             user_id,
         )
 
+    async def get_best_non_huge_income(
+        self, user_id: int, *, connection: asyncpg.Connection | None = None
+    ) -> int:
+        query = (
+            """
+            SELECT MAX(p.base_income_per_hour * CASE WHEN up.is_gold THEN $2 ELSE 1 END) AS best_income
+            FROM user_pets AS up
+            JOIN pets AS p ON p.pet_id = up.pet_id
+            WHERE up.user_id = $1 AND NOT up.is_huge
+            """
+        )
+        executor = connection or self.pool
+        if executor is None:
+            raise DatabaseError("La connexion à la base de données n'est pas initialisée")
+        row = await executor.fetchrow(query, user_id, GOLD_PET_MULTIPLIER)
+        if row is None:
+            return 0
+        best_value = row.get("best_income")
+        if best_value is None:
+            return 0
+        return int(best_value)
+
     async def set_active_pet(
         self, user_id: int, user_pet_id: int
     ) -> tuple[Optional[asyncpg.Record], bool, int]:
@@ -1048,10 +1076,24 @@ class Database:
                 if overlap_end > overlap_start:
                     booster_seconds = (overlap_end - overlap_start).total_seconds()
 
-            hourly_income = sum(
-                int(row["base_income_per_hour"]) * (GOLD_PET_MULTIPLIER if bool(row["is_gold"]) else 1)
-                for row in rows
+            best_non_huge_income = await self.get_best_non_huge_income(
+                user_id, connection=connection
             )
+            huge_income_value = max(
+                HUGE_PET_MIN_INCOME,
+                best_non_huge_income * HUGE_PET_MULTIPLIER,
+            )
+            effective_incomes: list[int] = []
+            for row in rows:
+                base_income = int(row["base_income_per_hour"])
+                if bool(row["is_huge"]):
+                    income_value = huge_income_value
+                else:
+                    multiplier = GOLD_PET_MULTIPLIER if bool(row["is_gold"]) else 1
+                    income_value = base_income * multiplier
+                effective_incomes.append(income_value)
+
+            hourly_income = sum(effective_incomes)
             if hourly_income <= 0:
                 await connection.execute(
                     "UPDATE users SET pet_last_claim = $1 WHERE user_id = $2",

@@ -309,7 +309,7 @@ def pet_reveal_embed(
     color = Colors.GOLD if is_gold else PET_RARITY_COLORS.get(rarity, Colors.INFO)
     description = f"Revenus passifs : **{income_per_hour:,} PB/h**".replace(",", " ")
     if is_huge and name == HUGE_PET_NAME:
-        description += "\n🎉 ÉNORME ! Tu as obtenu une ÉNORME SHELLY ! 🎉"
+        description += "\n🎉 Incroyable ! Tu as obtenu **Huge Shelly** ! 🎉"
     if is_gold:
         description += f"\n🥇 Variante or ! Puissance x{GOLD_PET_MULTIPLIER}."
     if market_value > 0:

@@ -20,6 +20,8 @@ from config import (
     PET_RARITY_ORDER,
     PET_ZONES,
     HUGE_PET_NAME,
+    HUGE_PET_MIN_INCOME,
+    HUGE_PET_MULTIPLIER,
     PetDefinition,
     PetEggDefinition,
     PetZoneDefinition,
@@ -79,23 +81,38 @@ class Pets(commands.Cog):
         pet_id = self._pet_ids[pet.name]
         return pet, pet_id
 
-    def _convert_record(self, record: Mapping[str, Any]) -> Dict[str, Any]:
+    @staticmethod
+    def _compute_huge_income(best_non_huge_income: int | None) -> int:
+        best_value = max(0, int(best_non_huge_income or 0))
+        if best_value <= 0:
+            return HUGE_PET_MIN_INCOME
+        return max(HUGE_PET_MIN_INCOME, best_value * HUGE_PET_MULTIPLIER)
+
+    def _convert_record(
+        self, record: Mapping[str, Any], *, best_non_huge_income: int | None = None
+    ) -> Dict[str, Any]:
         data = dict(record)
         pet_identifier = int(record.get("pet_id", 0))
         definition = self._definition_by_id.get(pet_identifier)
         is_gold = bool(record.get("is_gold"))
+        is_huge = bool(record.get("is_huge"))
         data["is_gold"] = is_gold
-        multiplier = GOLD_PET_MULTIPLIER if is_gold else 1
+        base_income = int(record.get("base_income_per_hour", data.get("base_income_per_hour", 0)))
         if definition is not None:
             data["image_url"] = definition.image_url
-            data["base_income_per_hour"] = definition.base_income_per_hour * multiplier
             data["rarity"] = definition.rarity
             data["name"] = definition.name
-            data["is_huge"] = definition.is_huge
+            is_huge = definition.is_huge
+            base_income = definition.base_income_per_hour
+        data["is_huge"] = is_huge
+
+        if is_huge:
+            effective_income = self._compute_huge_income(best_non_huge_income)
         else:
-            base_income = int(data.get("base_income_per_hour", 0))
-            if is_gold:
-                data["base_income_per_hour"] = base_income * multiplier
+            multiplier = GOLD_PET_MULTIPLIER if is_gold else 1
+            effective_income = base_income * multiplier
+
+        data["base_income_per_hour"] = int(effective_income)
         return data
 
     def _resolve_egg(self, raw: str | None) -> PetEggDefinition | None:
@@ -274,7 +291,14 @@ class Pets(commands.Cog):
         await asyncio.sleep(1.2)
         market_values = await self.database.get_pet_market_values()
         market_value = int(market_values.get(pet_id, 0))
-        income_per_hour = int(pet_definition.base_income_per_hour * (GOLD_PET_MULTIPLIER if is_gold else 1))
+        if pet_definition.is_huge:
+            best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
+            income_per_hour = self._compute_huge_income(best_non_huge_income)
+        else:
+            income_per_hour = int(
+                pet_definition.base_income_per_hour
+                * (GOLD_PET_MULTIPLIER if is_gold else 1)
+            )
         reveal_embed = embeds.pet_reveal_embed(
             name=pet_definition.name,
             rarity=pet_definition.rarity,
@@ -302,9 +326,19 @@ class Pets(commands.Cog):
         records: Iterable[Mapping[str, Any]],
         market_values: Mapping[int, int] | None = None,
     ) -> List[Dict[str, Any]]:
+        record_list = list(records)
+        best_non_huge_income = 0
+        for record in record_list:
+            if not bool(record.get("is_huge")):
+                base_income = int(record.get("base_income_per_hour", 0))
+                if bool(record.get("is_gold")):
+                    base_income *= GOLD_PET_MULTIPLIER
+                if base_income > best_non_huge_income:
+                    best_non_huge_income = base_income
+
         converted = []
-        for record in records:
-            data = self._convert_record(record)
+        for record in record_list:
+            data = self._convert_record(record, best_non_huge_income=best_non_huge_income)
             data["income"] = int(data.get("base_income_per_hour", 0))
             pet_identifier = int(data.get("pet_id", 0))
             if market_values:
@@ -400,7 +434,8 @@ class Pets(commands.Cog):
             await ctx.send(embed=embeds.error_embed("Pet introuvable. Vérifie l'identifiant avec `e!pets`."))
             return
 
-        pet_data = self._convert_record(row)
+        best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
+        pet_data = self._convert_record(row, best_non_huge_income=best_non_huge_income)
         market_values = await self.database.get_pet_market_values()
         pet_identifier = int(pet_data.get("pet_id", 0))
         pet_data["market_value"] = int(market_values.get(pet_identifier, 0))
@@ -438,7 +473,8 @@ class Pets(commands.Cog):
             await ctx.send(embed=embeds.error_embed(str(exc)))
             return
 
-        pet_data = self._convert_record(record)
+        best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
+        pet_data = self._convert_record(record, best_non_huge_income=best_non_huge_income)
         market_values = await self.database.get_pet_market_values()
         pet_identifier = int(pet_data.get("pet_id", 0))
         pet_data["market_value"] = int(market_values.get(pet_identifier, 0))
@@ -476,9 +512,10 @@ class Pets(commands.Cog):
             return
 
         market_values = await self.database.get_pet_market_values()
+        best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
         pets_data: List[Dict[str, Any]] = []
         for row in rows:
-            data = self._convert_record(row)
+            data = self._convert_record(row, best_non_huge_income=best_non_huge_income)
             pet_identifier = int(data.get("pet_id", 0))
             data["market_value"] = int(market_values.get(pet_identifier, 0))
             pets_data.append(data)
