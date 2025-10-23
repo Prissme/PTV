@@ -179,6 +179,7 @@ HUGE_PET_NAME: Final[str] = "Huge Shelly"
 HUGE_PET_MULTIPLIER: Final[int] = 5
 HUGE_PET_MIN_INCOME: Final[int] = 500
 HUGE_GALE_NAME: Final[str] = "Huge Gale"
+HUGE_GRIFF_NAME: Final[str] = "Huge Griff"
 
 _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
@@ -274,6 +275,14 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
         drop_rate=0.0,
         is_huge=True,
     ),
+    PetDefinition(
+        name=HUGE_GRIFF_NAME,
+        rarity="Secret",
+        image_url="https://example.com/document55.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
 )
 
 PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
@@ -335,6 +344,7 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Doug": os.getenv("PET_EMOJI_DOUG", "<:Doug:1430875052202786977>"),
     "Huge Trunk": os.getenv("PET_EMOJI_HUGE_TRUNK", "<:HugeTrunk:1430876043400446013>"),
     HUGE_GALE_NAME: os.getenv("PET_EMOJI_HUGE_GALE", "<:HugeGale:1430981225375600641>"),
+    HUGE_GRIFF_NAME: os.getenv("PET_EMOJI_HUGE_GRIFF", "<:HugeGriff:1431005620227670036>"),
     "default": os.getenv("PET_EMOJI_DEFAULT", "🐾"),
 }
 
