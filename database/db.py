@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, AsyncIterator, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
 import asyncpg
 
@@ -108,6 +108,16 @@ class Database:
                     invite_progress INTEGER NOT NULL DEFAULT 0 CHECK (invite_progress >= 0),
                     egg_progress INTEGER NOT NULL DEFAULT 0 CHECK (egg_progress >= 0),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_zones (
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    zone_slug TEXT NOT NULL,
+                    unlocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, zone_slug)
                 )
                 """
             )
@@ -657,6 +667,38 @@ class Database:
             user_id,
         )
         return int(value or 0)
+
+    # ------------------------------------------------------------------
+    # Gestion des zones
+    # ------------------------------------------------------------------
+    async def has_unlocked_zone(self, user_id: int, zone_slug: str) -> bool:
+        await self.ensure_user(user_id)
+        value = await self.pool.fetchval(
+            "SELECT 1 FROM user_zones WHERE user_id = $1 AND zone_slug = $2",
+            user_id,
+            zone_slug,
+        )
+        return value is not None
+
+    async def unlock_zone(self, user_id: int, zone_slug: str) -> None:
+        await self.ensure_user(user_id)
+        await self.pool.execute(
+            """
+            INSERT INTO user_zones (user_id, zone_slug)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id, zone_slug) DO NOTHING
+            """,
+            user_id,
+            zone_slug,
+        )
+
+    async def get_unlocked_zones(self, user_id: int) -> Set[str]:
+        await self.ensure_user(user_id)
+        rows = await self.pool.fetch(
+            "SELECT zone_slug FROM user_zones WHERE user_id = $1",
+            user_id,
+        )
+        return {str(row["zone_slug"]) for row in rows}
 
     # ------------------------------------------------------------------
     # Utilitaires génériques

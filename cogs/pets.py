@@ -10,14 +10,19 @@ import discord
 from discord.ext import commands
 
 from config import (
+    DEFAULT_PET_EGG_SLUG,
     GOLD_PET_CHANCE,
     GOLD_PET_COMBINE_REQUIRED,
     GOLD_PET_MULTIPLIER,
+    GRADE_DEFINITIONS,
     PET_DEFINITIONS,
-    PET_EGG_PRICE,
+    PET_EGG_DEFINITIONS,
     PET_RARITY_ORDER,
-    PetDefinition,
+    PET_ZONES,
     HUGE_PET_NAME,
+    PetDefinition,
+    PetEggDefinition,
+    PetZoneDefinition,
 )
 from utils import embeds
 from database.db import DatabaseError
@@ -41,7 +46,24 @@ class Pets(commands.Cog):
         }
         self._definition_by_id: Dict[int, PetDefinition] = {}
         self._pet_ids: Dict[str, int] = {}
-        self._weights: List[float] = [pet.drop_rate for pet in self._definitions]
+        self._eggs: Dict[str, PetEggDefinition] = {
+            egg.slug: egg for egg in PET_EGG_DEFINITIONS
+        }
+        self._zones: Dict[str, PetZoneDefinition] = {zone.slug: zone for zone in PET_ZONES}
+        self._default_egg_slug: str = (
+            DEFAULT_PET_EGG_SLUG if DEFAULT_PET_EGG_SLUG in self._eggs else next(iter(self._eggs), "")
+        )
+        self._egg_lookup: Dict[str, str] = {}
+        for egg in self._eggs.values():
+            aliases = {egg.slug, egg.name.lower()}
+            aliases.update(alias.lower() for alias in egg.aliases)
+            normalized = {token.replace("œ", "oe").strip() for token in aliases}
+            for token in aliases | normalized:
+                key = token.strip().lower()
+                if key:
+                    self._egg_lookup[key] = egg.slug
+        if self._default_egg_slug:
+            self._egg_lookup.setdefault(self._default_egg_slug, self._default_egg_slug)
 
     async def cog_load(self) -> None:
         self._pet_ids = await self.database.sync_pets(self._definitions)
@@ -51,8 +73,9 @@ class Pets(commands.Cog):
     # ------------------------------------------------------------------
     # Utilitaires internes
     # ------------------------------------------------------------------
-    def _choose_pet(self) -> tuple[PetDefinition, int]:
-        pet = random.choices(self._definitions, weights=self._weights, k=1)[0]
+    def _choose_pet(self, egg: PetEggDefinition) -> tuple[PetDefinition, int]:
+        weights = [pet.drop_rate for pet in egg.pets]
+        pet = random.choices(egg.pets, weights=weights, k=1)[0]
         pet_id = self._pet_ids[pet.name]
         return pet, pet_id
 
@@ -74,6 +97,116 @@ class Pets(commands.Cog):
             if is_gold:
                 data["base_income_per_hour"] = base_income * multiplier
         return data
+
+    def _resolve_egg(self, raw: str | None) -> PetEggDefinition | None:
+        if not self._eggs:
+            return None
+        if raw is None or not raw.strip():
+            if self._default_egg_slug:
+                return self._eggs.get(self._default_egg_slug) or next(
+                    iter(self._eggs.values()), None
+                )
+            return next(iter(self._eggs.values()), None)
+        key = raw.strip().lower()
+        slug = self._egg_lookup.get(key)
+        if slug is None:
+            return None
+        return self._eggs.get(slug)
+
+    def _get_zone_for_egg(self, egg: PetEggDefinition) -> PetZoneDefinition | None:
+        return self._zones.get(egg.zone_slug)
+
+    @staticmethod
+    def _grade_label(level: int) -> str:
+        if 1 <= level <= len(GRADE_DEFINITIONS):
+            return GRADE_DEFINITIONS[level - 1].name
+        return f"Grade {level}"
+
+    async def _ensure_zone_access(
+        self, ctx: commands.Context, zone: PetZoneDefinition
+    ) -> bool:
+        if zone.entry_cost > 0:
+            unlocked = await self.database.has_unlocked_zone(ctx.author.id, zone.slug)
+            if unlocked:
+                return True
+
+        grade_level = await self.database.get_grade_level(ctx.author.id)
+        if grade_level < zone.grade_required:
+            grade_label = self._grade_label(zone.grade_required)
+            await ctx.send(
+                embed=embeds.error_embed(
+                    f"Tu dois atteindre le grade {zone.grade_required} "
+                    f"(**{grade_label}**) pour explorer {zone.name}."
+                )
+            )
+            return False
+
+        if zone.entry_cost <= 0:
+            return True
+
+        balance = await self.database.fetch_balance(ctx.author.id)
+        if balance < zone.entry_cost:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    f"Il te faut {embeds.format_currency(zone.entry_cost)} pour débloquer {zone.name}."
+                )
+            )
+            return False
+
+        await self.database.increment_balance(
+            ctx.author.id,
+            -zone.entry_cost,
+            transaction_type="zone_unlock",
+            description=f"Déblocage zone {zone.name}",
+        )
+        await self.database.unlock_zone(ctx.author.id, zone.slug)
+
+        eggs_commands = ", ".join(f"`e!openbox {egg.slug}`" for egg in zone.eggs)
+        lines = [
+            f"{ctx.author.mention}, tu as débloqué **{zone.name}** !",
+            f"Coût : {embeds.format_currency(zone.entry_cost)}.",
+        ]
+        if eggs_commands:
+            lines.append(f"Œufs disponibles : {eggs_commands}")
+        await ctx.send(
+            embed=embeds.success_embed("\n".join(lines), title="Nouvelle zone débloquée")
+        )
+        return True
+
+    async def _send_egg_overview(self, ctx: commands.Context) -> None:
+        grade_level = await self.database.get_grade_level(ctx.author.id)
+        unlocked_zones = await self.database.get_unlocked_zones(ctx.author.id)
+        lines: List[str] = []
+        for zone in PET_ZONES:
+            zone_unlocked = zone.entry_cost <= 0 or zone.slug in unlocked_zones
+            meets_grade = grade_level >= zone.grade_required
+            status = "✅" if zone_unlocked and meets_grade else "🔒"
+            requirements: List[str] = []
+            if not meets_grade:
+                requirements.append(
+                    f"Grade {zone.grade_required} ({self._grade_label(zone.grade_required)})"
+                )
+            if zone.entry_cost > 0:
+                if zone.slug in unlocked_zones:
+                    requirements.append("Accès payé")
+                else:
+                    requirements.append(
+                        f"Entrée {embeds.format_currency(zone.entry_cost)}"
+                    )
+            if not requirements:
+                requirements.append("Accessible")
+            lines.append(f"**{status} {zone.name}** — {', '.join(requirements)}")
+            for egg in zone.eggs:
+                lines.append(
+                    f"  • {egg.name} — {embeds.format_currency(egg.price)} (`e!openbox {egg.slug}`)"
+                )
+
+        description = (
+            "\n".join(lines) if lines else "Aucun œuf n'est disponible pour le moment."
+        )
+        embed = embeds.info_embed(description, title="Œufs & zones disponibles")
+        embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+        await ctx.send(embed=embed)
 
     async def _send_huge_shelly_alert(self, ctx: commands.Context) -> None:
         channel = self.bot.get_channel(HUGE_SHELLY_ALERT_CHANNEL_ID)
@@ -98,24 +231,25 @@ class Pets(commands.Cog):
         )
         await channel.send(hype_message)
 
-    async def _open_pet_egg(self, ctx: commands.Context) -> None:
+    async def _open_pet_egg(self, ctx: commands.Context, egg: PetEggDefinition) -> None:
         await self.database.ensure_user(ctx.author.id)
         balance = await self.database.fetch_balance(ctx.author.id)
-        if balance < PET_EGG_PRICE:
+        if balance < egg.price:
             await ctx.send(
                 embed=embeds.error_embed(
-                    f"Tu n'as pas assez de PB. Il te faut **{PET_EGG_PRICE:,} PB** pour acheter un œuf basique.".replace(",", " ")
+                    "Tu n'as pas assez de PB. Il te faut "
+                    f"**{embeds.format_currency(egg.price)}** pour acheter {egg.name}."
                 )
             )
             return
 
         await self.database.increment_balance(
             ctx.author.id,
-            -PET_EGG_PRICE,
+            -egg.price,
             transaction_type="pet_purchase",
-            description="Achat d'un œuf basique",
+            description=f"Achat de {egg.name}",
         )
-        pet_definition, pet_id = self._choose_pet()
+        pet_definition, pet_id = self._choose_pet(egg)
         is_gold = False
         if not pet_definition.is_huge and GOLD_PET_CHANCE > 0:
             is_gold = random.random() < GOLD_PET_CHANCE
@@ -128,9 +262,9 @@ class Pets(commands.Cog):
         await self.database.record_pet_opening(ctx.author.id, pet_id)
 
         animation_steps = (
-            ("Œuf basique", "L'œuf commence à bouger…"),
-            ("Œuf basique", "Des fissures apparaissent !"),
-            ("Œuf basique", "Ça y est, il est sur le point d'éclore !"),
+            (egg.name, "L'œuf commence à bouger…"),
+            (egg.name, "Des fissures apparaissent !"),
+            (egg.name, "Ça y est, il est sur le point d'éclore !"),
         )
         message = await ctx.send(embed=embeds.pet_animation_embed(title=animation_steps[0][0], description=animation_steps[0][1]))
         for title, description in animation_steps[1:]:
@@ -191,19 +325,54 @@ class Pets(commands.Cog):
     # ------------------------------------------------------------------
     @commands.group(name="buy", invoke_without_command=True)
     async def buy(self, ctx: commands.Context, *, item: str | None = None) -> None:
-        if item and item.lower() == "egg":
-            await ctx.invoke(self.openbox)
-            return
-        await ctx.send(embed=embeds.info_embed("Utilise `e!buy egg` pour acheter un œuf basique."))
+        if item:
+            egg_definition = self._resolve_egg(item)
+            if egg_definition is not None:
+                await ctx.invoke(self.openbox, egg=item)
+                return
+        await ctx.send(
+            embed=embeds.info_embed(
+                "Utilise `e!openbox [œuf]` pour ouvrir un œuf ou `e!eggs` pour voir les zones disponibles."
+            )
+        )
 
     @buy.command(name="egg")
-    async def buy_egg(self, ctx: commands.Context) -> None:
-        await ctx.invoke(self.openbox)
+    async def buy_egg(self, ctx: commands.Context, *, egg: str | None = None) -> None:
+        await ctx.invoke(self.openbox, egg=egg)
 
     @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.command(name="openbox", aliases=("buyegg", "openegg", "egg"))
-    async def openbox(self, ctx: commands.Context) -> None:
-        await self._open_pet_egg(ctx)
+    async def openbox(self, ctx: commands.Context, egg: str | None = None) -> None:
+        if egg and egg.strip().lower() in {"list", "liste", "eggs", "oeufs"}:
+            await self._send_egg_overview(ctx)
+            return
+
+        egg_definition = self._resolve_egg(egg)
+        if egg_definition is None:
+            if egg:
+                await ctx.send(
+                    embed=embeds.error_embed("Œuf introuvable. Voici les options disponibles :")
+                )
+                await self._send_egg_overview(ctx)
+            else:
+                await ctx.send(
+                    embed=embeds.error_embed("Aucun œuf n'est disponible pour le moment.")
+                )
+            return
+
+        zone = self._get_zone_for_egg(egg_definition)
+        if zone is None:
+            await ctx.send(embed=embeds.error_embed("La zone associée à cet œuf est introuvable."))
+            return
+
+        if not await self._ensure_zone_access(ctx, zone):
+            return
+
+        await self._open_pet_egg(ctx, egg_definition)
+
+    @commands.command(name="eggs", aliases=("zones", "zone"))
+    async def eggs(self, ctx: commands.Context) -> None:
+        await self._send_egg_overview(ctx)
 
     @commands.command(name="pets", aliases=("collection", "inventory"))
     async def pets_command(self, ctx: commands.Context) -> None:

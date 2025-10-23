@@ -248,7 +248,6 @@ def grade_profile_embed(
         )
         quest_lines = [
             _quest_progress_line("Envoyer des messages", progress.get("messages", 0), next_grade.message_goal),
-            _quest_progress_line("Inviter des personnes", progress.get("invites", 0), next_grade.invite_goal),
             _quest_progress_line("Ouvrir des œufs", progress.get("eggs", 0), next_grade.egg_goal),
         ]
 

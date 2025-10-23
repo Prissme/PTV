@@ -1,10 +1,9 @@
 """Système de grades avec quêtes et récompenses progressives."""
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
-from typing import Dict, Mapping, Optional
+from typing import Mapping, Optional
 
 import discord
 from discord.ext import commands
@@ -30,92 +29,12 @@ class GradeSystem(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.database = bot.database
-        self._invite_cache: Dict[int, Dict[str, int]] = {}
-        self._invite_lock = asyncio.Lock()
-
     @property
     def total_grades(self) -> int:
         return len(GRADE_DEFINITIONS)
 
     async def cog_load(self) -> None:
-        await self._sync_all_invites()
         logger.info("Cog Grades chargé")
-
-    # ------------------------------------------------------------------
-    # Gestion des invites (pour la quête "Inviter")
-    # ------------------------------------------------------------------
-    async def _sync_all_invites(self) -> None:
-        if not self.bot.guilds:
-            return
-        for guild in self.bot.guilds:
-            await self._sync_guild_invites(guild)
-
-    async def _sync_guild_invites(self, guild: discord.Guild) -> None:
-        if guild is None:
-            return
-        try:
-            invites = await guild.invites()
-        except (discord.Forbidden, discord.HTTPException):
-            return
-        async with self._invite_lock:
-            self._invite_cache[guild.id] = {
-                invite.code: invite.uses or 0 for invite in invites
-            }
-
-    async def _resolve_inviter(self, guild: discord.Guild) -> Optional[int]:
-        try:
-            invites = await guild.invites()
-        except (discord.Forbidden, discord.HTTPException):
-            return None
-
-        async with self._invite_lock:
-            previous = self._invite_cache.get(guild.id, {})
-            self._invite_cache[guild.id] = {
-                invite.code: invite.uses or 0 for invite in invites
-            }
-
-        for invite in invites:
-            previous_uses = previous.get(invite.code, 0)
-            current_uses = invite.uses or 0
-            if current_uses > previous_uses and invite.inviter:
-                return invite.inviter.id
-        return None
-
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
-        await self._sync_all_invites()
-
-    @commands.Cog.listener()
-    async def on_invite_create(self, invite: discord.Invite) -> None:
-        if invite.guild is None:
-            return
-        async with self._invite_lock:
-            cache = self._invite_cache.setdefault(invite.guild.id, {})
-            cache[invite.code] = invite.uses or 0
-
-    @commands.Cog.listener()
-    async def on_invite_delete(self, invite: discord.Invite) -> None:
-        if invite.guild is None:
-            return
-        async with self._invite_lock:
-            cache = self._invite_cache.get(invite.guild.id)
-            if cache is not None:
-                cache.pop(invite.code, None)
-
-    @commands.Cog.listener()
-    async def on_member_join(self, member: discord.Member) -> None:
-        inviter_id = await self._resolve_inviter(member.guild)
-        if inviter_id is None:
-            return
-
-        inviter: Optional[discord.Member] = member.guild.get_member(inviter_id)
-        if inviter is None:
-            with contextlib.suppress(discord.HTTPException):
-                inviter = await member.guild.fetch_member(inviter_id)
-        if inviter is None:
-            return
-
-        await self._apply_progress(inviter, "invite", 1, None)
 
     # ------------------------------------------------------------------
     # Listeners de progression
@@ -163,15 +82,12 @@ class GradeSystem(commands.Cog):
         definition = GRADE_DEFINITIONS[grade_level]
         progress_kwargs = {
             "message_cap": definition.message_goal,
-            "invite_cap": definition.invite_goal,
             "egg_cap": definition.egg_goal,
         }
 
         quest_type = quest_type.lower()
         if quest_type in {"message", "messages"}:
             progress_kwargs["message_delta"] = amount
-        elif quest_type in {"invite", "invites"}:
-            progress_kwargs["invite_delta"] = amount
         elif quest_type in {"egg", "eggs", "oeuf", "oeufs"}:
             progress_kwargs["egg_delta"] = amount
         else:
@@ -214,7 +130,6 @@ class GradeSystem(commands.Cog):
     def _is_grade_ready(row: Mapping[str, object], definition: GradeDefinition) -> bool:
         return (
             int(row["message_progress"]) >= definition.message_goal
-            and int(row["invite_progress"]) >= definition.invite_goal
             and int(row["egg_progress"]) >= definition.egg_goal
         )
 
@@ -322,7 +237,6 @@ class GradeSystem(commands.Cog):
             next_grade=next_grade,
             progress={
                 "messages": int(row["message_progress"]),
-                "invites": int(row["invite_progress"]),
                 "eggs": int(row["egg_progress"]),
             },
             pet_slots=BASE_PET_SLOTS + grade_level,
