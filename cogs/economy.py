@@ -9,7 +9,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Sequence
+from typing import Optional, Sequence
 
 import discord
 from discord.ext import commands
@@ -137,7 +137,7 @@ MASTERMIND_HELPER = MastermindHelper(MASTERMIND_CONFIG)
 
 
 class MastermindSession:
-    """Gestion d'une partie de Mastermind."""
+    """Gestion d'une partie de Mastermind avec interface à boutons."""
 
     def __init__(
         self,
@@ -151,69 +151,66 @@ class MastermindSession:
         self.database = database
         self.secret = helper.generate_code()
         self.attempts = 0
+        self.finished = False
+        self.view: MastermindView | None = None
+        self.message: discord.Message | None = None
         self._logger = logger.getChild("MastermindSession")
 
-    async def play(self) -> None:
+    async def start(self) -> None:
         await self.database.ensure_user(self.ctx.author.id)
+        self.view = MastermindView(self)
+        embed = embeds.mastermind_start_embed(
+            member=self.ctx.author,
+            palette=self.helper.palette,
+            code_length=self.helper.config.code_length,
+            max_attempts=self.helper.config.max_attempts,
+            timeout=self.helper.config.response_timeout,
+        )
+        self.message = await self.ctx.send(embed=embed, view=self.view)
+        self.view.message = self.message
+        await self.view.refresh()
+        await self.view.wait()
+
+    async def process_guess(self, guess: Sequence[str]) -> None:
+        self.attempts += 1
+        exact, misplaced = self.helper.evaluate_guess(self.secret, guess)
+        attempts_left = self.helper.config.max_attempts - self.attempts
+
         await self.ctx.send(
-            embed=embeds.mastermind_start_embed(
+            embed=embeds.mastermind_feedback_embed(
                 member=self.ctx.author,
-                palette=self.helper.palette,
-                code_length=self.helper.config.code_length,
+                attempt=self.attempts,
                 max_attempts=self.helper.config.max_attempts,
-                timeout=self.helper.config.response_timeout,
+                guess_display=self.helper.format_code(guess),
+                well_placed=exact,
+                misplaced=misplaced,
+                attempts_left=attempts_left,
             )
         )
 
-        while self.attempts < self.helper.config.max_attempts:
-            try:
-                guess_message = await self.bot.wait_for(
-                    "message",
-                    timeout=self.helper.config.response_timeout,
-                    check=lambda message: message.author == self.ctx.author
-                    and message.channel == self.ctx.channel,
-                )
-            except asyncio.TimeoutError:
-                await self._handle_timeout()
-                return
+        if exact == self.helper.config.code_length:
+            await self._handle_victory(attempts_left)
+            self.finished = True
+        elif self.attempts >= self.helper.config.max_attempts:
+            await self._handle_failure()
+            self.finished = True
 
-            content = guess_message.content.strip()
-            if not content:
-                continue
+    async def cancel(self) -> None:
+        if self.finished:
+            return
+        await self._handle_cancel()
+        self.finished = True
 
-            if content.startswith(PREFIX):
-                continue
+    async def timeout(self) -> None:
+        if self.finished:
+            return
+        await self._handle_timeout()
+        self.finished = True
 
-            if self.helper.is_cancel_message(content):
-                await self._handle_cancel()
-                return
-
-            guess, error = self.helper.parse_guess(content)
-            if error:
-                await self.ctx.send(embed=embeds.warning_embed(error))
-                continue
-
-            self.attempts += 1
-            exact, misplaced = self.helper.evaluate_guess(self.secret, guess)
-            attempts_left = self.helper.config.max_attempts - self.attempts
-
-            await self.ctx.send(
-                embed=embeds.mastermind_feedback_embed(
-                    member=self.ctx.author,
-                    attempt=self.attempts,
-                    max_attempts=self.helper.config.max_attempts,
-                    guess_display=self.helper.format_code(guess),
-                    well_placed=exact,
-                    misplaced=misplaced,
-                    attempts_left=attempts_left,
-                )
-            )
-
-            if exact == self.helper.config.code_length:
-                await self._handle_victory(attempts_left)
-                return
-
-        await self._handle_failure()
+    async def finalize(self, interaction: Optional[discord.Interaction] = None) -> None:
+        if self.view is None:
+            return
+        await self.view.disable(interaction=interaction)
 
     async def _handle_victory(self, attempts_left: int) -> None:
         base_reward = random.randint(*self.helper.config.base_reward)
@@ -294,6 +291,177 @@ class MastermindSession:
 
     def _secret_display(self) -> str:
         return self.helper.format_code(self.secret, include_names=True)
+
+
+class MastermindView(discord.ui.View):
+    def __init__(self, session: MastermindSession) -> None:
+        super().__init__(timeout=session.helper.config.response_timeout)
+        self.session = session
+        self.current_guess: list[str] = []
+        self.message: Optional[discord.Message] = None
+        self.timed_out = False
+        self.confirm_button = self.ConfirmButton(self)
+        self.clear_button = self.ClearButton(self)
+
+        for index, color in enumerate(session.helper.config.colors):
+            self.add_item(self.ColorButton(self, color, row=index // 3))
+        self.add_item(self.confirm_button)
+        self.add_item(self.clear_button)
+        self.add_item(self.CancelButton(self))
+
+    async def refresh(self, interaction: Optional[discord.Interaction] = None) -> None:
+        attempts_display = self.session.attempts + 1
+        embed = embeds.mastermind_start_embed(
+            member=self.session.ctx.author,
+            palette=self.session.helper.palette,
+            code_length=self.session.helper.config.code_length,
+            max_attempts=self.session.helper.config.max_attempts,
+            timeout=self.session.helper.config.response_timeout,
+        )
+        selection = (
+            self.session.helper.format_code(self.current_guess)
+            if self.current_guess
+            else "Aucune sélection"
+        )
+        embed.add_field(
+            name="Tentative en cours",
+            value=(
+                f"{attempts_display}/{self.session.helper.config.max_attempts}\n"
+                f"Sélection : {selection}"
+            ),
+            inline=False,
+        )
+
+        self.confirm_button.disabled = (
+            len(self.current_guess) != self.session.helper.config.code_length
+        )
+        self.clear_button.disabled = len(self.current_guess) == 0
+
+        if interaction is not None:
+            await interaction.response.edit_message(embed=embed, view=self)
+        elif self.message is not None:
+            await self.message.edit(embed=embed, view=self)
+
+    async def disable(self, *, interaction: Optional[discord.Interaction] = None) -> None:
+        for item in self.children:
+            item.disabled = True
+        if interaction is not None:
+            if not interaction.response.is_done():
+                await interaction.response.edit_message(view=self)
+            else:
+                await interaction.message.edit(view=self)
+        elif self.message is not None:
+            await self.message.edit(view=self)
+        self.stop()
+
+    async def handle_color(self, color_name: str, interaction: discord.Interaction) -> None:
+        if self.session.finished:
+            await interaction.response.send_message("La partie est terminée.", ephemeral=True)
+            return
+        if len(self.current_guess) >= self.session.helper.config.code_length:
+            await interaction.response.send_message(
+                "Tu as déjà sélectionné suffisamment de couleurs.", ephemeral=True
+            )
+            return
+        self.current_guess.append(color_name)
+        await self.refresh(interaction)
+
+    async def handle_confirm(self, interaction: discord.Interaction) -> None:
+        if self.session.finished:
+            await interaction.response.send_message("La partie est terminée.", ephemeral=True)
+            return
+        if len(self.current_guess) != self.session.helper.config.code_length:
+            await interaction.response.send_message(
+                "Choisis la bonne quantité de couleurs avant de valider.",
+                ephemeral=True,
+            )
+            return
+
+        guess = list(self.current_guess)
+        self.current_guess.clear()
+        await self.session.process_guess(guess)
+        if self.session.finished:
+            await self.session.finalize(interaction)
+        else:
+            await self.refresh(interaction)
+
+    async def handle_clear(self, interaction: discord.Interaction) -> None:
+        if not self.current_guess:
+            await interaction.response.send_message("Rien à effacer.", ephemeral=True)
+            return
+        self.current_guess.pop()
+        await self.refresh(interaction)
+
+    async def handle_cancel(self, interaction: discord.Interaction) -> None:
+        if self.session.finished:
+            await interaction.response.send_message("La partie est déjà terminée.", ephemeral=True)
+            return
+        await self.session.cancel()
+        await self.session.finalize(interaction)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.session.ctx.author.id
+
+    async def on_timeout(self) -> None:
+        self.timed_out = True
+        await self.session.timeout()
+        await self.session.finalize()
+
+    class ColorButton(discord.ui.Button):
+        def __init__(
+            self,
+            view: MastermindView,
+            color: MastermindColor,
+            *,
+            row: int,
+        ) -> None:
+            super().__init__(
+                style=discord.ButtonStyle.secondary,
+                label=color.name.capitalize(),
+                emoji=color.emoji,
+                row=row,
+            )
+            self.view_ref = view
+            self.color_name = color.name
+
+        async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
+            await self.view_ref.handle_color(self.color_name, interaction)
+
+    class ConfirmButton(discord.ui.Button):
+        def __init__(self, view: MastermindView) -> None:
+            super().__init__(
+                style=discord.ButtonStyle.success,
+                label="Valider",
+                row=2,
+            )
+            self.view_ref = view
+
+        async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
+            await self.view_ref.handle_confirm(interaction)
+
+    class ClearButton(discord.ui.Button):
+        def __init__(self, view: MastermindView) -> None:
+            super().__init__(
+                style=discord.ButtonStyle.secondary,
+                label="Effacer",
+                row=2,
+            )
+            self.view_ref = view
+
+        async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
+            await self.view_ref.handle_clear(interaction)
+
+    class CancelButton(discord.ui.Button):
+        def __init__(self, view: MastermindView) -> None:
+            super().__init__(
+                style=discord.ButtonStyle.danger,
+                label="Abandonner",
+                row=2,
+            )
+            self.view_ref = view
+
+        async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
+            await self.view_ref.handle_cancel(interaction)
 
 
 
@@ -555,7 +723,7 @@ class Economy(commands.Cog):
         """Mini-jeu de Mastermind pour gagner quelques PB."""
         session = MastermindSession(ctx, self.mastermind_helper, self.database)
         try:
-            await session.play()
+            await session.start()
         except Exception as exc:  # pragma: no cover - log unexpected runtime errors
             logger.exception("Erreur dans Mastermind", exc_info=exc)
             await ctx.send(

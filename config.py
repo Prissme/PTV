@@ -33,12 +33,56 @@ MESSAGE_COOLDOWN = 60
 LEADERBOARD_LIMIT = 10
 
 # ---------------------------------------------------------------------------
-# Paramètres XP
+# Paramètres Grades
 # ---------------------------------------------------------------------------
-XP_PER_MESSAGE = (10, 15)
-XP_COOLDOWN = 60
-XP_LEVEL_BASE = 100
-XP_LEVEL_MULTIPLIER = 1.5
+
+
+@dataclass(frozen=True)
+class GradeDefinition:
+    name: str
+    message_goal: int
+    invite_goal: int
+    egg_goal: int
+    reward_pb: int
+
+
+BASE_PET_SLOTS: Final[int] = 4
+
+GRADE_DEFINITIONS: Tuple[GradeDefinition, ...] = (
+    GradeDefinition("Novice", 15, 1, 3, 250),
+    GradeDefinition("Apprenti", 30, 1, 5, 400),
+    GradeDefinition("Disciple", 60, 2, 8, 550),
+    GradeDefinition("Explorateur", 90, 2, 12, 700),
+    GradeDefinition("Aventurier", 140, 3, 16, 900),
+    GradeDefinition("Expert", 200, 3, 20, 1_100),
+    GradeDefinition("Champion", 280, 4, 25, 1_400),
+    GradeDefinition("Maître", 360, 4, 30, 1_700),
+    GradeDefinition("Prodige", 460, 5, 36, 2_100),
+    GradeDefinition("Élite", 580, 5, 43, 2_600),
+    GradeDefinition("Légende", 720, 6, 51, 3_200),
+    GradeDefinition("Mythique", 880, 6, 60, 3_900),
+    GradeDefinition("Cosmique", 1_060, 7, 70, 4_700),
+    GradeDefinition("Divin", 1_260, 8, 81, 5_600),
+    GradeDefinition("Parangon", 1_500, 9, 93, 6_600),
+)
+
+GRADE_ROLE_IDS: Tuple[int, ...] = (
+    1430716817852203128,
+    1430721773497876530,
+    1430721718497837198,
+    1430721544874623016,
+    1430721477535334625,
+    1430721408849150052,
+    1430721364242993302,
+    1430721264963817528,
+    1430721259020484740,
+    1430721200048312493,
+    1430721137888985228,
+    1430721065524400289,
+    1430720939141763092,
+    1430720735625609276,
+    1430720400203055144,
+)
 
 # ---------------------------------------------------------------------------
 # Esthétique
