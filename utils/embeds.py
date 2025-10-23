@@ -208,15 +208,19 @@ def leaderboard_embed(
         name = user.display_name if user else f"Utilisateur {user_id}"
         if symbol.upper() == "PB":
             value_display = format_currency(value)
+        elif symbol.upper() == "RAP":
+            value_display = f"{value:,} RAP".replace(",", " ")
         else:
-            value_display = f"{value:,} {symbol}"
+            value_display = f"{value:,} {symbol}".replace(",", " ")
         lines.append(f"**{rank}.** {name} — {value_display}")
     embed.description = "\n".join(lines) if lines else "Aucune donnée disponible."
     return embed
 
 
 def _quest_progress_line(label: str, current: int, goal: int) -> str:
-    status = "✅" if current >= goal and goal > 0 else "▫️"
+    if goal <= 0:
+        return f"✅ {label} : aucune exigence"
+    status = "✅" if current >= goal else "▫️"
     return f"{status} {label} : **{current}/{goal}**"
 
 
@@ -249,6 +253,11 @@ def grade_profile_embed(
         quest_lines = [
             _quest_progress_line("Envoyer des messages", progress.get("messages", 0), next_grade.message_goal),
             _quest_progress_line("Ouvrir des œufs", progress.get("eggs", 0), next_grade.egg_goal),
+            _quest_progress_line(
+                "Fusionner des pets en or",
+                progress.get("gold", 0),
+                next_grade.gold_goal,
+            ),
         ]
 
     embed = _base_embed(f"{Emojis.XP} Profil de grade", description, color=Colors.INFO)
@@ -325,6 +334,8 @@ def pet_collection_embed(
     pets: Sequence[Mapping[str, object]],
     total_count: int,
     total_income_per_hour: int,
+    page: int = 1,
+    page_count: int = 1,
 ) -> discord.Embed:
     embed = _base_embed("Ta collection de pets", "", color=Colors.GOLD if pets else Colors.NEUTRAL)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
@@ -364,10 +375,13 @@ def pet_collection_embed(
             lines.append(line)
         embed.description = "\n\n".join(lines)
 
+    current_page = max(1, page)
+    total_pages = max(1, page_count)
     footer = (
         f"Total de pets : {total_count} • Revenus par heure (actif) : {total_income_per_hour:,} PB/h"
     ).replace(",", " ")
     footer += " • Utilise e!equip [id] pour gérer tes pets (max 4 actifs)"
+    footer += f" • Page {current_page}/{total_pages}"
     embed.set_footer(text=footer)
     return embed
 

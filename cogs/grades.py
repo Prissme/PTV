@@ -83,6 +83,7 @@ class GradeSystem(commands.Cog):
         progress_kwargs = {
             "message_cap": definition.message_goal,
             "egg_cap": definition.egg_goal,
+            "gold_cap": definition.gold_goal,
         }
 
         quest_type = quest_type.lower()
@@ -90,6 +91,8 @@ class GradeSystem(commands.Cog):
             progress_kwargs["message_delta"] = amount
         elif quest_type in {"egg", "eggs", "oeuf", "oeufs"}:
             progress_kwargs["egg_delta"] = amount
+        elif quest_type in {"gold", "golden", "fusion", "fusions", "goldify"}:
+            progress_kwargs["gold_delta"] = amount
         else:
             logger.warning("Type de quête inconnu: %s", quest_type)
             return
@@ -111,6 +114,7 @@ class GradeSystem(commands.Cog):
                 message_goal=definition.message_goal,
                 invite_goal=definition.invite_goal,
                 egg_goal=definition.egg_goal,
+                gold_goal=definition.gold_goal,
                 max_grade=self.total_grades,
             )
         except Exception:
@@ -131,6 +135,7 @@ class GradeSystem(commands.Cog):
         return (
             int(row["message_progress"]) >= definition.message_goal
             and int(row["egg_progress"]) >= definition.egg_goal
+            and int(row["gold_progress"]) >= definition.gold_goal
         )
 
     async def _handle_grade_completion(
@@ -238,6 +243,7 @@ class GradeSystem(commands.Cog):
             progress={
                 "messages": int(row["message_progress"]),
                 "eggs": int(row["egg_progress"]),
+                "gold": int(row["gold_progress"]),
             },
             pet_slots=BASE_PET_SLOTS + grade_level,
         )

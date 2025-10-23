@@ -65,27 +65,28 @@ class GradeDefinition:
     message_goal: int
     invite_goal: int
     egg_goal: int
+    gold_goal: int
     reward_pb: int
 
 
 BASE_PET_SLOTS: Final[int] = 4
 
 GRADE_DEFINITIONS: Tuple[GradeDefinition, ...] = (
-    GradeDefinition("Novice", 15, 0, 3, 250),
-    GradeDefinition("Apprenti", 30, 0, 5, 400),
-    GradeDefinition("Disciple", 60, 0, 8, 550),
-    GradeDefinition("Explorateur", 90, 0, 12, 700),
-    GradeDefinition("Aventurier", 140, 0, 16, 900),
-    GradeDefinition("Expert", 200, 0, 20, 1_100),
-    GradeDefinition("Champion", 280, 0, 25, 1_400),
-    GradeDefinition("Maître", 360, 0, 30, 1_700),
-    GradeDefinition("Prodige", 460, 0, 36, 2_100),
-    GradeDefinition("Élite", 580, 0, 43, 2_600),
-    GradeDefinition("Légende", 720, 0, 51, 3_200),
-    GradeDefinition("Mythique", 880, 0, 60, 3_900),
-    GradeDefinition("Cosmique", 1_060, 0, 70, 4_700),
-    GradeDefinition("Divin", 1_260, 0, 81, 5_600),
-    GradeDefinition("Parangon", 1_500, 0, 93, 6_600),
+    GradeDefinition("Novice", 15, 0, 3, 0, 250),
+    GradeDefinition("Apprenti", 30, 0, 5, 0, 400),
+    GradeDefinition("Disciple", 60, 0, 8, 1, 550),
+    GradeDefinition("Explorateur", 90, 0, 12, 2, 700),
+    GradeDefinition("Aventurier", 140, 0, 16, 3, 900),
+    GradeDefinition("Expert", 200, 0, 20, 4, 1_100),
+    GradeDefinition("Champion", 280, 0, 25, 5, 1_400),
+    GradeDefinition("Maître", 360, 0, 30, 6, 1_700),
+    GradeDefinition("Prodige", 460, 0, 36, 7, 2_100),
+    GradeDefinition("Élite", 580, 0, 43, 8, 2_600),
+    GradeDefinition("Légende", 720, 0, 51, 9, 3_200),
+    GradeDefinition("Mythique", 880, 0, 60, 10, 3_900),
+    GradeDefinition("Cosmique", 1_060, 0, 70, 12, 4_700),
+    GradeDefinition("Divin", 1_260, 0, 81, 14, 5_600),
+    GradeDefinition("Parangon", 1_500, 0, 93, 16, 6_600),
 )
 
 GRADE_ROLE_IDS: Tuple[int, ...] = (
@@ -177,6 +178,7 @@ GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
 HUGE_PET_NAME: Final[str] = "Huge Shelly"
 HUGE_PET_MULTIPLIER: Final[int] = 5
 HUGE_PET_MIN_INCOME: Final[int] = 500
+HUGE_GALE_NAME: Final[str] = "Huge Gale"
 
 _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
@@ -263,6 +265,17 @@ _FOREST_EGG_PETS: Tuple[PetDefinition, ...] = (
     ),
 )
 
+_EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name=HUGE_GALE_NAME,
+        rarity="Secret",
+        image_url="https://example.com/document54.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+)
+
 PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
     PetEggDefinition(
         name="Œuf basique",
@@ -307,7 +320,7 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
 
 PET_DEFINITIONS: Tuple[PetDefinition, ...] = tuple(
     pet for egg in PET_EGG_DEFINITIONS for pet in egg.pets
-)
+) + _EXCLUSIVE_PETS
 
 PET_EMOJIS: Final[dict[str, str]] = {
     "Shelly": os.getenv("PET_EMOJI_SHELLY", "<:Shelly:1430584949215596654>"),
@@ -321,6 +334,7 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Cordelius": os.getenv("PET_EMOJI_CORDELIUS", "<:Cordelius:1430874643572719728>"),
     "Doug": os.getenv("PET_EMOJI_DOUG", "<:Doug:1430875052202786977>"),
     "Huge Trunk": os.getenv("PET_EMOJI_HUGE_TRUNK", "<:HugeTrunk:1430876043400446013>"),
+    HUGE_GALE_NAME: os.getenv("PET_EMOJI_HUGE_GALE", "<:HugeGale:1430981225375600641>"),
     "default": os.getenv("PET_EMOJI_DEFAULT", "🐾"),
 }
 

@@ -19,8 +19,12 @@ from config import (
     DAILY_COOLDOWN,
     DAILY_REWARD,
     GRADE_DEFINITIONS,
+    HUGE_GALE_NAME,
+    HUGE_PET_NAME,
     MESSAGE_COOLDOWN,
     MESSAGE_REWARD,
+    PET_DEFINITIONS,
+    PET_EMOJIS,
     PREFIX,
 )
 from utils import embeds
@@ -77,6 +81,46 @@ PET_BOOSTER_DROP_RATES: dict[str, float] = {
     "slots": 0.05,
     "mastermind": 0.05,
 }
+
+
+@dataclass(frozen=True)
+class MillionaireRaceStage:
+    label: str
+    success_rate: float
+    prissbucks: int
+    pet_choices: tuple[str, ...]
+    booster: tuple[float, int] | None = None
+
+
+MILLIONAIRE_RACE_COOLDOWN: int = 1_800
+MILLIONAIRE_RACE_STAGES: tuple[MillionaireRaceStage, ...] = (
+    MillionaireRaceStage("Sprint Émeraude", 0.95, 5_000, ("Shelly", "Colt"), (1.5, 600)),
+    MillionaireRaceStage("Relais Rubis", 0.90, 7_500, ("Barley", "Poco"), (1.6, 900)),
+    MillionaireRaceStage("Virage Saphir", 0.85, 10_000, ("Rosa",), (1.8, 900)),
+    MillionaireRaceStage("Ascension Ambrée", 0.80, 14_000, ("Angelo",), (2.0, 1_200)),
+    MillionaireRaceStage("Échappée Turquoise", 0.75, 18_500, ("Doug",), (2.2, 1_200)),
+    MillionaireRaceStage("Secteur Améthyste", 0.70, 24_000, ("Lily",), (2.4, 1_500)),
+    MillionaireRaceStage("Piste Onyx", 0.65, 30_000, ("Cordelius",), (2.6, 1_500)),
+    MillionaireRaceStage(
+        "Ciel Prisme",
+        0.60,
+        37_500,
+        ("Shelly", "Barley", "Poco", "Rosa"),
+        (2.8, 1_800),
+    ),
+    MillionaireRaceStage(
+        "Spirale Stellaire",
+        0.55,
+        45_000,
+        ("Angelo", "Doug", "Lily", "Cordelius"),
+        (3.0, 2_100),
+    ),
+    MillionaireRaceStage("Portail Titan", 0.50, 60_000, (HUGE_PET_NAME,), (3.5, 2_400)),
+    MillionaireRaceStage("Faille Légendaire", 0.45, 80_000, ("Huge Trunk",), (4.0, 3_000)),
+    MillionaireRaceStage("Couronne Millionnaire", 0.40, 100_000, (HUGE_GALE_NAME,), (5.0, 3_600)),
+)
+
+PET_DEFINITION_MAP: dict[str, object] = {pet.name: pet for pet in PET_DEFINITIONS}
 
 
 def _format_seconds(seconds: float) -> str:
@@ -525,6 +569,268 @@ class CooldownManager:
             self._cooldowns.pop(user_id, None)
 
 
+class MillionaireRaceSession:
+    """Gestion d'une session de Millionaire Race."""
+
+    def __init__(self, ctx: commands.Context, database: Database) -> None:
+        self.ctx = ctx
+        self.database = database
+        self.stage_index = 0
+        self.total_pb = 0
+        self.pets_awarded: list[str] = []
+        self.boosters_awarded: list[str] = []
+        self.finished = False
+        self.failed = False
+        self.last_feedback: list[str] = []
+        self.message: discord.Message | None = None
+
+    @property
+    def current_stage(self) -> MillionaireRaceStage | None:
+        if self.stage_index >= len(MILLIONAIRE_RACE_STAGES):
+            return None
+        return MILLIONAIRE_RACE_STAGES[self.stage_index]
+
+    async def attempt_stage(self) -> bool:
+        stage = self.current_stage
+        if stage is None:
+            self.finished = True
+            self.last_feedback = ["La course est déjà terminée."]
+            return False
+
+        success = random.random() <= stage.success_rate
+        chance_label = f"{int(stage.success_rate * 100)}%"
+        if not success:
+            self.failed = True
+            self.finished = True
+            self.last_feedback = [
+                f"❌ Échec sur **{stage.label}** (chance de {chance_label}).",
+                "Tu conserves les récompenses déjà gagnées.",
+            ]
+            return False
+
+        feedback = [f"✅ **{stage.label}** franchie !"]
+
+        if stage.prissbucks:
+            try:
+                await self.database.increment_balance(
+                    self.ctx.author.id,
+                    stage.prissbucks,
+                    transaction_type="millionaire_race",
+                    description=f"Épreuve {self.stage_index + 1} - {stage.label}",
+                )
+                self.total_pb += stage.prissbucks
+                feedback.append(
+                    f"+{embeds.format_currency(stage.prissbucks)} remportés."
+                )
+            except Exception:
+                logger.exception("Impossible de créditer la Millionaire Race pour %s", self.ctx.author.id)
+                feedback.append("Une erreur est survenue lors du crédit de tes PrissBucks.")
+
+        pet_name: str | None = None
+        if stage.pet_choices:
+            pet_name = random.choice(stage.pet_choices)
+            if await self._award_pet(pet_name):
+                self.pets_awarded.append(pet_name)
+                feedback.append(f"Tu obtiens {self._format_pet_name(pet_name)} !")
+            else:
+                feedback.append("Le pet bonus n'a pas pu être ajouté. Signale-le à un admin.")
+
+        if stage.booster:
+            multiplier, duration_seconds = stage.booster
+            try:
+                applied, _, extended, previous = await self.database.grant_pet_booster(
+                    self.ctx.author.id,
+                    multiplier=multiplier,
+                    duration_seconds=duration_seconds,
+                )
+                label = self._format_booster_label(applied, duration_seconds)
+                self.boosters_awarded.append(label)
+                if extended and previous >= applied:
+                    feedback.append(f"Booster prolongé : {label}")
+                else:
+                    feedback.append(f"Booster reçu : {label}")
+            except Exception:
+                logger.exception("Impossible d'attribuer le booster Millionaire Race à %s", self.ctx.author.id)
+                feedback.append("Le booster n'a pas pu être activé.")
+
+        self.stage_index += 1
+        if self.stage_index >= len(MILLIONAIRE_RACE_STAGES):
+            self.finished = True
+            feedback.insert(0, "🎉 Tu atteins la ligne d'arrivée de la Millionaire Race !")
+            if pet_name == HUGE_GALE_NAME:
+                feedback.append(f"**{self._format_pet_name(HUGE_GALE_NAME)}** rejoint ton équipe !")
+
+        self.last_feedback = feedback
+        return True
+
+    async def _award_pet(self, pet_name: str) -> bool:
+        pet_id = await self.database.get_pet_id_by_name(pet_name)
+        if pet_id is None:
+            logger.warning("Pet %s introuvable en base pour la Millionaire Race", pet_name)
+            return False
+
+        definition = PET_DEFINITION_MAP.get(pet_name)
+        is_huge = bool(getattr(definition, "is_huge", False))
+        try:
+            await self.database.add_user_pet(self.ctx.author.id, pet_id, is_huge=is_huge)
+        except DatabaseError:
+            logger.exception("Impossible d'ajouter le pet %s pour %s", pet_name, self.ctx.author.id)
+            return False
+        return True
+
+    @staticmethod
+    def _format_pet_name(pet_name: str) -> str:
+        emoji = PET_EMOJIS.get(pet_name, PET_EMOJIS.get("default", "🐾"))
+        return f"{emoji} {pet_name}"
+
+    @staticmethod
+    def _format_booster_label(multiplier: float, duration_seconds: int) -> str:
+        minutes = max(1, int(round(duration_seconds / 60)))
+        return f"x{multiplier:g} • {minutes} min"
+
+    def build_embed(self) -> discord.Embed:
+        total_stages = len(MILLIONAIRE_RACE_STAGES)
+        if self.finished:
+            color = Colors.SUCCESS if not self.failed else Colors.ERROR
+            title = "🏁 Millionaire Race — terminée" if not self.failed else "🏁 Millionaire Race — échec"
+        else:
+            color = Colors.INFO
+            title = f"🏁 Millionaire Race — Épreuve {self.stage_index + 1}/{total_stages}"
+
+        embed = discord.Embed(title=title, color=color)
+        embed.timestamp = datetime.utcnow()
+        embed.set_author(
+            name=self.ctx.author.display_name,
+            icon_url=self.ctx.author.display_avatar.url,
+        )
+
+        stage = self.current_stage
+        if stage and not self.finished:
+            chance_pct = int(stage.success_rate * 100)
+            reward_lines = [f"Chance de réussite : **{chance_pct}%**"]
+            if stage.prissbucks:
+                reward_lines.append(
+                    f"PrissBucks : +{embeds.format_currency(stage.prissbucks)}"
+                )
+            if stage.pet_choices:
+                pets_text = ", ".join(self._format_pet_name(name) for name in stage.pet_choices)
+                reward_lines.append(f"Pet(s) garanti(s) : {pets_text}")
+            if stage.booster:
+                reward_lines.append(
+                    f"Booster : {self._format_booster_label(stage.booster[0], stage.booster[1])}"
+                )
+            embed.description = "\n".join(reward_lines)
+        elif self.finished and not self.failed:
+            embed.description = "Tu as conquis la Millionaire Race !"
+        else:
+            embed.description = "La course s'arrête ici pour cette fois."
+
+        summary_lines = [f"PrissBucks cumulés : {embeds.format_currency(self.total_pb)}"]
+        if self.pets_awarded:
+            summary_lines.append(
+                "Pets obtenus : "
+                + ", ".join(self._format_pet_name(name) for name in self.pets_awarded)
+            )
+        else:
+            summary_lines.append("Pets obtenus : aucun pour le moment")
+        if self.boosters_awarded:
+            summary_lines.append("Boosters : " + ", ".join(self.boosters_awarded))
+        else:
+            summary_lines.append("Boosters : aucun")
+        embed.add_field(name="Progrès", value="\n".join(summary_lines), inline=False)
+
+        if self.last_feedback:
+            embed.add_field(name="Dernier résultat", value="\n".join(self.last_feedback), inline=False)
+
+        if not self.finished:
+            embed.set_footer(
+                text="Clique sur Continuer pour tenter l'épreuve suivante ou Arrêter pour quitter."
+            )
+        else:
+            embed.set_footer(text="Tu peux relancer la course après le cooldown.")
+        return embed
+
+
+class MillionaireRaceView(discord.ui.View):
+    """Interface interactive pour la Millionaire Race."""
+
+    def __init__(
+        self,
+        session: MillionaireRaceSession,
+        release_callback: Callable[[], None],
+        *,
+        timeout: float = 180.0,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.session = session
+        self._release = release_callback
+        self.message: discord.Message | None = None
+        self._sync_buttons()
+
+    def _sync_buttons(self) -> None:
+        finished = self.session.finished
+        if hasattr(self, "continue_button"):
+            self.continue_button.disabled = finished
+        if hasattr(self, "stop_button"):
+            self.stop_button.disabled = finished
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.session.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul le participant peut utiliser ces boutons.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Continuer", emoji="🏃", style=discord.ButtonStyle.success)
+    async def continue_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self.session.attempt_stage()
+        if self.session.finished:
+            self.disable_all_items()
+        self._sync_buttons()
+        embed = self.session.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+        if self.session.finished:
+            self._release()
+            self.stop()
+
+    @discord.ui.button(label="Arrêter", emoji="🛑", style=discord.ButtonStyle.danger)
+    async def stop_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.session.finished = True
+        self.session.failed = False
+        self.session.last_feedback = [
+            "⏹️ Tu quittes la course avant la fin.",
+            "Tes gains sont conservés.",
+        ]
+        self.disable_all_items()
+        embed = self.session.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+        self._release()
+        self.stop()
+
+    def disable_all_items(self) -> None:
+        for item in self.children:
+            item.disabled = True
+
+    async def on_timeout(self) -> None:
+        if not self.session.finished:
+            self.session.finished = True
+            self.session.last_feedback = [
+                "⏳ La course a expiré. Relance la commande pour retenter ta chance.",
+            ]
+        self.disable_all_items()
+        embed = self.session.build_embed()
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(embed=embed, view=self)
+        self._release()
+        self.stop()
+
 class Economy(commands.Cog):
     """Commandes économiques réduites au strict nécessaire."""
 
@@ -536,6 +842,7 @@ class Economy(commands.Cog):
         self.mastermind_helper = MASTERMIND_HELPER
         self._booster_choices = PET_BOOSTER_CHOICES
         self._booster_weights = PET_BOOSTER_WEIGHTS
+        self._active_race_players: set[int] = set()
 
     async def cog_load(self) -> None:
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
@@ -853,6 +1160,48 @@ class Economy(commands.Cog):
             await ctx.send(
                 embed=embeds.error_embed("Une erreur est survenue. Réessaie dans quelques instants.")
             )
+
+    @commands.cooldown(1, MILLIONAIRE_RACE_COOLDOWN, commands.BucketType.user)
+    @commands.command(name="millionairerace", aliases=("millionaire", "race"))
+    async def millionaire_race(self, ctx: commands.Context) -> None:
+        """Mini-jeu inspiré de Pet Simulator : enchaîne les étapes pour tout rafler."""
+
+        if ctx.author.id in self._active_race_players:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    "Tu as déjà une Millionaire Race en cours. Termine-la avant d'en relancer une autre."
+                )
+            )
+            return
+
+        self._active_race_players.add(ctx.author.id)
+
+        release_called = False
+
+        def release() -> None:
+            nonlocal release_called
+            if not release_called:
+                self._active_race_players.discard(ctx.author.id)
+                release_called = True
+
+        session = MillionaireRaceSession(ctx, self.database)
+        view = MillionaireRaceView(session, release)
+        embed = session.build_embed()
+
+        try:
+            message = await ctx.send(embed=embed, view=view)
+        except Exception:
+            release()
+            logger.exception("Impossible de démarrer la Millionaire Race pour %s", ctx.author.id)
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "La Millionaire Race n'est pas disponible pour le moment. Réessaie plus tard."
+                )
+            )
+            return
+
+        session.message = message
+        view.message = message
 
 
 async def setup(bot: commands.Bot) -> None:

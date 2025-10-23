@@ -25,6 +25,22 @@ class Leaderboard(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    @commands.command(name="rapleaderboard", aliases=("raplb", "rap"))
+    async def rap_leaderboard(self, ctx: commands.Context) -> None:
+        try:
+            rows = await self.database.get_pet_rap_leaderboard(LEADERBOARD_LIMIT)
+        except Exception:
+            await ctx.send(embed=embeds.error_embed("Impossible de récupérer le classement RAP."))
+            return
+
+        embed = embeds.leaderboard_embed(
+            title="Classement RAP des collectionneurs",
+            entries=[(user_id, rap) for user_id, rap in rows],
+            bot=self.bot,
+            symbol="RAP",
+        )
+        await ctx.send(embed=embed)
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Leaderboard(bot))

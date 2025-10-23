@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import math
 import random
 from typing import Any, Dict, Iterable, List, Mapping
 
@@ -34,6 +36,86 @@ logger = logging.getLogger(__name__)
 
 HUGE_SHELLY_ALERT_CHANNEL_ID = 1236724293631611022
 
+
+class PetInventoryView(discord.ui.View):
+    """Interface paginée pour afficher la collection de pets par lots de huit."""
+
+    def __init__(
+        self,
+        *,
+        ctx: commands.Context,
+        pets: Iterable[Mapping[str, Any]],
+        total_income: int,
+        per_page: int = 8,
+    ) -> None:
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.member = ctx.author
+        self._pets: List[Dict[str, Any]] = [dict(pet) for pet in pets]
+        self._per_page = max(1, per_page)
+        self._total_income = int(total_income)
+        self.page_count = max(1, math.ceil(len(self._pets) / self._per_page))
+        self.page = 0
+        self.message: discord.Message | None = None
+        self._sync_buttons()
+
+    def _current_slice(self) -> List[Mapping[str, Any]]:
+        if not self._pets:
+            return []
+        start = self.page * self._per_page
+        end = start + self._per_page
+        return self._pets[start:end]
+
+    def build_embed(self) -> discord.Embed:
+        return embeds.pet_collection_embed(
+            member=self.member,
+            pets=self._current_slice(),
+            total_count=len(self._pets),
+            total_income_per_hour=self._total_income,
+            page=self.page + 1,
+            page_count=self.page_count,
+        )
+
+    def _sync_buttons(self) -> None:
+        has_multiple_pages = self.page_count > 1
+        if hasattr(self, "previous_page"):
+            self.previous_page.disabled = not has_multiple_pages or self.page <= 0
+        if hasattr(self, "next_page"):
+            self.next_page.disabled = not has_multiple_pages or self.page >= self.page_count - 1
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul le propriétaire de l'inventaire peut utiliser ces boutons.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary)
+    async def previous_page(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if self.page > 0:
+            self.page -= 1
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary)
+    async def next_page(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if self.page < self.page_count - 1:
+            self.page += 1
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=self)
 
 class Pets(commands.Cog):
     """Commande de collection de pets inspirée de Brawl Stars."""
@@ -414,13 +496,24 @@ class Pets(commands.Cog):
         market_values = await self.database.get_pet_market_values()
         pets = self._sort_pets_for_display(records, market_values)
         active_income = sum(int(pet["income"]) for pet in pets if pet.get("is_active"))
-        embed = embeds.pet_collection_embed(
-            member=ctx.author,
-            pets=pets,
-            total_count=len(pets),
-            total_income_per_hour=active_income,
-        )
-        await ctx.send(embed=embed)
+        per_page = 8
+        total_count = len(pets)
+        page_count = max(1, math.ceil(total_count / per_page))
+        if page_count <= 1:
+            embed = embeds.pet_collection_embed(
+                member=ctx.author,
+                pets=pets,
+                total_count=total_count,
+                total_income_per_hour=active_income,
+                page=1,
+                page_count=1,
+            )
+            await ctx.send(embed=embed)
+        else:
+            view = PetInventoryView(ctx=ctx, pets=pets, total_income=active_income, per_page=per_page)
+            embed = view.build_embed()
+            message = await ctx.send(embed=embed, view=view)
+            view.message = message
 
     @commands.command(name="equip")
     async def equip(self, ctx: commands.Context, pet_id: int) -> None:
@@ -503,6 +596,9 @@ class Pets(commands.Cog):
                 )
             )
         await ctx.send(embed=reveal_embed)
+
+        if isinstance(ctx.author, discord.Member):
+            self.bot.dispatch("grade_quest_progress", ctx.author, "gold", 1, ctx.channel)
 
     @commands.command(name="claim")
     async def claim(self, ctx: commands.Context) -> None:
