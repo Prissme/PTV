@@ -55,6 +55,13 @@ MESSAGE_COOLDOWN = 60
 LEADERBOARD_LIMIT = 10
 
 # ---------------------------------------------------------------------------
+# Paramètres Statistiques
+# ---------------------------------------------------------------------------
+
+STATS_ACTIVE_WINDOW_DAYS = _get_int_env("STATS_ACTIVE_WINDOW_DAYS", 7, minimum=1)
+STATS_TOP_LIMIT = _get_int_env("STATS_TOP_LIMIT", 10, minimum=1)
+
+# ---------------------------------------------------------------------------
 # Paramètres Grades
 # ---------------------------------------------------------------------------
 

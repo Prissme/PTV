@@ -113,6 +113,7 @@ class EcoBot(commands.Bot):
             "help",
             "trade",
             "admin",
+            "stats",
         )
 
     async def setup_hook(self) -> None:  # pragma: no cover - cycle de vie discord.py
