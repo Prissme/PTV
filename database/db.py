@@ -782,11 +782,18 @@ class Database:
         pet_ids: dict[str, int] = {}
         async with self.transaction() as connection:
             for pet in pets:
-                name = getattr(pet, "name", None) or pet["name"]  # type: ignore[index]
-                rarity = getattr(pet, "rarity", None) or pet["rarity"]  # type: ignore[index]
-                image_url = getattr(pet, "image_url", None) or pet["image_url"]  # type: ignore[index]
-                base_income = getattr(pet, "base_income_per_hour", None) or pet["base_income_per_hour"]  # type: ignore[index]
-                drop_rate = getattr(pet, "drop_rate", None) or pet["drop_rate"]  # type: ignore[index]
+                if hasattr(pet, "name"):
+                    name = getattr(pet, "name")  # type: ignore[attr-defined]
+                    rarity = getattr(pet, "rarity")  # type: ignore[attr-defined]
+                    image_url = getattr(pet, "image_url")  # type: ignore[attr-defined]
+                    base_income = getattr(pet, "base_income_per_hour")  # type: ignore[attr-defined]
+                    drop_rate = getattr(pet, "drop_rate")  # type: ignore[attr-defined]
+                else:
+                    name = pet["name"]  # type: ignore[index]
+                    rarity = pet["rarity"]  # type: ignore[index]
+                    image_url = pet["image_url"]  # type: ignore[index]
+                    base_income = pet["base_income_per_hour"]  # type: ignore[index]
+                    drop_rate = pet["drop_rate"]  # type: ignore[index]
                 row = await connection.fetchrow(
                     """
                     INSERT INTO pets (name, rarity, image_url, base_income_per_hour, drop_rate)
