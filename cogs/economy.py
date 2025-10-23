@@ -20,7 +20,6 @@ from config import (
     DAILY_REWARD,
     GRADE_DEFINITIONS,
     HUGE_GALE_NAME,
-    HUGE_PET_NAME,
     MESSAGE_COOLDOWN,
     MESSAGE_REWARD,
     PET_DEFINITIONS,
@@ -93,31 +92,38 @@ class MillionaireRaceStage:
 
 
 MILLIONAIRE_RACE_COOLDOWN: int = 1_800
+
+# Mode Hardcore : 20 étapes avec une difficulté décroissant par paliers jusqu'à Huge Gale
 MILLIONAIRE_RACE_STAGES: tuple[MillionaireRaceStage, ...] = (
-    MillionaireRaceStage("Sprint Émeraude", 0.95, 5_000, ("Shelly", "Colt"), (1.5, 600)),
-    MillionaireRaceStage("Relais Rubis", 0.90, 7_500, ("Barley", "Poco"), (1.6, 900)),
-    MillionaireRaceStage("Virage Saphir", 0.85, 10_000, ("Rosa",), (1.8, 900)),
-    MillionaireRaceStage("Ascension Ambrée", 0.80, 14_000, ("Angelo",), (2.0, 1_200)),
-    MillionaireRaceStage("Échappée Turquoise", 0.75, 18_500, ("Doug",), (2.2, 1_200)),
-    MillionaireRaceStage("Secteur Améthyste", 0.70, 24_000, ("Lily",), (2.4, 1_500)),
-    MillionaireRaceStage("Piste Onyx", 0.65, 30_000, ("Cordelius",), (2.6, 1_500)),
-    MillionaireRaceStage(
-        "Ciel Prisme",
-        0.60,
-        37_500,
-        ("Shelly", "Barley", "Poco", "Rosa"),
-        (2.8, 1_800),
-    ),
-    MillionaireRaceStage(
-        "Spirale Stellaire",
-        0.55,
-        45_000,
-        ("Angelo", "Doug", "Lily", "Cordelius"),
-        (3.0, 2_100),
-    ),
-    MillionaireRaceStage("Portail Titan", 0.50, 60_000, (HUGE_PET_NAME,), (3.5, 2_400)),
-    MillionaireRaceStage("Faille Légendaire", 0.45, 80_000, ("Huge Trunk",), (4.0, 3_000)),
-    MillionaireRaceStage("Couronne Millionnaire", 0.40, 100_000, (HUGE_GALE_NAME,), (5.0, 3_600)),
+    # Étapes 1-5 : 95% → 75%
+    MillionaireRaceStage("Sprint Émeraude", 0.95, 1_000, (), None),
+    MillionaireRaceStage("Relais Rubis", 0.90, 0, ("Shelly",), None),
+    MillionaireRaceStage("Virage Saphir", 0.85, 0, (), (1.5, 600)),
+    MillionaireRaceStage("Montée Jade", 0.80, 1_500, (), None),
+    MillionaireRaceStage("Ascension Ambrée", 0.75, 0, ("Colt",), None),
+
+    # Étapes 6-10 : 70% → 50%
+    MillionaireRaceStage("Échappée Turquoise", 0.70, 0, (), (1.8, 900)),
+    MillionaireRaceStage("Secteur Améthyste", 0.65, 2_000, (), None),
+    MillionaireRaceStage("Piste Onyx", 0.60, 0, ("Barley",), None),
+    MillionaireRaceStage("Canyon Rubis", 0.55, 0, (), (2.0, 1_200)),
+    MillionaireRaceStage("Vallée Cristal", 0.50, 3_000, (), None),
+
+    # Étapes 11-15 : 45% → 25%
+    MillionaireRaceStage("Ciel Prisme", 0.45, 0, ("Poco",), None),
+    MillionaireRaceStage("Spirale Stellaire", 0.40, 0, (), (2.4, 1_500)),
+    MillionaireRaceStage("Portail Titan", 0.35, 4_000, (), None),
+    MillionaireRaceStage("Faille Temporelle", 0.30, 0, ("Rosa",), None),
+    MillionaireRaceStage("Nexus Éternel", 0.25, 0, (), (2.8, 1_800)),
+
+    # Étapes 16-19 : 20% → 5%
+    MillionaireRaceStage("Abîme Infini", 0.20, 6_000, (), None),
+    MillionaireRaceStage("Dimension Chaos", 0.15, 0, ("Angelo",), None),
+    MillionaireRaceStage("Royaume Perdu", 0.10, 0, (), (3.2, 2_100)),
+    MillionaireRaceStage("Faille Légendaire", 0.05, 10_000, (), None),
+
+    # Étape 20 : FINALE - Huge Gale à 5%
+    MillionaireRaceStage("Couronne Millionnaire", 0.05, 0, (HUGE_GALE_NAME,), None),
 )
 
 PET_DEFINITION_MAP: dict[str, object] = {pet.name: pet for pet in PET_DEFINITIONS}
@@ -602,15 +608,58 @@ class MillionaireRaceSession:
         if not success:
             self.failed = True
             self.finished = True
+
+            if self.total_pb > 0:
+                try:
+                    await self.database.increment_balance(
+                        self.ctx.author.id,
+                        -self.total_pb,
+                        transaction_type="millionaire_race_loss",
+                        description="Échec Millionaire Race - Perte des gains",
+                    )
+                except Exception:
+                    logger.exception(
+                        "Impossible de retirer les PrissBucks de %s après un échec de la Millionaire Race",
+                        self.ctx.author.id,
+                    )
+
+            for pet_name in self.pets_awarded:
+                try:
+                    pet_id = await self.database.get_pet_id_by_name(pet_name)
+                    if pet_id:
+                        await self.database.pool.execute(
+                            """
+                            DELETE FROM user_pets
+                            WHERE id = (
+                                SELECT id FROM user_pets
+                                WHERE user_id = $1 AND pet_id = $2
+                                ORDER BY acquired_at DESC
+                                LIMIT 1
+                            )
+                            """,
+                            self.ctx.author.id,
+                            pet_id,
+                        )
+                except Exception:
+                    logger.exception("Impossible de retirer le pet %s après un échec", pet_name)
+
             self.last_feedback = [
-                f"❌ Échec sur **{stage.label}** (chance de {chance_label}).",
-                "Tu conserves les récompenses déjà gagnées.",
+                f"❌ ÉCHEC sur **{stage.label}** (chance de {chance_label}).",
+                "💀 **TU PERDS TOUT !**",
+                f"PrissBucks perdus : {embeds.format_currency(self.total_pb)}",
+                f"Pets perdus : {len(self.pets_awarded)}",
+                "Retente ta chance après le cooldown !",
             ]
+
+            self.total_pb = 0
+            self.pets_awarded = []
+            self.boosters_awarded = []
             return False
 
         feedback = [f"✅ **{stage.label}** franchie !"]
+        pet_name: str | None = None
 
-        if stage.prissbucks:
+        if stage.prissbucks > 0:
             try:
                 await self.database.increment_balance(
                     self.ctx.author.id,
@@ -619,23 +668,21 @@ class MillionaireRaceSession:
                     description=f"Épreuve {self.stage_index + 1} - {stage.label}",
                 )
                 self.total_pb += stage.prissbucks
-                feedback.append(
-                    f"+{embeds.format_currency(stage.prissbucks)} remportés."
-                )
+                feedback.append(f"💰 +{embeds.format_currency(stage.prissbucks)} remportés.")
             except Exception:
-                logger.exception("Impossible de créditer la Millionaire Race pour %s", self.ctx.author.id)
-                feedback.append("Une erreur est survenue lors du crédit de tes PrissBucks.")
-
-        pet_name: str | None = None
-        if stage.pet_choices:
-            pet_name = random.choice(stage.pet_choices)
+                logger.exception(
+                    "Erreur lors du crédit de la Millionaire Race pour %s",
+                    self.ctx.author.id,
+                )
+                feedback.append("Une erreur est survenue.")
+        elif stage.pet_choices:
+            pet_name = stage.pet_choices[0]
             if await self._award_pet(pet_name):
                 self.pets_awarded.append(pet_name)
-                feedback.append(f"Tu obtiens {self._format_pet_name(pet_name)} !")
+                feedback.append(f"🐾 Tu obtiens {self._format_pet_name(pet_name)} !")
             else:
-                feedback.append("Le pet bonus n'a pas pu être ajouté. Signale-le à un admin.")
-
-        if stage.booster:
+                feedback.append("Le pet n'a pas pu être ajouté.")
+        elif stage.booster:
             multiplier, duration_seconds = stage.booster
             try:
                 applied, _, extended, previous = await self.database.grant_pet_booster(
@@ -646,19 +693,25 @@ class MillionaireRaceSession:
                 label = self._format_booster_label(applied, duration_seconds)
                 self.boosters_awarded.append(label)
                 if extended and previous >= applied:
-                    feedback.append(f"Booster prolongé : {label}")
+                    feedback.append(f"⚡ Booster prolongé : {label}")
                 else:
-                    feedback.append(f"Booster reçu : {label}")
+                    feedback.append(f"⚡ Booster reçu : {label}")
             except Exception:
-                logger.exception("Impossible d'attribuer le booster Millionaire Race à %s", self.ctx.author.id)
+                logger.exception(
+                    "Erreur d'attribution du booster Millionaire Race pour %s",
+                    self.ctx.author.id,
+                )
                 feedback.append("Le booster n'a pas pu être activé.")
 
         self.stage_index += 1
+
         if self.stage_index >= len(MILLIONAIRE_RACE_STAGES):
             self.finished = True
-            feedback.insert(0, "🎉 Tu atteins la ligne d'arrivée de la Millionaire Race !")
+            feedback.insert(0, "🎉🎉🎉 TU AS CONQUIS LA MILLIONAIRE RACE ! 🎉🎉🎉")
             if pet_name == HUGE_GALE_NAME:
-                feedback.append(f"**{self._format_pet_name(HUGE_GALE_NAME)}** rejoint ton équipe !")
+                feedback.append(
+                    f"🔥 **{self._format_pet_name(HUGE_GALE_NAME)}** est maintenant tien ! 🔥"
+                )
 
         self.last_feedback = feedback
         return True
@@ -707,7 +760,11 @@ class MillionaireRaceSession:
         stage = self.current_stage
         if stage and not self.finished:
             chance_pct = int(stage.success_rate * 100)
-            reward_lines = [f"Chance de réussite : **{chance_pct}%**"]
+            reward_lines = [
+                "⚠️ ATTENTION : En cas d'échec, tu perds TOUT !",
+                "20 étapes jusqu'au Huge Gale",
+                f"Chance de réussite : **{chance_pct}%**",
+            ]
             if stage.prissbucks:
                 reward_lines.append(
                     f"PrissBucks : +{embeds.format_currency(stage.prissbucks)}"
