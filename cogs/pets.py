@@ -9,7 +9,15 @@ from typing import Any, Dict, Iterable, List, Mapping
 import discord
 from discord.ext import commands
 
-from config import PET_DEFINITIONS, PET_EGG_PRICE, PET_RARITY_ORDER, PetDefinition
+from config import (
+    GOLD_PET_CHANCE,
+    GOLD_PET_COMBINE_REQUIRED,
+    GOLD_PET_MULTIPLIER,
+    PET_DEFINITIONS,
+    PET_EGG_PRICE,
+    PET_RARITY_ORDER,
+    PetDefinition,
+)
 from utils import embeds
 from database.db import DatabaseError
 
@@ -24,6 +32,9 @@ class Pets(commands.Cog):
         self.database = bot.database
         self._definitions: List[PetDefinition] = list(PET_DEFINITIONS)
         self._definition_by_name: Dict[str, PetDefinition] = {pet.name: pet for pet in self._definitions}
+        self._definition_by_slug: Dict[str, PetDefinition] = {
+            pet.name.lower(): pet for pet in self._definitions
+        }
         self._definition_by_id: Dict[int, PetDefinition] = {}
         self._pet_ids: Dict[str, int] = {}
         self._weights: List[float] = [pet.drop_rate for pet in self._definitions]
@@ -43,13 +54,21 @@ class Pets(commands.Cog):
 
     def _convert_record(self, record: Mapping[str, Any]) -> Dict[str, Any]:
         data = dict(record)
-        definition = self._definition_by_id.get(int(record["pet_id"]))
+        pet_identifier = int(record.get("pet_id", 0))
+        definition = self._definition_by_id.get(pet_identifier)
+        is_gold = bool(record.get("is_gold"))
+        data["is_gold"] = is_gold
+        multiplier = GOLD_PET_MULTIPLIER if is_gold else 1
         if definition is not None:
-            data.setdefault("image_url", definition.image_url)
-            data.setdefault("base_income_per_hour", definition.base_income_per_hour)
-            data.setdefault("rarity", definition.rarity)
-            data.setdefault("name", definition.name)
-            data.setdefault("is_huge", definition.is_huge)
+            data["image_url"] = definition.image_url
+            data["base_income_per_hour"] = definition.base_income_per_hour * multiplier
+            data["rarity"] = definition.rarity
+            data["name"] = definition.name
+            data["is_huge"] = definition.is_huge
+        else:
+            base_income = int(data.get("base_income_per_hour", 0))
+            if is_gold:
+                data["base_income_per_hour"] = base_income * multiplier
         return data
 
     async def _open_pet_egg(self, ctx: commands.Context) -> None:
@@ -70,7 +89,15 @@ class Pets(commands.Cog):
             description="Achat d'un œuf basique",
         )
         pet_definition, pet_id = self._choose_pet()
-        user_pet = await self.database.add_user_pet(ctx.author.id, pet_id, is_huge=pet_definition.is_huge)
+        is_gold = False
+        if not pet_definition.is_huge and GOLD_PET_CHANCE > 0:
+            is_gold = random.random() < GOLD_PET_CHANCE
+        user_pet = await self.database.add_user_pet(
+            ctx.author.id,
+            pet_id,
+            is_huge=pet_definition.is_huge,
+            is_gold=is_gold,
+        )
         await self.database.record_pet_opening(ctx.author.id, pet_id)
 
         animation_steps = (
@@ -86,12 +113,14 @@ class Pets(commands.Cog):
         await asyncio.sleep(1.2)
         market_values = await self.database.get_pet_market_values()
         market_value = int(market_values.get(pet_id, 0))
+        income_per_hour = int(pet_definition.base_income_per_hour * (GOLD_PET_MULTIPLIER if is_gold else 1))
         reveal_embed = embeds.pet_reveal_embed(
             name=pet_definition.name,
             rarity=pet_definition.rarity,
             image_url=pet_definition.image_url,
-            income_per_hour=pet_definition.base_income_per_hour,
+            income_per_hour=income_per_hour,
             is_huge=pet_definition.is_huge,
+            is_gold=is_gold,
             market_value=market_value,
         )
         reveal_embed.set_footer(
@@ -179,6 +208,67 @@ class Pets(commands.Cog):
         embed = embeds.pet_equip_embed(member=ctx.author, pet=pet_data, activated=activated, active_count=active_count)
         await ctx.send(embed=embed)
 
+    @commands.command(name="goldify", aliases=("gold", "fusion"))
+    async def goldify(self, ctx: commands.Context, *, pet_name: str | None = None) -> None:
+        if not pet_name:
+            await ctx.send(
+                embed=embeds.info_embed(
+                    "Utilise `e!goldify <nom du pet>` pour fusionner **"
+                    f"{GOLD_PET_COMBINE_REQUIRED}** exemplaires identiques en une version or."
+                )
+            )
+            return
+
+        lookup = pet_name.strip().lower()
+        definition = self._definition_by_slug.get(lookup)
+        if definition is None:
+            await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
+            return
+        if definition.is_huge:
+            await ctx.send(embed=embeds.error_embed("Les énormes pets ne peuvent pas devenir or."))
+            return
+
+        pet_id = self._pet_ids.get(definition.name)
+        if pet_id is None:
+            await ctx.send(embed=embeds.error_embed("Pet non synchronisé. Réessaie plus tard."))
+            return
+
+        try:
+            record, consumed = await self.database.upgrade_pet_to_gold(ctx.author.id, pet_id)
+        except DatabaseError as exc:
+            await ctx.send(embed=embeds.error_embed(str(exc)))
+            return
+
+        pet_data = self._convert_record(record)
+        market_values = await self.database.get_pet_market_values()
+        pet_identifier = int(pet_data.get("pet_id", 0))
+        pet_data["market_value"] = int(market_values.get(pet_identifier, 0))
+        reveal_embed = embeds.pet_reveal_embed(
+            name=str(pet_data.get("name", definition.name)),
+            rarity=str(pet_data.get("rarity", definition.rarity)),
+            image_url=str(pet_data.get("image_url", definition.image_url)),
+            income_per_hour=int(pet_data.get("base_income_per_hour", definition.base_income_per_hour)),
+            is_huge=bool(pet_data.get("is_huge", False)),
+            is_gold=True,
+            market_value=int(pet_data.get("market_value", 0)),
+        )
+        reveal_embed.add_field(
+            name="Fusion dorée",
+            value=(
+                f"{consumed} exemplaires combinés pour obtenir cette version or !\n"
+                "Les pets utilisés ont été retirés de ton inventaire."
+            ),
+            inline=False,
+        )
+        user_pet_id = int(pet_data.get("id", 0))
+        if user_pet_id:
+            reveal_embed.set_footer(
+                text=(
+                    f"ID du pet : #{user_pet_id} • Utilise e!equip {user_pet_id} pour l'équiper !"
+                )
+            )
+        await ctx.send(embed=reveal_embed)
+
     @commands.command(name="claim")
     async def claim(self, ctx: commands.Context) -> None:
         amount, rows, elapsed = await self.database.claim_active_pet_income(ctx.author.id)
@@ -207,13 +297,19 @@ class Pets(commands.Cog):
         total_openings, counts = await self.database.get_pet_opening_counts()
         counts = {int(key): int(value) for key, value in counts.items()}
         huge_count = await self.database.count_huge_pets()
+        gold_count = await self.database.count_gold_pets()
         stats = []
         for pet in self._definitions:
             pet_id = self._pet_ids.get(pet.name, 0)
             obtained = counts.get(pet_id, 0)
             actual_rate = (obtained / total_openings * 100) if total_openings else 0.0
             stats.append((pet.name, obtained, actual_rate, pet.drop_rate * 100))
-        embed = embeds.pet_stats_embed(total_openings=total_openings, stats=stats, huge_count=huge_count)
+        embed = embeds.pet_stats_embed(
+            total_openings=total_openings,
+            stats=stats,
+            huge_count=huge_count,
+            gold_count=gold_count,
+        )
         await ctx.send(embed=embed)
 
 
