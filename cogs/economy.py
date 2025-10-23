@@ -20,6 +20,7 @@ from config import (
     DAILY_REWARD,
     GRADE_DEFINITIONS,
     HUGE_GALE_NAME,
+    HUGE_GRIFF_NAME,
     MESSAGE_COOLDOWN,
     MESSAGE_REWARD,
     PET_DEFINITIONS,
@@ -57,6 +58,8 @@ SLOT_SPECIAL_COMBOS: dict[tuple[str, ...], tuple[int, str]] = {
 }
 SLOT_MIN_BET = 50
 SLOT_MAX_BET = 5000
+CASINO_HUGE_MAX_CHANCE = 0.10
+CASINO_HUGE_CHANCE_PER_PB = CASINO_HUGE_MAX_CHANCE / SLOT_MAX_BET
 
 PET_BOOSTER_MULTIPLIERS: tuple[float, ...] = (1.5, 2, 3, 5, 10, 100)
 PET_BOOSTER_DURATIONS_MINUTES: tuple[int, ...] = (1, 5, 10, 15, 30, 60, 180)
@@ -1003,6 +1006,45 @@ class Economy(commands.Cog):
         )
         return True
 
+    async def _maybe_award_casino_huge(self, ctx: commands.Context, bet: int) -> bool:
+        chance = min(CASINO_HUGE_MAX_CHANCE, max(0.0, bet * CASINO_HUGE_CHANCE_PER_PB))
+        if chance <= 0 or random.random() > chance:
+            return False
+
+        pet_id = await self.database.get_pet_id_by_name(HUGE_GRIFF_NAME)
+        if pet_id is None:
+            logger.warning("Pet %s introuvable pour le casino", HUGE_GRIFF_NAME)
+            return False
+
+        try:
+            await self.database.add_user_pet(ctx.author.id, pet_id, is_huge=True)
+        except DatabaseError:
+            logger.exception("Impossible d'ajouter %s depuis le casino", HUGE_GRIFF_NAME)
+            return False
+
+        emoji = PET_EMOJIS.get(HUGE_GRIFF_NAME, PET_EMOJIS.get("default", "🐾"))
+        chance_pct = chance * 100
+        lines = [
+            f"{ctx.author.mention} décroche {emoji} **{HUGE_GRIFF_NAME}** au casino !",
+            f"Mise : {embeds.format_currency(bet)} • Chance : {chance_pct:.2f}%",
+        ]
+        await ctx.send(
+            embed=embeds.success_embed(
+                "\n".join(lines), title="🎰 Jackpot colossal !"
+            )
+        )
+
+        logger.info(
+            "casino_huge_awarded",
+            extra={
+                "user_id": ctx.author.id,
+                "pet_id": pet_id,
+                "bet": bet,
+                "chance": chance,
+            },
+        )
+        return True
+
     # ------------------------------------------------------------------
     # Récompenses de messages
     # ------------------------------------------------------------------
@@ -1186,6 +1228,7 @@ class Economy(commands.Cog):
         )
         await ctx.send(embed=embed)
         await self._maybe_award_pet_booster(ctx, "slots")
+        await self._maybe_award_casino_huge(ctx, bet)
 
     @commands.cooldown(1, MASTERMIND_CONFIG.cooldown, commands.BucketType.user)
     @commands.command(name="mastermind", aliases=("mm", "code"))

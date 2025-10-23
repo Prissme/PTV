@@ -708,6 +708,54 @@ class Database:
         sorted_totals = sorted(rap_totals.items(), key=lambda item: item[1], reverse=True)
         return sorted_totals[:clamped_limit]
 
+    async def get_hourly_income_leaderboard(self, limit: int) -> list[tuple[int, int]]:
+        clamped_limit = max(0, int(limit))
+        if clamped_limit == 0:
+            return []
+
+        rows = await self.pool.fetch(
+            """
+            WITH best_non_huge AS (
+                SELECT
+                    up.user_id,
+                    COALESCE(
+                        MAX(p.base_income_per_hour * CASE WHEN up.is_gold THEN $2 ELSE 1 END),
+                        0
+                    ) AS best_income
+                FROM user_pets AS up
+                JOIN pets AS p ON p.pet_id = up.pet_id
+                WHERE NOT up.is_huge
+                GROUP BY up.user_id
+            ),
+            active_income AS (
+                SELECT
+                    up.user_id,
+                    SUM(
+                        CASE
+                            WHEN up.is_huge THEN GREATEST($3, COALESCE(b.best_income, 0) * $4)
+                            ELSE p.base_income_per_hour * CASE WHEN up.is_gold THEN $2 ELSE 1 END
+                        END
+                    ) AS hourly_income
+                FROM user_pets AS up
+                JOIN pets AS p ON p.pet_id = up.pet_id
+                LEFT JOIN best_non_huge AS b ON b.user_id = up.user_id
+                WHERE up.is_active
+                GROUP BY up.user_id
+            )
+            SELECT user_id, hourly_income
+            FROM active_income
+            WHERE hourly_income > 0
+            ORDER BY hourly_income DESC
+            LIMIT $1
+            """,
+            clamped_limit,
+            GOLD_PET_MULTIPLIER,
+            HUGE_PET_MIN_INCOME,
+            HUGE_PET_MULTIPLIER,
+        )
+
+        return [(int(row["user_id"]), int(row["hourly_income"])) for row in rows]
+
     async def reset_user_grade(self, user_id: int) -> None:
         await self.ensure_user(user_id)
         await self.pool.execute(
