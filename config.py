@@ -174,19 +174,21 @@ GOLD_PET_CHANCE: Final[float] = _get_float_env("PET_GOLD_CHANCE", 0.05)
 GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
     "PET_GOLD_COMBINE_REQUIRED", 10, minimum=2
 )
-HUGE_PET_NAME: Final[str] = "ÉNORME SHELLY"
+HUGE_PET_NAME: Final[str] = "Huge Shelly"
+HUGE_PET_MULTIPLIER: Final[int] = 5
+HUGE_PET_MIN_INCOME: Final[int] = 500
 
 _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name="Shelly",
-        rarity="Common",
+        rarity="Commun",
         image_url="https://example.com/document43.png",
         base_income_per_hour=10,
         drop_rate=0.50,
     ),
     PetDefinition(
         name="Colt",
-        rarity="Common",
+        rarity="Atypique",
         image_url="https://example.com/document44.png",
         base_income_per_hour=15,
         drop_rate=0.25,
@@ -203,21 +205,21 @@ _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
         rarity="Rare",
         image_url="https://example.com/document46.png",
         base_income_per_hour=60,
-        drop_rate=0.06,
+        drop_rate=0.08,
     ),
     PetDefinition(
         name="Rosa",
-        rarity="Super Rare",
+        rarity="Épique",
         image_url="https://example.com/document47.png",
         base_income_per_hour=150,
-        drop_rate=0.03,
+        drop_rate=0.019,
     ),
     PetDefinition(
         name=HUGE_PET_NAME,
-        rarity="Mythic",
+        rarity="Secret",
         image_url="https://example.com/document48.png",
-        base_income_per_hour=500,
-        drop_rate=0.01,
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.001,
         is_huge=True,
     ),
 )
@@ -225,38 +227,38 @@ _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
 _FOREST_EGG_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name="Angelo",
-        rarity="Common",
+        rarity="Commun",
         image_url="https://example.com/document49.png",
         base_income_per_hour=35,
-        drop_rate=0.46,
+        drop_rate=0.40,
+    ),
+    PetDefinition(
+        name="Doug",
+        rarity="Atypique",
+        image_url="https://example.com/document52.png",
+        base_income_per_hour=75,
+        drop_rate=0.30,
     ),
     PetDefinition(
         name="Lily",
         rarity="Rare",
         image_url="https://example.com/document50.png",
-        base_income_per_hour=75,
-        drop_rate=0.28,
+        base_income_per_hour=160,
+        drop_rate=0.20,
     ),
     PetDefinition(
         name="Cordelius",
-        rarity="Super Rare",
+        rarity="Rare",
         image_url="https://example.com/document51.png",
-        base_income_per_hour=160,
-        drop_rate=0.15,
-    ),
-    PetDefinition(
-        name="Doug",
-        rarity="Mythic",
-        image_url="https://example.com/document52.png",
         base_income_per_hour=280,
-        drop_rate=0.09,
+        drop_rate=0.095,
     ),
     PetDefinition(
         name="Huge Trunk",
-        rarity="Mythic",
+        rarity="Secret",
         image_url="https://example.com/document53.png",
-        base_income_per_hour=650,
-        drop_rate=0.02,
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.005,
         is_huge=True,
     ),
 )
@@ -323,16 +325,18 @@ PET_EMOJIS: Final[dict[str, str]] = {
 }
 
 PET_RARITY_COLORS: Final[dict[str, int]] = {
-    "Common": 0x95A5A6,
+    "Commun": 0x95A5A6,
+    "Atypique": 0x2ECC71,
     "Rare": 0x3498DB,
-    "Super Rare": 0x9B59B6,
-    "Mythic": 0xF1C40F,
+    "Épique": 0x9B59B6,
+    "Secret": 0xF1C40F,
 }
 
 PET_RARITY_ORDER: Final[dict[str, int]] = {
-    "Common": 0,
-    "Rare": 1,
-    "Super Rare": 2,
-    "Mythic": 3,
+    "Commun": 0,
+    "Atypique": 1,
+    "Rare": 2,
+    "Épique": 3,
+    "Secret": 4,
 }
 
