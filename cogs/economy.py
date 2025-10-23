@@ -21,11 +21,14 @@ from config import (
     GRADE_DEFINITIONS,
     HUGE_GALE_NAME,
     HUGE_GRIFF_NAME,
+    HUGE_KENJI_ONI_NAME,
+    HUGE_PET_MIN_INCOME,
     MESSAGE_COOLDOWN,
     MESSAGE_REWARD,
     PET_DEFINITIONS,
     PET_EMOJIS,
     PREFIX,
+    get_huge_multiplier,
 )
 from utils import embeds
 from database.db import Database, DatabaseError, InsufficientBalanceError
@@ -60,6 +63,9 @@ SLOT_MIN_BET = 50
 SLOT_MAX_BET = 5000
 CASINO_HUGE_MAX_CHANCE = 0.10
 CASINO_HUGE_CHANCE_PER_PB = CASINO_HUGE_MAX_CHANCE / SLOT_MAX_BET
+
+MASTERMIND_HUGE_MIN_CHANCE = 0.0005
+MASTERMIND_HUGE_MAX_CHANCE = 0.002
 
 PET_BOOSTER_MULTIPLIERS: tuple[float, ...] = (1.5, 2, 3, 5, 10, 100)
 PET_BOOSTER_DURATIONS_MINUTES: tuple[int, ...] = (1, 5, 10, 15, 30, 60, 180)
@@ -358,6 +364,7 @@ class MastermindSession:
                 "attempts_left": attempts_left,
             },
         )
+        await self._maybe_award_mastermind_huge()
 
     async def _handle_timeout(self) -> None:
         self.embed_color = Colors.ERROR
@@ -405,6 +412,68 @@ class MastermindSession:
 
     def _secret_display(self) -> str:
         return self.helper.format_code(self.secret, include_names=True)
+
+    def _mastermind_huge_chance(self) -> float:
+        max_attempts = max(1, self.helper.config.max_attempts)
+        if max_attempts <= 1:
+            return MASTERMIND_HUGE_MAX_CHANCE
+        attempts_used = max(1, min(self.attempts, max_attempts))
+        span = MASTERMIND_HUGE_MAX_CHANCE - MASTERMIND_HUGE_MIN_CHANCE
+        if span <= 0:
+            return max(MASTERMIND_HUGE_MIN_CHANCE, MASTERMIND_HUGE_MAX_CHANCE)
+        factor = (attempts_used - 1) / (max_attempts - 1)
+        return MASTERMIND_HUGE_MAX_CHANCE - factor * span
+
+    async def _maybe_award_mastermind_huge(self) -> bool:
+        chance = self._mastermind_huge_chance()
+        roll = random.random()
+        if roll >= chance:
+            self._logger.debug(
+                "Mastermind huge roll failed",
+                extra={
+                    "user_id": self.ctx.author.id,
+                    "chance": chance,
+                    "roll": roll,
+                    "attempts": self.attempts,
+                },
+            )
+            return False
+
+        pet_id = await self.database.get_pet_id_by_name(HUGE_KENJI_ONI_NAME)
+        if pet_id is None:
+            self._logger.warning("Pet %s introuvable pour le Mastermind", HUGE_KENJI_ONI_NAME)
+            return False
+
+        try:
+            await self.database.add_user_pet(self.ctx.author.id, pet_id, is_huge=True)
+        except DatabaseError:
+            self._logger.exception(
+                "Impossible d'ajouter %s à %s depuis le Mastermind",
+                HUGE_KENJI_ONI_NAME,
+                self.ctx.author.id,
+            )
+            return False
+
+        best_non_huge = await self.database.get_best_non_huge_income(self.ctx.author.id)
+        multiplier = max(1, get_huge_multiplier(HUGE_KENJI_ONI_NAME))
+        huge_income = max(HUGE_PET_MIN_INCOME, best_non_huge * multiplier)
+        emoji = PET_EMOJIS.get(HUGE_KENJI_ONI_NAME, PET_EMOJIS.get("default", "🐾"))
+        self.status_lines.append(
+            "🔥 Jackpot ! Tu remportes "
+            f"{emoji} **{HUGE_KENJI_ONI_NAME}** "
+            f"({embeds.format_currency(huge_income)} /h) !"
+        )
+        self._logger.info(
+            "Mastermind huge won",
+            extra={
+                "user_id": self.ctx.author.id,
+                "attempts": self.attempts,
+                "chance": chance,
+                "roll": roll,
+                "income": huge_income,
+            },
+        )
+        return True
 
 
 class MastermindView(discord.ui.View):

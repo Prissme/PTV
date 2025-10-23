@@ -96,6 +96,7 @@ class Help(commands.Cog):
                 (
                     "**e!leaderboard** (lb) — Classement des fortunes.",
                     "**e!rapleaderboard** (raplb, rap) — Classement RAP des pets.",
+                    "**e!revenusleaderboard** (revenuslb, incomelb, hourlylb) — Classement des revenus horaires.",
                 )
             ),
             inline=False,
