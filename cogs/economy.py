@@ -14,7 +14,15 @@ from typing import Awaitable, Callable, Optional, Sequence
 import discord
 from discord.ext import commands
 
-from config import Colors, DAILY_COOLDOWN, DAILY_REWARD, MESSAGE_COOLDOWN, MESSAGE_REWARD, PREFIX
+from config import (
+    Colors,
+    DAILY_COOLDOWN,
+    DAILY_REWARD,
+    GRADE_DEFINITIONS,
+    MESSAGE_COOLDOWN,
+    MESSAGE_REWARD,
+    PREFIX,
+)
 from utils import embeds
 from database.db import Database, DatabaseError, InsufficientBalanceError
 
@@ -819,6 +827,19 @@ class Economy(commands.Cog):
     @commands.command(name="mastermind", aliases=("mm", "code"))
     async def mastermind(self, ctx: commands.Context) -> None:
         """Mini-jeu de Mastermind pour gagner quelques PB."""
+        grade_level = await self.database.get_grade_level(ctx.author.id)
+        if grade_level < 1:
+            required_name = (
+                GRADE_DEFINITIONS[0].name if GRADE_DEFINITIONS else "Novice"
+            )
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Le Mastermind se débloque au grade 1 "
+                    f"(**{required_name}**). Progresse encore un peu !"
+                )
+            )
+            return
+
         session = MastermindSession(
             ctx,
             self.mastermind_helper,
