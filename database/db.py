@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Dict, Iterable, List, Mapping, Optional, Sequence, Set
@@ -113,8 +114,16 @@ class Database:
                     message_progress INTEGER NOT NULL DEFAULT 0 CHECK (message_progress >= 0),
                     invite_progress INTEGER NOT NULL DEFAULT 0 CHECK (invite_progress >= 0),
                     egg_progress INTEGER NOT NULL DEFAULT 0 CHECK (egg_progress >= 0),
+                    gold_progress INTEGER NOT NULL DEFAULT 0 CHECK (gold_progress >= 0),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE user_grades
+                ADD COLUMN IF NOT EXISTS gold_progress INTEGER NOT NULL DEFAULT 0
+                    CHECK (gold_progress >= 0)
                 """
             )
             await connection.execute(
@@ -521,7 +530,7 @@ class Database:
         await self.ensure_user(user_id)
         row = await self.pool.fetchrow(
             """
-            SELECT grade_level, message_progress, invite_progress, egg_progress, updated_at
+            SELECT grade_level, message_progress, invite_progress, egg_progress, gold_progress, updated_at
             FROM user_grades
             WHERE user_id = $1
             """,
@@ -538,18 +547,25 @@ class Database:
         message_delta: int = 0,
         invite_delta: int = 0,
         egg_delta: int = 0,
+        gold_delta: int = 0,
         message_cap: int | None = None,
         invite_cap: int | None = None,
         egg_cap: int | None = None,
+        gold_cap: int | None = None,
     ) -> asyncpg.Record:
-        if message_delta <= 0 and invite_delta <= 0 and egg_delta <= 0:
+        if (
+            message_delta <= 0
+            and invite_delta <= 0
+            and egg_delta <= 0
+            and gold_delta <= 0
+        ):
             return await self.get_user_grade(user_id)
 
         await self.ensure_user(user_id)
         async with self.transaction() as connection:
             row = await connection.fetchrow(
                 """
-                SELECT grade_level, message_progress, invite_progress, egg_progress
+                SELECT grade_level, message_progress, invite_progress, egg_progress, gold_progress
                 FROM user_grades
                 WHERE user_id = $1
                 FOR UPDATE
@@ -562,10 +578,12 @@ class Database:
             current_messages = int(row["message_progress"])
             current_invites = int(row["invite_progress"])
             current_eggs = int(row["egg_progress"])
+            current_gold = int(row["gold_progress"])
 
             new_messages = max(0, current_messages + max(message_delta, 0))
             new_invites = max(0, current_invites + max(invite_delta, 0))
             new_eggs = max(0, current_eggs + max(egg_delta, 0))
+            new_gold = max(0, current_gold + max(gold_delta, 0))
 
             if message_cap is not None:
                 new_messages = min(new_messages, message_cap)
@@ -573,6 +591,8 @@ class Database:
                 new_invites = min(new_invites, invite_cap)
             if egg_cap is not None:
                 new_eggs = min(new_eggs, egg_cap)
+            if gold_cap is not None:
+                new_gold = min(new_gold, gold_cap)
 
             updated = await connection.fetchrow(
                 """
@@ -580,13 +600,15 @@ class Database:
                 SET message_progress = $1,
                     invite_progress = $2,
                     egg_progress = $3,
+                    gold_progress = $4,
                     updated_at = NOW()
-                WHERE user_id = $4
+                WHERE user_id = $5
                 RETURNING *
                 """,
                 new_messages,
                 new_invites,
                 new_eggs,
+                new_gold,
                 user_id,
             )
 
@@ -601,6 +623,7 @@ class Database:
         message_goal: int,
         invite_goal: int,
         egg_goal: int,
+        gold_goal: int,
         max_grade: int,
     ) -> tuple[bool, asyncpg.Record]:
         await self.ensure_user(user_id)
@@ -620,6 +643,7 @@ class Database:
                 int(row["message_progress"]) < message_goal
                 or int(row["invite_progress"]) < invite_goal
                 or int(row["egg_progress"]) < egg_goal
+                or int(row["gold_progress"]) < gold_goal
             ):
                 return False, row
 
@@ -630,6 +654,7 @@ class Database:
                     message_progress = 0,
                     invite_progress = 0,
                     egg_progress = 0,
+                    gold_progress = 0,
                     updated_at = NOW()
                 WHERE user_id = $2
                 RETURNING *
@@ -651,6 +676,38 @@ class Database:
         """
         return await self.pool.fetch(query, limit)
 
+    async def get_pet_rap_leaderboard(self, limit: int) -> list[tuple[int, int]]:
+        clamped_limit = max(0, int(limit))
+        if clamped_limit == 0:
+            return []
+
+        market_values = await self.get_pet_market_values()
+        rows = await self.pool.fetch(
+            """
+            SELECT up.user_id, up.pet_id, up.is_gold, up.is_huge, p.base_income_per_hour
+            FROM user_pets AS up
+            JOIN pets AS p ON p.pet_id = up.pet_id
+            """
+        )
+
+        rap_totals: defaultdict[int, int] = defaultdict(int)
+        for row in rows:
+            user_id = int(row["user_id"])
+            pet_id = int(row["pet_id"])
+            base_income = int(row["base_income_per_hour"])
+            value = int(market_values.get(pet_id, 0))
+            if value <= 0:
+                value = max(base_income * 120, 1_000)
+            if bool(row["is_gold"]):
+                value = int(value * GOLD_PET_MULTIPLIER)
+            if bool(row["is_huge"]):
+                huge_floor = max(base_income * HUGE_PET_MULTIPLIER * 150, value)
+                value = huge_floor
+            rap_totals[user_id] += max(0, value)
+
+        sorted_totals = sorted(rap_totals.items(), key=lambda item: item[1], reverse=True)
+        return sorted_totals[:clamped_limit]
+
     async def reset_user_grade(self, user_id: int) -> None:
         await self.ensure_user(user_id)
         await self.pool.execute(
@@ -660,6 +717,7 @@ class Database:
                 message_progress = 0,
                 invite_progress = 0,
                 egg_progress = 0,
+                gold_progress = 0,
                 updated_at = NOW()
             WHERE user_id = $1
             """,
@@ -755,6 +813,15 @@ class Database:
         return await self.pool.fetch(
             "SELECT pet_id, name, rarity, image_url, base_income_per_hour, drop_rate FROM pets ORDER BY pet_id"
         )
+
+    async def get_pet_id_by_name(self, name: str) -> Optional[int]:
+        row = await self.pool.fetchrow(
+            "SELECT pet_id FROM pets WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+        if row is None:
+            return None
+        return int(row["pet_id"])
 
     async def add_user_pet(
         self, user_id: int, pet_id: int, *, is_huge: bool = False, is_gold: bool = False
