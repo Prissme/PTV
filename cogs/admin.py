@@ -136,7 +136,15 @@ class Admin(commands.Cog):
             await connection.execute("DELETE FROM user_pets WHERE user_id = $1", user.id)
             await connection.execute("DELETE FROM pet_openings WHERE user_id = $1", user.id)
             await connection.execute("UPDATE users SET last_daily = NULL, pet_last_claim = NULL WHERE user_id = $1", user.id)
-            await connection.execute("UPDATE user_xp SET total_xp = 0, level = 1 WHERE user_id = $1", user.id)
+
+        await self.database.reset_user_grade(user.id)
+
+        grade_cog = self.bot.get_cog("GradeSystem")
+        if grade_cog and hasattr(grade_cog, "_assign_grade_role"):
+            try:
+                await grade_cog._assign_grade_role(user, 0)  # type: ignore[attr-defined]
+            except Exception:
+                logger.exception("Impossible de retirer les rôles de grade pour %s", user.id)
 
         await ctx.send(
             embed=embeds.success_embed(

@@ -101,6 +101,9 @@ class Pets(commands.Cog):
         )
         await message.edit(embed=reveal_embed)
 
+        if isinstance(ctx.author, discord.Member):
+            self.bot.dispatch("grade_quest_progress", ctx.author, "egg", 1, ctx.channel)
+
     def _sort_pets_for_display(
         self,
         records: Iterable[Mapping[str, Any]],

@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class HealthCheckServer:
     """Expose un endpoint HTTP minimal utilisé par Koyeb pour le health check."""
 
-    def __init__(self, *, host: str = "0.0.0.0", port: int = 8000) -> None:
+    def __init__(self, *, host: str = "0.0.0.0", port: int = 3000) -> None:
         self._host = host
         self._port = port
         self._app = web.Application()
@@ -31,7 +31,7 @@ class HealthCheckServer:
         self._logger = logging.getLogger(f"{__name__}.HealthCheckServer")
 
     async def health_check(self, request: web.Request) -> web.Response:
-        return web.Response(text="OK", status=200)
+        return web.Response(text="Bot is alive", status=200)
 
     async def start(self) -> None:
         if self._runner is not None:
@@ -90,7 +90,7 @@ class EcoBot(commands.Bot):
         self.health_server = health_server
         self.initial_extensions: tuple[str, ...] = (
             "economy",
-            "xp_system",
+            "grades",
             "leaderboard",
             "pets",
             "help",

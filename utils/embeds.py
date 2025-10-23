@@ -7,7 +7,15 @@ from typing import Iterable, Mapping, Optional, Sequence
 import discord
 from discord.ext import commands
 
-from config import Colors, Emojis, PREFIX, HUGE_PET_NAME, PET_EMOJIS, PET_RARITY_COLORS
+from config import (
+    Colors,
+    Emojis,
+    HUGE_PET_NAME,
+    PET_EMOJIS,
+    PET_RARITY_COLORS,
+    PREFIX,
+    GradeDefinition,
+)
 
 __all__ = [
     "format_currency",
@@ -25,7 +33,8 @@ __all__ = [
     "mastermind_failure_embed",
     "mastermind_cancelled_embed",
     "leaderboard_embed",
-    "xp_profile_embed",
+    "grade_profile_embed",
+    "grade_completed_embed",
     "pet_animation_embed",
     "pet_reveal_embed",
     "pet_collection_embed",
@@ -152,9 +161,9 @@ def mastermind_start_embed(
         f"Devine la combinaison de **{code_length}** couleurs pour décrocher des PB.\n"
         f"Palette : {palette_line}\n"
         "Les couleurs peuvent se répéter.\n"
-        f"Tu disposes de **{max_attempts}** tentatives et de {timeout}s entre chaque réponse.\n"
-        "Réponds avec les couleurs séparées par des espaces (ex : `rouge bleu vert jaune`).\n"
-        "Tape `stop` pour abandonner la partie."
+        f"Tu disposes de **{max_attempts}** tentatives et de {timeout}s pour jouer.\n"
+        "Clique sur les boutons colorés pour composer ta combinaison puis valide-la.\n"
+        "Utilise le bouton Abandonner si tu souhaites arrêter la partie."
     )
     embed = _base_embed("🧠 Mastermind", description, color=Colors.INFO)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
@@ -251,13 +260,66 @@ def leaderboard_embed(
     return embed
 
 
-def xp_profile_embed(*, member: discord.Member, level: int, total_xp: int, next_requirement: int) -> discord.Embed:
-    description = (
-        f"Niveau actuel : **{level}**\n"
-        f"XP total : {total_xp:,}\n"
-        f"XP pour le prochain niveau : {next_requirement:,}"
-    )
-    embed = _base_embed(f"{Emojis.XP} Profil XP", description, color=Colors.INFO)
+def _quest_progress_line(label: str, current: int, goal: int) -> str:
+    status = "✅" if current >= goal and goal > 0 else "▫️"
+    return f"{status} {label} : **{current}/{goal}**"
+
+
+def grade_profile_embed(
+    *,
+    member: discord.Member,
+    grade_level: int,
+    total_grades: int,
+    current_grade: GradeDefinition | None,
+    next_grade: GradeDefinition | None,
+    progress: Mapping[str, int],
+    pet_slots: int,
+) -> discord.Embed:
+    if next_grade is None:
+        description = (
+            f"Grade actuel : **{current_grade.name if current_grade else 'Aucun'}**"
+            f" ({grade_level}/{total_grades})\n"
+            f"Slots de pets équipables : **{pet_slots}**\n"
+            "🎉 Tu as atteint le grade maximum !"
+        )
+        quest_lines = ["Toutes les quêtes sont terminées."]
+    else:
+        description = (
+            f"Grade actuel : **{current_grade.name if current_grade else 'Aucun'}**"
+            f" ({grade_level}/{total_grades})\n"
+            f"Prochain grade : **{next_grade.name}**\n"
+            f"Slots de pets équipables : **{pet_slots}**\n"
+            f"Prochaine récompense : **{format_currency(next_grade.reward_pb)}** + 1 slot"
+        )
+        quest_lines = [
+            _quest_progress_line("Envoyer des messages", progress.get("messages", 0), next_grade.message_goal),
+            _quest_progress_line("Inviter des personnes", progress.get("invites", 0), next_grade.invite_goal),
+            _quest_progress_line("Ouvrir des œufs", progress.get("eggs", 0), next_grade.egg_goal),
+        ]
+
+    embed = _base_embed(f"{Emojis.XP} Profil de grade", description, color=Colors.INFO)
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    embed.add_field(name="Quêtes", value="\n".join(quest_lines), inline=False)
+    return embed
+
+
+def grade_completed_embed(
+    *,
+    member: discord.Member,
+    grade_name: str,
+    grade_level: int,
+    total_grades: int,
+    reward_pb: int,
+    balance_after: int,
+    pet_slots: int,
+) -> discord.Embed:
+    lines = [
+        f"Nouveau grade : **{grade_name}** ({grade_level}/{total_grades})",
+        f"Récompense : **{format_currency(reward_pb)}**",
+        f"Slots de pets disponibles : **{pet_slots}**",
+        f"Solde actuel : {format_currency(balance_after)}",
+    ]
+    embed = _base_embed("🎖️ Grade amélioré !", "\n".join(lines), color=Colors.SUCCESS)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
     return embed
 

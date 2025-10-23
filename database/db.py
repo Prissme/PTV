@@ -8,6 +8,8 @@ from typing import Any, AsyncIterator, Dict, Iterable, Mapping, Optional, Sequen
 
 import asyncpg
 
+from config import BASE_PET_SLOTS
+
 __all__ = ["Database", "DatabaseError", "InsufficientBalanceError"]
 
 logger = logging.getLogger(__name__)
@@ -87,10 +89,13 @@ class Database:
             )
             await connection.execute(
                 """
-                CREATE TABLE IF NOT EXISTS user_xp (
+                CREATE TABLE IF NOT EXISTS user_grades (
                     user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
-                    total_xp BIGINT NOT NULL DEFAULT 0 CHECK (total_xp >= 0),
-                    level INTEGER NOT NULL DEFAULT 1 CHECK (level >= 1)
+                    grade_level INTEGER NOT NULL DEFAULT 0 CHECK (grade_level >= 0),
+                    message_progress INTEGER NOT NULL DEFAULT 0 CHECK (message_progress >= 0),
+                    invite_progress INTEGER NOT NULL DEFAULT 0 CHECK (invite_progress >= 0),
+                    egg_progress INTEGER NOT NULL DEFAULT 0 CHECK (egg_progress >= 0),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
             )
@@ -213,7 +218,7 @@ class Database:
         )
         await self.pool.execute(
             """
-            INSERT INTO user_xp (user_id)
+            INSERT INTO user_grades (user_id)
             VALUES ($1)
             ON CONFLICT (user_id) DO NOTHING
             """,
@@ -406,40 +411,164 @@ class Database:
         return await self.pool.fetch(query, limit)
 
     # ------------------------------------------------------------------
-    # Gestion de l'expérience
+    # Gestion des grades
     # ------------------------------------------------------------------
-    async def get_user_xp(self, user_id: int) -> tuple[int, int]:
+    async def get_user_grade(self, user_id: int) -> asyncpg.Record:
         await self.ensure_user(user_id)
         row = await self.pool.fetchrow(
-            "SELECT total_xp, level FROM user_xp WHERE user_id = $1",
+            """
+            SELECT grade_level, message_progress, invite_progress, egg_progress, updated_at
+            FROM user_grades
+            WHERE user_id = $1
+            """,
             user_id,
         )
         if row is None:
-            raise DatabaseError("Utilisateur introuvable dans user_xp")
-        return int(row["total_xp"]), int(row["level"])
+            raise DatabaseError("Utilisateur introuvable dans user_grades")
+        return row
 
-    async def update_user_xp(self, user_id: int, *, total_xp: int, level: int) -> tuple[int, int]:
+    async def increment_grade_progress(
+        self,
+        user_id: int,
+        *,
+        message_delta: int = 0,
+        invite_delta: int = 0,
+        egg_delta: int = 0,
+        message_cap: int | None = None,
+        invite_cap: int | None = None,
+        egg_cap: int | None = None,
+    ) -> asyncpg.Record:
+        if message_delta <= 0 and invite_delta <= 0 and egg_delta <= 0:
+            return await self.get_user_grade(user_id)
+
+        await self.ensure_user(user_id)
         async with self.transaction() as connection:
             row = await connection.fetchrow(
-                "SELECT total_xp, level FROM user_xp WHERE user_id = $1 FOR UPDATE",
+                """
+                SELECT grade_level, message_progress, invite_progress, egg_progress
+                FROM user_grades
+                WHERE user_id = $1
+                FOR UPDATE
+                """,
                 user_id,
             )
             if row is None:
-                raise DatabaseError("Utilisateur introuvable lors de la mise à jour XP")
+                raise DatabaseError("Utilisateur introuvable lors de la mise à jour des grades")
 
-            previous_total = int(row["total_xp"])
-            previous_level = int(row["level"])
-            await connection.execute(
-                "UPDATE user_xp SET total_xp = $1, level = $2 WHERE user_id = $3",
-                total_xp,
-                level,
+            current_messages = int(row["message_progress"])
+            current_invites = int(row["invite_progress"])
+            current_eggs = int(row["egg_progress"])
+
+            new_messages = max(0, current_messages + max(message_delta, 0))
+            new_invites = max(0, current_invites + max(invite_delta, 0))
+            new_eggs = max(0, current_eggs + max(egg_delta, 0))
+
+            if message_cap is not None:
+                new_messages = min(new_messages, message_cap)
+            if invite_cap is not None:
+                new_invites = min(new_invites, invite_cap)
+            if egg_cap is not None:
+                new_eggs = min(new_eggs, egg_cap)
+
+            updated = await connection.fetchrow(
+                """
+                UPDATE user_grades
+                SET message_progress = $1,
+                    invite_progress = $2,
+                    egg_progress = $3,
+                    updated_at = NOW()
+                WHERE user_id = $4
+                RETURNING *
+                """,
+                new_messages,
+                new_invites,
+                new_eggs,
                 user_id,
             )
-        return previous_total, previous_level
 
-    async def get_xp_leaderboard(self, limit: int) -> Sequence[asyncpg.Record]:
-        query = "SELECT user_id, total_xp, level FROM user_xp ORDER BY total_xp DESC LIMIT $1"
+        if updated is None:
+            raise DatabaseError("Impossible de mettre à jour les quêtes de grade")
+        return updated
+
+    async def complete_grade_if_ready(
+        self,
+        user_id: int,
+        *,
+        message_goal: int,
+        invite_goal: int,
+        egg_goal: int,
+        max_grade: int,
+    ) -> tuple[bool, asyncpg.Record]:
+        await self.ensure_user(user_id)
+        async with self.transaction() as connection:
+            row = await connection.fetchrow(
+                "SELECT * FROM user_grades WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            if row is None:
+                raise DatabaseError("Utilisateur introuvable lors de la validation de grade")
+
+            grade_level = int(row["grade_level"])
+            if grade_level >= max_grade:
+                return False, row
+
+            if (
+                int(row["message_progress"]) < message_goal
+                or int(row["invite_progress"]) < invite_goal
+                or int(row["egg_progress"]) < egg_goal
+            ):
+                return False, row
+
+            new_row = await connection.fetchrow(
+                """
+                UPDATE user_grades
+                SET grade_level = $1,
+                    message_progress = 0,
+                    invite_progress = 0,
+                    egg_progress = 0,
+                    updated_at = NOW()
+                WHERE user_id = $2
+                RETURNING *
+                """,
+                grade_level + 1,
+                user_id,
+            )
+
+        if new_row is None:
+            raise DatabaseError("Impossible de finaliser le passage de grade")
+        return True, new_row
+
+    async def get_grade_leaderboard(self, limit: int) -> Sequence[asyncpg.Record]:
+        query = """
+            SELECT user_id, grade_level
+            FROM user_grades
+            ORDER BY grade_level DESC, updated_at ASC
+            LIMIT $1
+        """
         return await self.pool.fetch(query, limit)
+
+    async def reset_user_grade(self, user_id: int) -> None:
+        await self.ensure_user(user_id)
+        await self.pool.execute(
+            """
+            UPDATE user_grades
+            SET grade_level = 0,
+                message_progress = 0,
+                invite_progress = 0,
+                egg_progress = 0,
+                updated_at = NOW()
+            WHERE user_id = $1
+            """,
+            user_id,
+        )
+
+    async def get_grade_level(self, user_id: int) -> int:
+        await self.ensure_user(user_id)
+        value = await self.pool.fetchval(
+            "SELECT grade_level FROM user_grades WHERE user_id = $1",
+            user_id,
+        )
+        return int(value or 0)
 
     # ------------------------------------------------------------------
     # Utilitaires génériques
@@ -584,6 +713,7 @@ class Database:
         équipés par l'utilisateur.
         """
 
+        await self.ensure_user(user_id)
         async with self.transaction() as connection:
             pet_row = await connection.fetchrow(
                 "SELECT id, is_active FROM user_pets WHERE user_id = $1 AND id = $2 FOR UPDATE",
@@ -602,6 +732,13 @@ class Database:
                 or 0
             )
 
+            grade_row = await connection.fetchrow(
+                "SELECT grade_level FROM user_grades WHERE user_id = $1",
+                user_id,
+            )
+            grade_level = int(grade_row["grade_level"]) if grade_row else 0
+            max_slots = BASE_PET_SLOTS + grade_level
+
             if currently_active:
                 await connection.execute(
                     "UPDATE user_pets SET is_active = FALSE WHERE id = $1",
@@ -609,8 +746,10 @@ class Database:
                 )
                 new_active_count = max(0, active_count - 1)
             else:
-                if active_count >= 4:
-                    raise DatabaseError("Tu ne peux pas équiper plus de 4 pets simultanément.")
+                if active_count >= max_slots:
+                    raise DatabaseError(
+                        f"Tu ne peux pas équiper plus de {max_slots} pets simultanément. Monte en grade pour augmenter ta limite !"
+                    )
                 await connection.execute(
                     "UPDATE user_pets SET is_active = TRUE WHERE id = $1",
                     user_pet_id,
