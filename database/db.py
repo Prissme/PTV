@@ -245,6 +245,24 @@ class Database:
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_pet_unique ON trade_pets(trade_id, user_pet_id)"
             )
 
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_activity (
+                    guild_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    message_count BIGINT NOT NULL DEFAULT 0 CHECK (message_count >= 0),
+                    last_message_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (guild_id, user_id)
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_activity_guild_count ON user_activity(guild_id, message_count DESC)"
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_activity_last_message ON user_activity(guild_id, last_message_at DESC)"
+            )
+
     # ------------------------------------------------------------------
     # Utilitaires généraux
     # ------------------------------------------------------------------
@@ -376,6 +394,106 @@ class Database:
             await connection.execute(query, *params)
         else:
             await self.pool.execute(query, *params)
+
+    # ------------------------------------------------------------------
+    # Statistiques d'activité
+    # ------------------------------------------------------------------
+    async def record_message_activity(
+        self,
+        guild_id: int,
+        user_id: int,
+        *,
+        increment: int = 1,
+    ) -> None:
+        if increment <= 0:
+            return
+
+        await self.ensure_user(user_id)
+        now = datetime.now(timezone.utc)
+        await self.pool.execute(
+            """
+            INSERT INTO user_activity (guild_id, user_id, message_count, last_message_at)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (guild_id, user_id)
+            DO UPDATE SET
+                message_count = user_activity.message_count + EXCLUDED.message_count,
+                last_message_at = GREATEST(user_activity.last_message_at, EXCLUDED.last_message_at)
+            """,
+            guild_id,
+            user_id,
+            increment,
+            now,
+        )
+
+    async def get_guild_activity_overview(
+        self,
+        guild_id: int,
+        *,
+        active_since: datetime,
+    ) -> tuple[int, int, int]:
+        row = await self.pool.fetchrow(
+            """
+            SELECT
+                COALESCE(SUM(message_count), 0) AS total_messages,
+                COUNT(*) FILTER (WHERE last_message_at >= $2) AS active_members,
+                COUNT(*) AS tracked_members
+            FROM user_activity
+            WHERE guild_id = $1
+            """,
+            guild_id,
+            active_since,
+        )
+        if row is None:
+            return 0, 0, 0
+        return int(row["total_messages"] or 0), int(row["active_members"] or 0), int(row["tracked_members"] or 0)
+
+    async def get_top_message_senders(
+        self,
+        guild_id: int,
+        *,
+        limit: int,
+    ) -> list[tuple[int, int]]:
+        resolved_limit = max(1, limit)
+        rows = await self.pool.fetch(
+            """
+            SELECT user_id, message_count
+            FROM user_activity
+            WHERE guild_id = $1
+            ORDER BY message_count DESC, last_message_at DESC
+            LIMIT $2
+            """,
+            guild_id,
+            resolved_limit,
+        )
+        return [(int(row["user_id"]), int(row["message_count"])) for row in rows]
+
+    async def get_user_activity_details(
+        self,
+        guild_id: int,
+        user_id: int,
+    ) -> Mapping[str, object] | None:
+        row = await self.pool.fetchrow(
+            """
+            SELECT
+                ua.message_count,
+                ua.last_message_at,
+                1 + (
+                    SELECT COUNT(*)
+                    FROM user_activity other
+                    WHERE other.guild_id = ua.guild_id AND other.message_count > ua.message_count
+                ) AS rank,
+                (
+                    SELECT COUNT(*)
+                    FROM user_activity other
+                    WHERE other.guild_id = ua.guild_id
+                ) AS total_tracked
+            FROM user_activity ua
+            WHERE ua.guild_id = $1 AND ua.user_id = $2
+            """,
+            guild_id,
+            user_id,
+        )
+        return row
 
     # ------------------------------------------------------------------
     # Gestion des soldes

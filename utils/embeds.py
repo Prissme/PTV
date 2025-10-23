@@ -1,7 +1,7 @@
 """Fonctions utilitaires pour créer des embeds cohérents."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterable, Mapping, Optional, Sequence
 
 import discord
@@ -30,6 +30,8 @@ __all__ = [
     "slot_machine_embed",
     "mastermind_board_embed",
     "leaderboard_embed",
+    "stats_overview_embed",
+    "user_activity_embed",
     "grade_profile_embed",
     "grade_completed_embed",
     "pet_animation_embed",
@@ -214,6 +216,70 @@ def leaderboard_embed(
             value_display = f"{value:,} {symbol}".replace(",", " ")
         lines.append(f"**{rank}.** {name} — {value_display}")
     embed.description = "\n".join(lines) if lines else "Aucune donnée disponible."
+    return embed
+
+
+def stats_overview_embed(
+    *,
+    guild: discord.Guild,
+    total_messages: int,
+    active_members: int,
+    tracked_members: int,
+    active_window: timedelta,
+) -> discord.Embed:
+    window_seconds = max(int(active_window.total_seconds()), 1)
+    window_days = window_seconds // 86_400
+    if window_days >= 1:
+        window_label = f"{window_days} derniers jours"
+    else:
+        window_hours = max(1, window_seconds // 3_600)
+        window_label = f"{window_hours} dernières heures"
+
+    lines = [
+        f"Messages suivis : **{total_messages:,}**".replace(",", " "),
+        f"Membres suivis : **{tracked_members:,}**".replace(",", " "),
+        f"Membres actifs ({window_label}) : **{active_members:,}**".replace(",", " "),
+    ]
+
+    embed = _base_embed("📊 Statistiques du serveur", "\n".join(lines), color=Colors.INFO)
+    embed.set_author(name=guild.name)
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+    embed.set_footer(text=f"Fenêtre d'activité : {window_label}")
+    return embed
+
+
+def user_activity_embed(
+    *,
+    member: discord.Member,
+    message_count: int,
+    last_message_at: datetime | None,
+    rank: int,
+    total_tracked: int,
+    active_window: timedelta,
+) -> discord.Embed:
+    lines = [
+        f"Messages suivis : **{message_count:,}**".replace(",", " "),
+        f"Position : **#{rank}** sur {total_tracked}",
+    ]
+
+    if isinstance(last_message_at, datetime):
+        timestamp = int(last_message_at.timestamp())
+        lines.append(f"Dernier message : <t:{timestamp}:R>")
+    else:
+        lines.append("Dernier message : aucune donnée")
+
+    window_seconds = max(int(active_window.total_seconds()), 1)
+    window_days = window_seconds // 86_400
+    if window_days >= 1:
+        window_info = f"Classement basé sur {window_days} jours d'activité mesurée."
+    else:
+        hours = max(1, window_seconds // 3_600)
+        window_info = f"Classement basé sur les {hours} dernières heures d'activité."
+    lines.append(window_info)
+
+    embed = _base_embed("📊 Statistiques personnelles", "\n".join(lines), color=Colors.INFO)
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
     return embed
 
 
