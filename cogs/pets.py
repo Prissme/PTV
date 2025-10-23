@@ -23,7 +23,8 @@ from config import (
     PET_ZONES,
     HUGE_PET_NAME,
     HUGE_PET_MIN_INCOME,
-    HUGE_PET_MULTIPLIER,
+    HUGE_PET_SOURCES,
+    get_huge_multiplier,
     PetDefinition,
     PetEggDefinition,
     PetZoneDefinition,
@@ -47,6 +48,8 @@ class PetInventoryView(discord.ui.View):
         pets: Iterable[Mapping[str, Any]],
         total_income: int,
         per_page: int = 8,
+        pet_index: Iterable[Mapping[str, Any]] | None = None,
+        huge_descriptions: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__(timeout=120)
         self.ctx = ctx
@@ -54,6 +57,10 @@ class PetInventoryView(discord.ui.View):
         self._pets: List[Dict[str, Any]] = [dict(pet) for pet in pets]
         self._per_page = max(1, per_page)
         self._total_income = int(total_income)
+        self._pet_index: tuple[Dict[str, Any], ...] = tuple(
+            dict(entry) for entry in (pet_index or ())
+        )
+        self._huge_descriptions: Dict[str, str] = dict(huge_descriptions or {})
         self.page_count = max(1, math.ceil(len(self._pets) / self._per_page))
         self.page = 0
         self.message: discord.Message | None = None
@@ -74,6 +81,8 @@ class PetInventoryView(discord.ui.View):
             total_income_per_hour=self._total_income,
             page=self.page + 1,
             page_count=self.page_count,
+            pet_index=self._pet_index,
+            huge_descriptions=self._huge_descriptions,
         )
 
     def _sync_buttons(self) -> None:
@@ -164,11 +173,14 @@ class Pets(commands.Cog):
         return pet, pet_id
 
     @staticmethod
-    def _compute_huge_income(best_non_huge_income: int | None) -> int:
+    def _compute_huge_income(
+        best_non_huge_income: int | None, *, pet_name: str | None = None
+    ) -> int:
         best_value = max(0, int(best_non_huge_income or 0))
+        multiplier = get_huge_multiplier(pet_name or "")
         if best_value <= 0:
             return HUGE_PET_MIN_INCOME
-        return max(HUGE_PET_MIN_INCOME, best_value * HUGE_PET_MULTIPLIER)
+        return max(HUGE_PET_MIN_INCOME, best_value * multiplier)
 
     def _convert_record(
         self, record: Mapping[str, Any], *, best_non_huge_income: int | None = None
@@ -180,16 +192,22 @@ class Pets(commands.Cog):
         is_huge = bool(record.get("is_huge"))
         data["is_gold"] = is_gold
         base_income = int(record.get("base_income_per_hour", data.get("base_income_per_hour", 0)))
+        pet_name = str(data.get("name", ""))
         if definition is not None:
             data["image_url"] = definition.image_url
             data["rarity"] = definition.rarity
-            data["name"] = definition.name
+            pet_name = definition.name
+            data["name"] = pet_name
             is_huge = definition.is_huge
             base_income = definition.base_income_per_hour
+        else:
+            data["name"] = pet_name
         data["is_huge"] = is_huge
 
         if is_huge:
-            effective_income = self._compute_huge_income(best_non_huge_income)
+            effective_income = self._compute_huge_income(
+                best_non_huge_income, pet_name=pet_name
+            )
         else:
             multiplier = GOLD_PET_MULTIPLIER if is_gold else 1
             effective_income = base_income * multiplier
@@ -375,7 +393,9 @@ class Pets(commands.Cog):
         market_value = int(market_values.get(pet_id, 0))
         if pet_definition.is_huge:
             best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
-            income_per_hour = self._compute_huge_income(best_non_huge_income)
+            income_per_hour = self._compute_huge_income(
+                best_non_huge_income, pet_name=pet_definition.name
+            )
         else:
             income_per_hour = int(
                 pet_definition.base_income_per_hour
@@ -496,6 +516,19 @@ class Pets(commands.Cog):
         market_values = await self.database.get_pet_market_values()
         pets = self._sort_pets_for_display(records, market_values)
         active_income = sum(int(pet["income"]) for pet in pets if pet.get("is_active"))
+        owned_names = {
+            str(pet.get("name", "")).strip()
+            for pet in pets
+            if str(pet.get("name", "")).strip()
+        }
+        pet_index = [
+            {
+                "name": definition.name,
+                "unlocked": definition.name in owned_names,
+                "is_huge": definition.is_huge,
+            }
+            for definition in self._definitions
+        ]
         per_page = 8
         total_count = len(pets)
         page_count = max(1, math.ceil(total_count / per_page))
@@ -507,10 +540,19 @@ class Pets(commands.Cog):
                 total_income_per_hour=active_income,
                 page=1,
                 page_count=1,
+                pet_index=pet_index,
+                huge_descriptions=HUGE_PET_SOURCES,
             )
             await ctx.send(embed=embed)
         else:
-            view = PetInventoryView(ctx=ctx, pets=pets, total_income=active_income, per_page=per_page)
+            view = PetInventoryView(
+                ctx=ctx,
+                pets=pets,
+                total_income=active_income,
+                per_page=per_page,
+                pet_index=pet_index,
+                huge_descriptions=HUGE_PET_SOURCES,
+            )
             embed = view.build_embed()
             message = await ctx.send(embed=embed, view=view)
             view.message = message

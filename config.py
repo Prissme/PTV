@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Final, Tuple
+from typing import Dict, Final, Tuple
 
 from dotenv import load_dotenv
 
@@ -187,6 +187,30 @@ HUGE_PET_MULTIPLIER: Final[int] = 5
 HUGE_PET_MIN_INCOME: Final[int] = 500
 HUGE_GALE_NAME: Final[str] = "Huge Gale"
 HUGE_GRIFF_NAME: Final[str] = "Huge Griff"
+HUGE_GRIFF_MULTIPLIER: Final[int] = 3
+HUGE_GALE_MULTIPLIER: Final[int] = 100
+HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, int]] = {
+    HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
+    HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
+}
+
+
+def get_huge_multiplier(name: str) -> int:
+    """Retourne le multiplicateur personnalisé associé à un énorme pet."""
+
+    normalized = name.strip().lower() if name else ""
+    for pet_name, multiplier in HUGE_PET_CUSTOM_MULTIPLIERS.items():
+        if pet_name.lower() == normalized:
+            return multiplier
+    return HUGE_PET_MULTIPLIER
+
+
+HUGE_PET_SOURCES: Final[Dict[str, str]] = {
+    HUGE_PET_NAME: "Extrêmement rare dans l'œuf basique.",
+    "Huge Trunk": "Peut apparaître dans l'œuf bio avec un taux minuscule.",
+    HUGE_GRIFF_NAME: "Récompense spéciale lors d'événements ou de giveaways du staff.",
+    HUGE_GALE_NAME: "Récompense finale du mode Millionaire Race (étape 20).",
+}
 
 _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(

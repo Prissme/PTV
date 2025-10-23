@@ -13,8 +13,11 @@ from config import (
     BASE_PET_SLOTS,
     GOLD_PET_MULTIPLIER,
     GOLD_PET_COMBINE_REQUIRED,
+    HUGE_GALE_NAME,
+    HUGE_GRIFF_NAME,
     HUGE_PET_MIN_INCOME,
     HUGE_PET_MULTIPLIER,
+    get_huge_multiplier,
 )
 
 __all__ = ["Database", "DatabaseError", "InsufficientBalanceError"]
@@ -802,7 +805,7 @@ class Database:
         market_values = await self.get_pet_market_values()
         rows = await self.pool.fetch(
             """
-            SELECT up.user_id, up.pet_id, up.is_gold, up.is_huge, p.base_income_per_hour
+            SELECT up.user_id, up.pet_id, up.is_gold, up.is_huge, p.base_income_per_hour, p.name
             FROM user_pets AS up
             JOIN pets AS p ON p.pet_id = up.pet_id
             """
@@ -813,13 +816,15 @@ class Database:
             user_id = int(row["user_id"])
             pet_id = int(row["pet_id"])
             base_income = int(row["base_income_per_hour"])
+            name = str(row.get("name", ""))
             value = int(market_values.get(pet_id, 0))
             if value <= 0:
                 value = max(base_income * 120, 1_000)
             if bool(row["is_gold"]):
                 value = int(value * GOLD_PET_MULTIPLIER)
             if bool(row["is_huge"]):
-                huge_floor = max(base_income * HUGE_PET_MULTIPLIER * 150, value)
+                multiplier = max(1, get_huge_multiplier(name))
+                huge_floor = max(base_income * multiplier * 150, value)
                 value = huge_floor
             rap_totals[user_id] += max(0, value)
 
@@ -850,7 +855,15 @@ class Database:
                     up.user_id,
                     SUM(
                         CASE
-                            WHEN up.is_huge THEN GREATEST($3, COALESCE(b.best_income, 0) * $4)
+                            WHEN up.is_huge THEN GREATEST(
+                                $3,
+                                COALESCE(b.best_income, 0)
+                                    * CASE
+                                        WHEN p.name = $5 THEN $6
+                                        WHEN p.name = $7 THEN $8
+                                        ELSE $4
+                                    END
+                            )
                             ELSE p.base_income_per_hour * CASE WHEN up.is_gold THEN $2 ELSE 1 END
                         END
                     ) AS hourly_income
@@ -870,6 +883,10 @@ class Database:
             GOLD_PET_MULTIPLIER,
             HUGE_PET_MIN_INCOME,
             HUGE_PET_MULTIPLIER,
+            HUGE_GRIFF_NAME,
+            get_huge_multiplier(HUGE_GRIFF_NAME),
+            HUGE_GALE_NAME,
+            get_huge_multiplier(HUGE_GALE_NAME),
         )
 
         return [(int(row["user_id"]), int(row["hourly_income"])) for row in rows]
@@ -1319,15 +1336,16 @@ class Database:
             best_non_huge_income = await self.get_best_non_huge_income(
                 user_id, connection=connection
             )
-            huge_income_value = max(
-                HUGE_PET_MIN_INCOME,
-                best_non_huge_income * HUGE_PET_MULTIPLIER,
-            )
             effective_incomes: list[int] = []
             for row in rows:
                 base_income = int(row["base_income_per_hour"])
                 if bool(row["is_huge"]):
-                    income_value = huge_income_value
+                    name = str(row.get("name", ""))
+                    multiplier = max(1, get_huge_multiplier(name))
+                    income_value = max(
+                        HUGE_PET_MIN_INCOME,
+                        best_non_huge_income * multiplier,
+                    )
                 else:
                     multiplier = GOLD_PET_MULTIPLIER if bool(row["is_gold"]) else 1
                     income_value = base_income * multiplier
