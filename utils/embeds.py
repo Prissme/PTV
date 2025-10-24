@@ -495,7 +495,7 @@ def pet_index_embed(
     total_pets = len(pet_definitions)
     owned_lookup = {name.casefold() for name in owned_names if name}
     unlocked_count = sum(
-        1 for definition in pet_definitions if definition.name.casefold() in owned_lookup
+        1 for definition in pet_definitions if (definition.name or "").casefold() in owned_lookup
     )
     if total_pets:
         progress_ratio = unlocked_count / total_pets
