@@ -6,7 +6,7 @@ import contextlib
 import logging
 import math
 import random
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
 import discord
 from discord.ext import commands
@@ -209,6 +209,34 @@ class Pets(commands.Cog):
 
         data["base_income_per_hour"] = int(effective_income)
         return data
+
+    def _owned_pet_names(self, records: Iterable[Mapping[str, Any]]) -> Set[str]:
+        owned: Set[str] = set()
+        for record in records:
+            pet_id = int(record.get("pet_id", 0))
+            definition = self._definition_by_id.get(pet_id)
+            if definition is not None:
+                owned.add(definition.name.casefold())
+                continue
+            raw_name = str(record.get("name", "")).strip()
+            if raw_name:
+                owned.add(raw_name.casefold())
+        return owned
+
+    async def _prepare_pet_data(
+        self, user_id: int, rows: Sequence[Mapping[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        if not rows:
+            return []
+        market_values = await self.database.get_pet_market_values()
+        best_non_huge_income = await self.database.get_best_non_huge_income(user_id)
+        pets_data: List[Dict[str, Any]] = []
+        for row in rows:
+            data = self._convert_record(row, best_non_huge_income=best_non_huge_income)
+            pet_identifier = int(data.get("pet_id", 0))
+            data["market_value"] = int(market_values.get(pet_identifier, 0))
+            pets_data.append(data)
+        return pets_data
 
     @staticmethod
     def _resolve_member(ctx: commands.Context) -> Optional[discord.Member]:
@@ -558,11 +586,7 @@ class Pets(commands.Cog):
     @commands.command(name="index", aliases=("petindex", "dex"))
     async def pet_index_command(self, ctx: commands.Context) -> None:
         records = await self.database.get_user_pets(ctx.author.id)
-        owned_names: Set[str] = {
-            str(record.get("name", "")).strip()
-            for record in records
-            if str(record.get("name", "")).strip()
-        }
+        owned_names = self._owned_pet_names(records)
         embed = embeds.pet_index_embed(
             member=ctx.author,
             pet_definitions=self._definitions,
@@ -664,14 +688,7 @@ class Pets(commands.Cog):
             await ctx.send(embed=embeds.error_embed("Tu dois équiper un pet avant de pouvoir collecter ses revenus."))
             return
 
-        market_values = await self.database.get_pet_market_values()
-        best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
-        pets_data: List[Dict[str, Any]] = []
-        for row in rows:
-            data = self._convert_record(row, best_non_huge_income=best_non_huge_income)
-            pet_identifier = int(data.get("pet_id", 0))
-            data["market_value"] = int(market_values.get(pet_identifier, 0))
-            pets_data.append(data)
+        pets_data = await self._prepare_pet_data(ctx.author.id, rows)
 
         if clan_info:
             clan_id = int(clan_info.get("id", 0))

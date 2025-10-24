@@ -461,6 +461,26 @@ def pet_collection_embed(
     return embed
 
 
+def _chunk_field_values(lines: Iterable[str], *, limit: int = 1024) -> Iterable[str]:
+    chunk: list[str] = []
+    length = 0
+    for line in lines:
+        if not line:
+            continue
+        line_length = len(line)
+        if chunk and length + 1 + line_length > limit:
+            yield "\n".join(chunk)
+            chunk = [line]
+            length = line_length
+            continue
+        if chunk:
+            length += 1
+        chunk.append(line)
+        length += line_length
+    if chunk:
+        yield "\n".join(chunk)
+
+
 def pet_index_embed(
     *,
     member: discord.abc.User,
@@ -473,7 +493,10 @@ def pet_index_embed(
 
     huge_info = dict(huge_descriptions or {})
     total_pets = len(pet_definitions)
-    unlocked_count = sum(1 for definition in pet_definitions if definition.name in owned_names)
+    owned_lookup = {name.casefold() for name in owned_names if name}
+    unlocked_count = sum(
+        1 for definition in pet_definitions if definition.name.casefold() in owned_lookup
+    )
     if total_pets:
         progress_ratio = unlocked_count / total_pets
         embed.description = (
@@ -492,7 +515,7 @@ def pet_index_embed(
         rarity = definition.rarity
         is_huge = definition.is_huge
         emoji = _pet_emoji(name)
-        status = "✅" if name in owned_names else "🔒"
+        status = "✅" if name.casefold() in owned_lookup else "🔒"
         line = f"{status} {emoji} **{name}** — Rareté : {rarity}"
         if is_huge:
             description = huge_info.get(name)
@@ -501,7 +524,10 @@ def pet_index_embed(
         lines.append(line)
 
     if lines:
-        embed.add_field(name="Catalogue", value="\n".join(lines), inline=False)
+        chunks = list(_chunk_field_values(lines))
+        for index, value in enumerate(chunks, start=1):
+            field_name = "Catalogue" if len(chunks) == 1 else f"Catalogue ({index})"
+            embed.add_field(name=field_name, value=value, inline=False)
 
     embed.set_footer(
         text=(
