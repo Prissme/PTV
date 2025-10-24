@@ -40,6 +40,7 @@ __all__ = [
     "pet_index_embed",
     "pet_equip_embed",
     "pet_claim_embed",
+    "clan_overview_embed",
     "pet_stats_embed",
     "trade_embed",
     "trade_completed_embed",
@@ -567,6 +568,7 @@ def pet_claim_embed(
     amount: int,
     elapsed_seconds: float,
     booster: Mapping[str, float] | None = None,
+    clan: Mapping[str, object] | None = None,
 ) -> discord.Embed:
     total_income = sum(int(pet.get("base_income_per_hour", 0)) for pet in pets)
     duration = _format_duration(elapsed_seconds)
@@ -637,11 +639,92 @@ def pet_claim_embed(
                 booster_lines.append("Le booster vient d'expirer !")
             embed.add_field(name="Booster de pets", value="\n".join(booster_lines), inline=False)
 
-    if pets:
-        first_image = str(pets[0].get("image_url", ""))
-        if first_image:
-            embed.set_thumbnail(url=first_image)
+    if clan:
+        clan_name = str(clan.get("name", "Clan"))
+        clan_multiplier = float(clan.get("multiplier", 1.0))
+        clan_bonus = int(clan.get("bonus", 0))
+        clan_lines = [f"**{clan_name}** hurle la charge !"]
+        if clan_multiplier > 1.0:
+            clan_lines.append(f"Turbo permanent : x{clan_multiplier:.2f}")
+        if clan_bonus > 0:
+            clan_lines.append(f"+{format_currency(clan_bonus)} arrachés grâce à l'élan du clan")
+        top_contributors = clan.get("top_contributors")
+        if isinstance(top_contributors, Sequence) and top_contributors:
+            formatted: list[str] = []
+            for index, entry in enumerate(top_contributors, start=1):
+                user_display = str(entry.get("display", entry.get("mention", "?")))
+                contribution = int(entry.get("contribution", 0))
+                formatted.append(f"#{index} {user_display} — {format_currency(contribution)}")
+            clan_lines.append("Classement contribution :\n" + "\n".join(formatted))
+        embed.add_field(name="🔥 Guerre de clans", value="\n".join(clan_lines), inline=False)
 
+    if pets:
+        best_pet = max(pets, key=lambda pet: int(pet.get("base_income_per_hour", 0)))
+        image = str(best_pet.get("image_url", ""))
+        if image:
+            embed.set_thumbnail(url=image)
+
+    return embed
+
+
+def clan_overview_embed(
+    *,
+    clan_name: str,
+    banner: str,
+    leader_name: str,
+    member_count: int,
+    capacity: int,
+    boost_multiplier: float,
+    boost_level: int,
+    capacity_level: int,
+    members: Sequence[Mapping[str, object]],
+    next_capacity_cost: Optional[int] = None,
+    next_boost_cost: Optional[int] = None,
+) -> discord.Embed:
+    header = [
+        f"⚔️ Chef : **{leader_name}**",
+        f"🧮 Membres : **{member_count}/{capacity}**",
+        f"🔥 Turbo PB : **x{boost_multiplier:.2f}** (Niv. boost {boost_level})",
+        f"📦 Extension : Niv. {capacity_level}",
+    ]
+    if next_capacity_cost is not None:
+        header.append(f"➕ Slot suivant : {format_currency(next_capacity_cost)}")
+    if next_boost_cost is not None:
+        header.append(f"🚀 Boost suivant : {format_currency(next_boost_cost)}")
+
+    embed = _base_embed(
+        f"{banner} {clan_name} — Salle de guerre",
+        "\n".join(header),
+        color=Colors.WARNING,
+    )
+
+    ranking_lines: list[str] = []
+    for index, member in enumerate(members, start=1):
+        mention = str(member.get("mention", member.get("display", "?")))
+        role = str(member.get("role", "member"))
+        contribution = int(member.get("contribution", 0))
+        badges: list[str] = []
+        if role == "leader":
+            badges.append("👑")
+        elif role == "officer":
+            badges.append("🛡️")
+        if contribution > 0:
+            badges.append(format_currency(contribution))
+        badge_text = f" {' '.join(badges)}" if badges else ""
+        ranking_lines.append(f"#{index} {mention}{badge_text}")
+
+    if ranking_lines:
+        embed.add_field(name="Tableau de chasse", value="\n".join(ranking_lines[:10]), inline=False)
+    else:
+        embed.add_field(
+            name="Tableau de chasse",
+            value="Encore aucun exploit… c'est le moment d'enflammer le chat !",
+            inline=False,
+        )
+
+    embed.set_footer(
+        text="Plus ton clan rugit, plus tes gains explosent. Active-toi et fais trembler le classement !"
+    )
     return embed
 
 

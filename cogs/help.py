@@ -65,6 +65,20 @@ class Help(commands.Cog):
         )
 
         embed.add_field(
+            name="⚔️ Clans",
+            value="\n".join(
+                (
+                    "**e!clan** — Tableau de bord de ton clan et des boosts actifs.",
+                    "**e!clan create <nom>** — Fonde un clan (25 000 PB) et lance ta guerre.",
+                    "**e!clan join <nom>** — Rejoins un clan existant et profite des boosts.",
+                    "**e!clan slots** — Augmente la capacité du clan contre des PB.",
+                    "**e!clan boost** — Achète un turbo PB permanent pour tous les membres.",
+                )
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
             name="🎖️ Grades",
             value="\n".join(
                 (

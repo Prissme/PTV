@@ -110,6 +110,7 @@ class EcoBot(commands.Bot):
             "grades",
             "leaderboard",
             "pets",
+            "clans",
             "help",
             "trade",
             "admin",

@@ -657,7 +657,9 @@ class Pets(commands.Cog):
 
     @commands.command(name="claim")
     async def claim(self, ctx: commands.Context) -> None:
-        amount, rows, elapsed, booster_info = await self.database.claim_active_pet_income(ctx.author.id)
+        amount, rows, elapsed, booster_info, clan_info = await self.database.claim_active_pet_income(
+            ctx.author.id
+        )
         if not rows:
             await ctx.send(embed=embeds.error_embed("Tu dois équiper un pet avant de pouvoir collecter ses revenus."))
             return
@@ -671,12 +673,35 @@ class Pets(commands.Cog):
             data["market_value"] = int(market_values.get(pet_identifier, 0))
             pets_data.append(data)
 
+        if clan_info:
+            clan_id = int(clan_info.get("id", 0))
+            if clan_id:
+                top_rows = await self.database.get_clan_contribution_leaderboard(clan_id, limit=3)
+                top_entries: List[Dict[str, object]] = []
+                for row in top_rows:
+                    contributor_id = int(row["user_id"])
+                    contribution = int(row["contribution"])
+                    member_obj = None
+                    if ctx.guild is not None:
+                        member_obj = ctx.guild.get_member(contributor_id)
+                    display = member_obj.display_name if member_obj else f"<@{contributor_id}>"
+                    top_entries.append(
+                        {
+                            "display": display,
+                            "mention": f"<@{contributor_id}>",
+                            "contribution": contribution,
+                        }
+                    )
+                if top_entries:
+                    clan_info["top_contributors"] = top_entries
+
         embed = embeds.pet_claim_embed(
             member=ctx.author,
             pets=pets_data,
             amount=amount,
             elapsed_seconds=elapsed,
             booster=booster_info,
+            clan=clan_info if clan_info else None,
         )
         await ctx.send(embed=embed)
 
