@@ -200,6 +200,7 @@ PET_EGG_PRICE: Final[int] = 500
 DEFAULT_PET_EGG_SLUG: Final[str] = "basique"
 STARTER_ZONE_SLUG: Final[str] = "starter"
 FORET_ZONE_SLUG: Final[str] = "foret"
+MANOIR_ZONE_SLUG: Final[str] = "manoir_hante"
 GOLD_PET_MULTIPLIER: Final[int] = 3
 GOLD_PET_CHANCE: Final[float] = _get_float_env("PET_GOLD_CHANCE", 0.05)
 GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
@@ -214,10 +215,13 @@ HUGE_KENJI_ONI_NAME: Final[str] = "Huge Kenji Oni"
 HUGE_GRIFF_MULTIPLIER: Final[int] = 3
 HUGE_GALE_MULTIPLIER: Final[int] = 100
 HUGE_KENJI_ONI_MULTIPLIER: Final[int] = 10
+HUGE_SHADE_NAME: Final[str] = "Huge Shade"
+HUGE_SHADE_MULTIPLIER: Final[int] = 7
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, int]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
     HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
     HUGE_KENJI_ONI_NAME: HUGE_KENJI_ONI_MULTIPLIER,
+    HUGE_SHADE_NAME: HUGE_SHADE_MULTIPLIER,
 }
 
 
@@ -237,6 +241,7 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     HUGE_GRIFF_NAME: "Récompense spéciale lors d'événements ou de giveaways du staff.",
     HUGE_GALE_NAME: "Récompense finale du mode Millionaire Race (étape 20).",
     HUGE_KENJI_ONI_NAME: "Récompense rarissime du Mastermind pour les esprits les plus vifs.",
+    HUGE_SHADE_NAME: "Extrêmement rare dans l'Œuf Maudit (0.5%) - Zone Manoir Hanté.",
 }
 
 _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
@@ -324,6 +329,76 @@ _FOREST_EGG_PETS: Tuple[PetDefinition, ...] = (
     ),
 )
 
+_SPECTRAL_EGG_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="Gus",
+        rarity="Commun",
+        image_url="https://cdn.discordapp.com/emojis/1431422788266364999.png",
+        base_income_per_hour=450,
+        drop_rate=0.50,
+    ),
+    PetDefinition(
+        name="Ghost Squeak",
+        rarity="Atypique",
+        image_url="https://cdn.discordapp.com/emojis/1431422784537628722.png",
+        base_income_per_hour=950,
+        drop_rate=0.30,
+    ),
+    PetDefinition(
+        name="Ghost Leon",
+        rarity="Rare",
+        image_url="https://cdn.discordapp.com/emojis/1431422781110882495.png",
+        base_income_per_hour=1_800,
+        drop_rate=0.18,
+    ),
+    PetDefinition(
+        name="Inspectrice Colette",
+        rarity="Épique",
+        image_url="https://cdn.discordapp.com/emojis/1431422778170408960.png",
+        base_income_per_hour=4_500,
+        drop_rate=0.02,
+    ),
+)
+
+_CURSED_EGG_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="Gus",
+        rarity="Commun",
+        image_url="https://cdn.discordapp.com/emojis/1431422788266364999.png",
+        base_income_per_hour=450,
+        drop_rate=0.40,
+    ),
+    PetDefinition(
+        name="Ghost Squeak",
+        rarity="Atypique",
+        image_url="https://cdn.discordapp.com/emojis/1431422784537628722.png",
+        base_income_per_hour=950,
+        drop_rate=0.35,
+    ),
+    PetDefinition(
+        name="Ghost Leon",
+        rarity="Rare",
+        image_url="https://cdn.discordapp.com/emojis/1431422781110882495.png",
+        base_income_per_hour=1_800,
+        drop_rate=0.20,
+    ),
+    PetDefinition(
+        name="Inspectrice Colette",
+        rarity="Épique",
+        image_url="https://cdn.discordapp.com/emojis/1431422778170408960.png",
+        base_income_per_hour=4_500,
+        drop_rate=0.045,
+    ),
+    PetDefinition(
+        name=HUGE_SHADE_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1431422771094753310.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.005,
+        is_huge=True,
+    ),
+)
+
 _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name=HUGE_GALE_NAME,
@@ -368,6 +443,22 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
         zone_slug=FORET_ZONE_SLUG,
         aliases=("oeuf bio", "bio"),
     ),
+    PetEggDefinition(
+        name="Œuf Spectral",
+        slug="spectral",
+        price=8_000,
+        pets=_SPECTRAL_EGG_PETS,
+        zone_slug=MANOIR_ZONE_SLUG,
+        aliases=("oeuf spectral", "spectral", "ghost", "fantome"),
+    ),
+    PetEggDefinition(
+        name="Œuf Maudit",
+        slug="maudit",
+        price=25_000,
+        pets=_CURSED_EGG_PETS,
+        zone_slug=MANOIR_ZONE_SLUG,
+        aliases=("oeuf maudit", "maudit", "cursed"),
+    ),
 )
 
 
@@ -389,6 +480,13 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         grade_required=1,
         entry_cost=5_000,
         eggs=_eggs_for_zone(FORET_ZONE_SLUG),
+    ),
+    PetZoneDefinition(
+        name="Manoir Hanté",
+        slug=MANOIR_ZONE_SLUG,
+        grade_required=8,
+        entry_cost=50_000,
+        eggs=_eggs_for_zone(MANOIR_ZONE_SLUG),
     ),
 )
 
@@ -412,6 +510,11 @@ PET_EMOJIS: Final[dict[str, str]] = {
     HUGE_GALE_NAME: os.getenv("PET_EMOJI_HUGE_GALE", "<:HugeGale:1430981225375600641>"),
     HUGE_GRIFF_NAME: os.getenv("PET_EMOJI_HUGE_GRIFF", "<:HugeGriff:1431005620227670036>"),
     HUGE_KENJI_ONI_NAME: os.getenv("PET_EMOJI_HUGE_KENJI_ONI", "<:HugeKenjiOni:1431057254337089576>"),
+    "Gus": os.getenv("PET_EMOJI_GUS", "<:Gus:1431422788266364999>"),
+    "Ghost Squeak": os.getenv("PET_EMOJI_GHOST_SQUEAK", "<:GhostSqueak:1431422784537628722>"),
+    "Ghost Leon": os.getenv("PET_EMOJI_GHOST_LEON", "<:GhostLeon:1431422781110882495>"),
+    "Inspectrice Colette": os.getenv("PET_EMOJI_INSPECTRICE_COLETTE", "<:InspectriceColette:1431422778170408960>"),
+    HUGE_SHADE_NAME: os.getenv("PET_EMOJI_HUGE_SHADE", "<:HugeShade:1431422771094753310>"),
     "default": os.getenv("PET_EMOJI_DEFAULT", "🐾"),
 }
 
