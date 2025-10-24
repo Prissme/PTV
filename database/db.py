@@ -11,6 +11,11 @@ import asyncpg
 
 from config import (
     BASE_PET_SLOTS,
+    CLAN_BASE_CAPACITY,
+    CLAN_CAPACITY_PER_LEVEL,
+    CLAN_CAPACITY_UPGRADE_COSTS,
+    CLAN_BOOST_COSTS,
+    CLAN_BOOST_INCREMENT,
     GOLD_PET_MULTIPLIER,
     GOLD_PET_COMBINE_REQUIRED,
     HUGE_GALE_NAME,
@@ -246,6 +251,75 @@ class Database:
             )
             await connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_pet_unique ON trade_pets(trade_id, user_pet_id)"
+            )
+
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS clans (
+                    clan_id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    owner_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    capacity_level INTEGER NOT NULL DEFAULT 0 CHECK (capacity_level >= 0),
+                    boost_level INTEGER NOT NULL DEFAULT 0 CHECK (boost_level >= 0),
+                    pb_boost_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1 CHECK (pb_boost_multiplier >= 1),
+                    banner_emoji TEXT NOT NULL DEFAULT '⚔️'
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_clans_lower_name ON clans (LOWER(name))"
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clans ADD COLUMN IF NOT EXISTS capacity_level INTEGER NOT NULL DEFAULT 0
+                    CHECK (capacity_level >= 0)
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clans ADD COLUMN IF NOT EXISTS boost_level INTEGER NOT NULL DEFAULT 0
+                    CHECK (boost_level >= 0)
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clans ADD COLUMN IF NOT EXISTS pb_boost_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1
+                    CHECK (pb_boost_multiplier >= 1)
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clans ADD COLUMN IF NOT EXISTS banner_emoji TEXT NOT NULL DEFAULT '⚔️'
+                """
+            )
+
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS clan_members (
+                    clan_id INTEGER NOT NULL REFERENCES clans(clan_id) ON DELETE CASCADE,
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    role TEXT NOT NULL DEFAULT 'member',
+                    joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    contribution BIGINT NOT NULL DEFAULT 0 CHECK (contribution >= 0),
+                    last_activity TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (clan_id, user_id)
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_clan_members_user ON clan_members(user_id)"
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clan_members ADD COLUMN IF NOT EXISTS contribution BIGINT NOT NULL DEFAULT 0
+                    CHECK (contribution >= 0)
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clan_members ADD COLUMN IF NOT EXISTS last_activity TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                """
             )
 
             await connection.execute(
@@ -628,6 +702,289 @@ class Database:
             "sender": {"before": sender_before, "after": sender_after},
             "recipient": {"before": recipient_before, "after": recipient_after},
         }
+
+    # ------------------------------------------------------------------
+    # Gestion des clans
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _clan_capacity_from_level(level: int) -> int:
+        return CLAN_BASE_CAPACITY + max(0, level) * CLAN_CAPACITY_PER_LEVEL
+
+    async def get_user_clan(self, user_id: int) -> Optional[asyncpg.Record]:
+        row = await self.pool.fetchrow(
+            """
+            SELECT c.*, cm.role, cm.joined_at, cm.contribution
+            FROM clan_members AS cm
+            JOIN clans AS c ON c.clan_id = cm.clan_id
+            WHERE cm.user_id = $1
+            """,
+            user_id,
+        )
+        return row
+
+    async def get_clan_by_name(self, name: str) -> Optional[asyncpg.Record]:
+        return await self.pool.fetchrow(
+            "SELECT * FROM clans WHERE LOWER(name) = LOWER($1)",
+            name,
+        )
+
+    async def get_clan(self, clan_id: int) -> Optional[asyncpg.Record]:
+        return await self.pool.fetchrow("SELECT * FROM clans WHERE clan_id = $1", clan_id)
+
+    async def get_clan_members(self, clan_id: int) -> Sequence[asyncpg.Record]:
+        return await self.pool.fetch(
+            """
+            SELECT clan_id, user_id, role, contribution, joined_at
+            FROM clan_members
+            WHERE clan_id = $1
+            ORDER BY (role = 'leader') DESC, contribution DESC, joined_at
+            """,
+            clan_id,
+        )
+
+    async def get_clan_member_count(self, clan_id: int) -> int:
+        count = await self.pool.fetchval(
+            "SELECT COUNT(*) FROM clan_members WHERE clan_id = $1",
+            clan_id,
+        )
+        return int(count or 0)
+
+    async def get_clan_contribution_leaderboard(
+        self, clan_id: int, limit: int = 3
+    ) -> Sequence[asyncpg.Record]:
+        return await self.pool.fetch(
+            """
+            SELECT user_id, contribution
+            FROM clan_members
+            WHERE clan_id = $1
+            ORDER BY contribution DESC, joined_at
+            LIMIT $2
+            """,
+            clan_id,
+            max(1, limit),
+        )
+
+    async def create_clan(self, owner_id: int, name: str, *, banner: str = "⚔️") -> asyncpg.Record:
+        await self.ensure_user(owner_id)
+        async with self.transaction() as connection:
+            membership = await connection.fetchrow(
+                "SELECT clan_id FROM clan_members WHERE user_id = $1 FOR UPDATE",
+                owner_id,
+            )
+            if membership is not None:
+                raise DatabaseError("Tu fais déjà partie d'un clan.")
+
+            conflict = await connection.fetchrow(
+                "SELECT 1 FROM clans WHERE LOWER(name) = LOWER($1)",
+                name,
+            )
+            if conflict is not None:
+                raise DatabaseError("Ce nom de clan est déjà réservé.")
+
+            clan_row = await connection.fetchrow(
+                """
+                INSERT INTO clans (name, owner_id, banner_emoji)
+                VALUES ($1, $2, $3)
+                RETURNING *
+                """,
+                name,
+                owner_id,
+                banner,
+            )
+            if clan_row is None:
+                raise DatabaseError("Impossible de créer le clan. Réessaie plus tard.")
+
+            await connection.execute(
+                """
+                INSERT INTO clan_members (clan_id, user_id, role)
+                VALUES ($1, $2, 'leader')
+                ON CONFLICT (clan_id, user_id) DO NOTHING
+                """,
+                clan_row["clan_id"],
+                owner_id,
+            )
+
+        return clan_row
+
+    async def add_member_to_clan(self, clan_id: int, user_id: int) -> asyncpg.Record:
+        await self.ensure_user(user_id)
+        async with self.transaction() as connection:
+            existing = await connection.fetchrow(
+                "SELECT clan_id FROM clan_members WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            if existing is not None:
+                raise DatabaseError("Ce joueur est déjà dans un clan.")
+
+            clan_row = await connection.fetchrow(
+                "SELECT * FROM clans WHERE clan_id = $1 FOR UPDATE",
+                clan_id,
+            )
+            if clan_row is None:
+                raise DatabaseError("Ce clan n'existe plus.")
+
+            member_count = await connection.fetchval(
+                "SELECT COUNT(*) FROM clan_members WHERE clan_id = $1",
+                clan_id,
+            )
+            capacity_level = int(clan_row.get("capacity_level", 0) or 0)
+            capacity = self._clan_capacity_from_level(capacity_level)
+            if int(member_count or 0) >= capacity:
+                raise DatabaseError("Ce clan est déjà complet. Achète plus de slots !")
+
+            inserted = await connection.fetchrow(
+                """
+                INSERT INTO clan_members (clan_id, user_id)
+                VALUES ($1, $2)
+                RETURNING clan_id, user_id, role, contribution, joined_at
+                """,
+                clan_id,
+                user_id,
+            )
+            if inserted is None:
+                raise DatabaseError("Impossible de rejoindre le clan pour le moment.")
+
+        return inserted
+
+    async def leave_clan(self, user_id: int) -> bool:
+        async with self.transaction() as connection:
+            membership = await connection.fetchrow(
+                "SELECT clan_id, role FROM clan_members WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            if membership is None:
+                return False
+
+            clan_id = int(membership["clan_id"])
+            clan_row = await connection.fetchrow(
+                "SELECT clan_id, owner_id FROM clans WHERE clan_id = $1 FOR UPDATE",
+                clan_id,
+            )
+            if clan_row is None:
+                await connection.execute(
+                    "DELETE FROM clan_members WHERE user_id = $1",
+                    user_id,
+                )
+                return True
+
+            owner_id = int(clan_row["owner_id"])
+            await connection.execute(
+                "DELETE FROM clan_members WHERE clan_id = $1 AND user_id = $2",
+                clan_id,
+                user_id,
+            )
+
+            if owner_id == user_id:
+                remaining = await connection.fetch(
+                    """
+                    SELECT user_id
+                    FROM clan_members
+                    WHERE clan_id = $1
+                    ORDER BY contribution DESC, joined_at
+                    """,
+                    clan_id,
+                )
+                if not remaining:
+                    await connection.execute(
+                        "DELETE FROM clans WHERE clan_id = $1",
+                        clan_id,
+                    )
+                else:
+                    new_owner = int(remaining[0]["user_id"])
+                    await connection.execute(
+                        "UPDATE clans SET owner_id = $1 WHERE clan_id = $2",
+                        new_owner,
+                        clan_id,
+                    )
+                    await connection.execute(
+                        "UPDATE clan_members SET role = 'leader' WHERE clan_id = $1 AND user_id = $2",
+                        clan_id,
+                        new_owner,
+                    )
+
+        return True
+
+    async def upgrade_clan_capacity(self, clan_id: int) -> asyncpg.Record:
+        async with self.transaction() as connection:
+            row = await connection.fetchrow(
+                "SELECT capacity_level FROM clans WHERE clan_id = $1 FOR UPDATE",
+                clan_id,
+            )
+            if row is None:
+                raise DatabaseError("Clan introuvable.")
+
+            current_level = int(row["capacity_level"] or 0)
+            if current_level >= len(CLAN_CAPACITY_UPGRADE_COSTS):
+                raise DatabaseError("La capacité du clan est déjà au maximum.")
+
+            updated = await connection.fetchrow(
+                """
+                UPDATE clans
+                SET capacity_level = capacity_level + 1
+                WHERE clan_id = $1
+                RETURNING *
+                """,
+                clan_id,
+            )
+            if updated is None:
+                raise DatabaseError("Impossible d'améliorer la capacité maintenant.")
+
+        return updated
+
+    async def upgrade_clan_boost(self, clan_id: int) -> asyncpg.Record:
+        async with self.transaction() as connection:
+            row = await connection.fetchrow(
+                "SELECT boost_level FROM clans WHERE clan_id = $1 FOR UPDATE",
+                clan_id,
+            )
+            if row is None:
+                raise DatabaseError("Clan introuvable.")
+
+            current_level = int(row["boost_level"] or 0)
+            if current_level >= len(CLAN_BOOST_COSTS):
+                raise DatabaseError("Le boost PB du clan est déjà maxé.")
+
+            new_level = current_level + 1
+            multiplier = 1 + new_level * CLAN_BOOST_INCREMENT
+
+            updated = await connection.fetchrow(
+                """
+                UPDATE clans
+                SET boost_level = $2, pb_boost_multiplier = $3
+                WHERE clan_id = $1
+                RETURNING *
+                """,
+                clan_id,
+                new_level,
+                multiplier,
+            )
+            if updated is None:
+                raise DatabaseError("Impossible d'améliorer le boost maintenant.")
+
+        return updated
+
+    async def record_clan_contribution(self, clan_id: int, user_id: int, amount: int) -> None:
+        if amount <= 0:
+            return
+        await self.pool.execute(
+            """
+            UPDATE clan_members
+            SET contribution = contribution + $3, last_activity = NOW()
+            WHERE clan_id = $1 AND user_id = $2
+            """,
+            clan_id,
+            user_id,
+            amount,
+        )
+
+    async def get_clan_profile(
+        self, clan_id: int
+    ) -> tuple[asyncpg.Record, Sequence[asyncpg.Record]]:
+        clan = await self.get_clan(clan_id)
+        if clan is None:
+            raise DatabaseError("Clan introuvable.")
+        members = await self.get_clan_members(clan_id)
+        return clan, members
 
     async def get_last_daily(self, user_id: int) -> Optional[datetime]:
         row = await self.pool.fetchrow("SELECT last_daily FROM users WHERE user_id = $1", user_id)
@@ -1263,7 +1620,7 @@ class Database:
 
     async def claim_active_pet_income(
         self, user_id: int
-    ) -> tuple[int, Sequence[asyncpg.Record], float, dict[str, float]]:
+    ) -> tuple[int, Sequence[asyncpg.Record], float, dict[str, float], dict[str, object]]:
         await self.ensure_user(user_id)
         async with self.transaction() as connection:
             rows = await connection.fetch(
@@ -1284,10 +1641,17 @@ class Database:
                     u.balance,
                     u.pet_booster_multiplier,
                     u.pet_booster_expires_at,
-                    u.pet_booster_activated_at
+                    u.pet_booster_activated_at,
+                    cm.clan_id AS member_clan_id,
+                    c.name AS clan_name,
+                    c.pb_boost_multiplier,
+                    c.boost_level AS clan_boost_level,
+                    c.banner_emoji AS clan_banner
                 FROM user_pets AS up
                 JOIN pets AS p ON p.pet_id = up.pet_id
                 JOIN users AS u ON u.user_id = up.user_id
+                LEFT JOIN clan_members AS cm ON cm.user_id = up.user_id
+                LEFT JOIN clans AS c ON c.clan_id = cm.clan_id
                 WHERE up.user_id = $1 AND up.is_active
                 ORDER BY up.id
                 FOR UPDATE
@@ -1296,7 +1660,7 @@ class Database:
             )
 
             if not rows:
-                return 0, [], 0.0, {}
+                return 0, [], 0.0, {}, {}
 
             first_row = rows[0]
             now = datetime.now(timezone.utc)
@@ -1308,7 +1672,7 @@ class Database:
                     now,
                     user_id,
                 )
-                return 0, rows, 0.0, {}
+                return 0, rows, 0.0, {}, {}
 
             booster_multiplier = float(first_row.get("pet_booster_multiplier") or 1.0)
             booster_expires = first_row.get("pet_booster_expires_at")
@@ -1358,7 +1722,7 @@ class Database:
                     now,
                     user_id,
                 )
-                return 0, rows, elapsed_seconds, {}
+                return 0, rows, elapsed_seconds, {}, {}
 
             elapsed_hours = elapsed_seconds / 3600
             base_amount = hourly_income * elapsed_hours
@@ -1368,9 +1732,9 @@ class Database:
                 booster_hours = booster_seconds / 3600
                 booster_extra_amount = int(hourly_income * booster_hours * (booster_multiplier - 1))
 
-            income = base_income_int + booster_extra_amount
-            if income <= 0:
-                return 0, rows, elapsed_seconds, {}
+            raw_income = base_income_int + booster_extra_amount
+            if raw_income <= 0:
+                return 0, rows, elapsed_seconds, {}, {}
 
             base_consumed_seconds = (
                 int((base_income_int / hourly_income) * 3600) if hourly_income else 0
@@ -1388,6 +1752,24 @@ class Database:
                 if new_claim_time > now:
                     new_claim_time = now
 
+            clan_info: dict[str, object] = {}
+            clan_id = first_row.get("member_clan_id")
+            clan_multiplier = 1.0
+            if clan_id is not None:
+                clan_multiplier = max(1.0, float(first_row.get("pb_boost_multiplier") or 1.0))
+            boosted_income = int(raw_income * clan_multiplier)
+            clan_bonus = max(0, boosted_income - raw_income)
+            if clan_id is not None:
+                clan_info = {
+                    "id": int(clan_id),
+                    "name": str(first_row.get("clan_name") or "Clan"),
+                    "multiplier": clan_multiplier,
+                    "bonus": clan_bonus,
+                    "boost_level": int(first_row.get("clan_boost_level") or 0),
+                    "banner": str(first_row.get("clan_banner") or "⚔️"),
+                }
+
+            income = boosted_income
             before_balance = int(first_row["balance"])
             after_balance = before_balance + income
 
@@ -1397,6 +1779,9 @@ class Database:
                 after_balance,
                 user_id,
             )
+            description = f"Revenus passifs ({len(rows)} pets)"
+            if clan_bonus > 0:
+                description += " + boost clan"
             await self.record_transaction(
                 connection=connection,
                 user_id=user_id,
@@ -1404,7 +1789,7 @@ class Database:
                 amount=income,
                 balance_before=before_balance,
                 balance_after=after_balance,
-                description=f"Revenus passifs ({len(rows)} pets)",
+                description=description,
             )
 
             if (
@@ -1432,7 +1817,7 @@ class Database:
                 "remaining_seconds": float(max(0.0, booster_remaining)),
             }
 
-        return income, rows, elapsed_seconds, booster_info
+        return income, rows, elapsed_seconds, booster_info, clan_info
 
     async def record_pet_opening(self, user_id: int, pet_id: int) -> None:
         await self.ensure_user(user_id)

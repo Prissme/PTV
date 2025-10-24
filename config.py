@@ -55,6 +55,29 @@ MESSAGE_COOLDOWN = 60
 LEADERBOARD_LIMIT = 10
 
 # ---------------------------------------------------------------------------
+# Paramètres Clans
+# ---------------------------------------------------------------------------
+
+CLAN_CREATION_COST: Final[int] = 25_000
+CLAN_BASE_CAPACITY: Final[int] = 3
+CLAN_CAPACITY_PER_LEVEL: Final[int] = 2
+CLAN_CAPACITY_UPGRADE_COSTS: Final[Tuple[int, ...]] = (
+    15_000,
+    35_000,
+    75_000,
+    150_000,
+    300_000,
+)
+CLAN_BOOST_INCREMENT: Final[float] = 0.05
+CLAN_BOOST_COSTS: Final[Tuple[int, ...]] = (
+    50_000,
+    125_000,
+    250_000,
+    450_000,
+    750_000,
+)
+
+# ---------------------------------------------------------------------------
 # Paramètres Statistiques
 # ---------------------------------------------------------------------------
 
