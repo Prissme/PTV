@@ -1654,7 +1654,7 @@ class Database:
                 LEFT JOIN clans AS c ON c.clan_id = cm.clan_id
                 WHERE up.user_id = $1 AND up.is_active
                 ORDER BY up.id
-                FOR UPDATE
+                FOR UPDATE OF up
                 """,
                 user_id,
             )
