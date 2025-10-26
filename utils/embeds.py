@@ -461,6 +461,17 @@ def pet_collection_embed(
                 stats_line += f" — Variante rainbow x{RAINBOW_PET_MULTIPLIER}"
             elif is_gold:
                 stats_line += f" — Variante or x{GOLD_PET_MULTIPLIER}"
+            if is_huge:
+                level = int(pet.get("huge_level", 1))
+                xp_required = int(pet.get("huge_xp_required", 0))
+                xp_value = int(pet.get("huge_xp", 0))
+                progress_ratio = float(pet.get("huge_progress", 0.0))
+                if xp_required > 0:
+                    xp_text = f"{xp_value:,}/{xp_required:,}".replace(",", " ")
+                    progress_percent = int(round(max(0.0, min(1.0, progress_ratio)) * 100))
+                    stats_line += f" — Niveau {level} ({xp_text} XP, {progress_percent}%)"
+                else:
+                    stats_line += f" — Niveau {level} (MAX)"
             if market_value > 0 and not is_huge:
                 stats_line += f" — Valeur : {format_currency(market_value)}"
             line = f"{header}\n{stats_line}"
@@ -675,6 +686,17 @@ def pet_claim_embed(
             line_parts.append(f"x{GOLD_PET_MULTIPLIER}")
         if share > 0:
             line_parts.append(f"+{format_currency(share)}")
+        if is_huge:
+            level = int(pet.get("huge_level", 1))
+            xp_required = int(pet.get("huge_xp_required", 0))
+            xp_value = int(pet.get("huge_xp", 0))
+            progress_ratio = float(pet.get("huge_progress", 0.0))
+            if xp_required > 0:
+                xp_text = f"{xp_value:,}/{xp_required:,}".replace(",", " ")
+                progress_percent = int(round(max(0.0, min(1.0, progress_ratio)) * 100))
+                line_parts.append(f"Niv. {level} — XP {xp_text} ({progress_percent}%)")
+            else:
+                line_parts.append(f"Niv. {level} — MAX")
         if market_value > 0:
             line_parts.append(f"Valeur : {format_currency(market_value)}")
         lines.append(" • ".join(part for part in line_parts if part))

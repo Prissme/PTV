@@ -18,13 +18,12 @@ from config import (
     CLAN_BOOST_INCREMENT,
     GOLD_PET_MULTIPLIER,
     GOLD_PET_COMBINE_REQUIRED,
-    HUGE_GALE_NAME,
-    HUGE_GRIFF_NAME,
+    HUGE_PET_LEVEL_CAP,
     HUGE_PET_MIN_INCOME,
-    HUGE_PET_MULTIPLIER,
     RAINBOW_PET_COMBINE_REQUIRED,
     RAINBOW_PET_MULTIPLIER,
-    get_huge_multiplier,
+    get_huge_level_multiplier,
+    huge_level_required_xp,
 )
 
 __all__ = [
@@ -200,6 +199,12 @@ class Database:
             )
             await connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_pets_rainbow ON user_pets(user_id) WHERE is_rainbow"
+            )
+            await connection.execute(
+                "ALTER TABLE user_pets ADD COLUMN IF NOT EXISTS huge_level INTEGER NOT NULL DEFAULT 1"
+            )
+            await connection.execute(
+                "ALTER TABLE user_pets ADD COLUMN IF NOT EXISTS huge_xp BIGINT NOT NULL DEFAULT 0"
             )
             await connection.execute(
                 """
@@ -1184,7 +1189,15 @@ class Database:
         market_values = await self.get_pet_market_values()
         rows = await self.pool.fetch(
             """
-            SELECT up.user_id, up.pet_id, up.is_gold, up.is_huge, up.is_rainbow, p.base_income_per_hour, p.name
+            SELECT
+                up.user_id,
+                up.pet_id,
+                up.is_gold,
+                up.is_huge,
+                up.is_rainbow,
+                up.huge_level,
+                p.base_income_per_hour,
+                p.name
             FROM user_pets AS up
             JOIN pets AS p ON p.pet_id = up.pet_id
             """
@@ -1204,9 +1217,10 @@ class Database:
             elif bool(row["is_gold"]):
                 value = int(value * GOLD_PET_MULTIPLIER)
             if bool(row["is_huge"]):
-                multiplier = max(1, get_huge_multiplier(name))
+                level = int(row.get("huge_level") or 1)
+                multiplier = get_huge_level_multiplier(name, level)
                 huge_floor = max(base_income * multiplier * 150, value)
-                value = huge_floor
+                value = int(huge_floor)
             rap_totals[user_id] += max(0, value)
 
         sorted_totals = sorted(rap_totals.items(), key=lambda item: item[1], reverse=True)
@@ -1219,71 +1233,60 @@ class Database:
 
         rows = await self.pool.fetch(
             """
-            WITH best_non_huge AS (
-                SELECT
-                    up.user_id,
-                    COALESCE(
-                        MAX(
-                            p.base_income_per_hour
-                            * CASE
-                                WHEN up.is_rainbow THEN $9
-                                WHEN up.is_gold THEN $2
-                                ELSE 1
-                            END
-                        ),
-                        0
-                    ) AS best_income
-                FROM user_pets AS up
-                JOIN pets AS p ON p.pet_id = up.pet_id
-                WHERE NOT up.is_huge
-                GROUP BY up.user_id
-            ),
-            active_income AS (
-                SELECT
-                    up.user_id,
-                    SUM(
-                        CASE
-                            WHEN up.is_huge THEN GREATEST(
-                                $3,
-                                COALESCE(b.best_income, 0)
-                                    * CASE
-                                        WHEN p.name = $5 THEN $6
-                                        WHEN p.name = $7 THEN $8
-                                        ELSE $4
-                                    END
-                            )
-                            ELSE p.base_income_per_hour
-                                * CASE
-                                    WHEN up.is_rainbow THEN $9
-                                    WHEN up.is_gold THEN $2
-                                    ELSE 1
-                                END
-                        END
-                    ) AS hourly_income
-                FROM user_pets AS up
-                JOIN pets AS p ON p.pet_id = up.pet_id
-                LEFT JOIN best_non_huge AS b ON b.user_id = up.user_id
-                WHERE up.is_active
-                GROUP BY up.user_id
-            )
-            SELECT user_id, hourly_income
-            FROM active_income
-            WHERE hourly_income > 0
-            ORDER BY hourly_income DESC
-            LIMIT $1
-            """,
-            clamped_limit,
-            GOLD_PET_MULTIPLIER,
-            HUGE_PET_MIN_INCOME,
-            HUGE_PET_MULTIPLIER,
-            HUGE_GRIFF_NAME,
-            get_huge_multiplier(HUGE_GRIFF_NAME),
-            HUGE_GALE_NAME,
-            get_huge_multiplier(HUGE_GALE_NAME),
-            RAINBOW_PET_MULTIPLIER,
+            SELECT
+                up.user_id,
+                up.is_active,
+                up.is_huge,
+                up.is_gold,
+                up.is_rainbow,
+                up.huge_level,
+                p.name,
+                p.base_income_per_hour
+            FROM user_pets AS up
+            JOIN pets AS p ON p.pet_id = up.pet_id
+            """
         )
 
-        return [(int(row["user_id"]), int(row["hourly_income"])) for row in rows]
+        best_non_huge: defaultdict[int, int] = defaultdict(int)
+        for row in rows:
+            if bool(row.get("is_huge")):
+                continue
+            base_income = int(row["base_income_per_hour"])
+            if bool(row.get("is_rainbow")):
+                base_income *= RAINBOW_PET_MULTIPLIER
+            elif bool(row.get("is_gold")):
+                base_income *= GOLD_PET_MULTIPLIER
+            user_id = int(row["user_id"])
+            if base_income > best_non_huge[user_id]:
+                best_non_huge[user_id] = base_income
+
+        income_totals: defaultdict[int, int] = defaultdict(int)
+        for row in rows:
+            if not bool(row.get("is_active")):
+                continue
+            user_id = int(row["user_id"])
+            base_income = int(row["base_income_per_hour"])
+            if bool(row.get("is_huge")):
+                level = int(row.get("huge_level") or 1)
+                multiplier = get_huge_level_multiplier(str(row.get("name", "")), level)
+                reference = best_non_huge.get(user_id, 0)
+                scaled = int(reference * multiplier)
+                income_value = max(HUGE_PET_MIN_INCOME, scaled)
+            else:
+                if bool(row.get("is_rainbow")):
+                    income_value = base_income * RAINBOW_PET_MULTIPLIER
+                elif bool(row.get("is_gold")):
+                    income_value = base_income * GOLD_PET_MULTIPLIER
+                else:
+                    income_value = base_income
+            income_totals[user_id] += income_value
+
+        sorted_totals = sorted(
+            ((user_id, income) for user_id, income in income_totals.items() if income > 0),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        return sorted_totals[:clamped_limit]
 
     async def reset_user_grade(self, user_id: int) -> None:
         await self.ensure_user(user_id)
@@ -1495,6 +1498,8 @@ class Database:
                     up.is_huge,
                     up.is_gold,
                     up.is_rainbow,
+                    up.huge_level,
+                    up.huge_xp,
                     up.acquired_at,
                     p.pet_id,
                     p.name,
@@ -1574,6 +1579,8 @@ class Database:
                     up.is_huge,
                     up.is_gold,
                     up.is_rainbow,
+                    up.huge_level,
+                    up.huge_xp,
                     up.acquired_at,
                     p.pet_id,
                     p.name,
@@ -1602,6 +1609,8 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+                up.huge_level,
+                up.huge_xp,
                 up.acquired_at,
                 p.pet_id,
                 p.name,
@@ -1626,6 +1635,8 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+                up.huge_level,
+                up.huge_xp,
                 up.acquired_at,
                 p.pet_id,
                 p.name,
@@ -1679,6 +1690,8 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+                up.huge_level,
+                up.huge_xp,
                 up.acquired_at,
                 p.pet_id,
                 p.name,
@@ -1703,6 +1716,8 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+                up.huge_level,
+                up.huge_xp,
                 up.acquired_at,
                 p.pet_id,
                 p.name,
@@ -1970,8 +1985,16 @@ class Database:
 
     async def claim_active_pet_income(
         self, user_id: int
-    ) -> tuple[int, Sequence[asyncpg.Record], float, dict[str, float], dict[str, object]]:
+    ) -> tuple[
+        int,
+        Sequence[asyncpg.Record],
+        float,
+        dict[str, float],
+        dict[str, object],
+        Dict[int, tuple[int, int]],
+    ]:
         await self.ensure_user(user_id)
+        progress_updates: Dict[int, tuple[int, int]] = {}
         async with self.transaction() as connection:
             rows = await connection.fetch(
                 """
@@ -1981,6 +2004,8 @@ class Database:
                     up.is_active,
                     up.is_huge,
                     up.is_gold,
+                    up.huge_level,
+                    up.huge_xp,
                     up.acquired_at,
                     p.pet_id,
                     p.name,
@@ -2055,11 +2080,10 @@ class Database:
                 base_income = int(row["base_income_per_hour"])
                 if bool(row["is_huge"]):
                     name = str(row.get("name", ""))
-                    multiplier = max(1, get_huge_multiplier(name))
-                    income_value = max(
-                        HUGE_PET_MIN_INCOME,
-                        best_non_huge_income * multiplier,
-                    )
+                    level = int(row.get("huge_level") or 1)
+                    multiplier = get_huge_level_multiplier(name, level)
+                    scaled_income = int(best_non_huge_income * multiplier)
+                    income_value = max(HUGE_PET_MIN_INCOME, scaled_income)
                 else:
                     if bool(row.get("is_rainbow")):
                         income_value = base_income * RAINBOW_PET_MULTIPLIER
@@ -2163,6 +2187,52 @@ class Database:
                     user_id,
                 )
 
+            shares: list[int] = [0 for _ in rows]
+            if income > 0 and hourly_income > 0 and rows:
+                remaining_income = income
+                for index, effective in enumerate(effective_incomes):
+                    if index == len(rows) - 1:
+                        share_amount = remaining_income
+                    else:
+                        proportion = effective / hourly_income if hourly_income else 0.0
+                        share_amount = int(round(income * proportion))
+                        share_amount = max(0, min(remaining_income, share_amount))
+                        remaining_income -= share_amount
+                    shares[index] = share_amount
+
+            for share_amount, row in zip(shares, rows):
+                if share_amount <= 0:
+                    continue
+                if not bool(row.get("is_huge")):
+                    continue
+                xp_gain = share_amount // 1_000
+                if xp_gain <= 0:
+                    continue
+                level = max(1, int(row.get("huge_level") or 1))
+                current_xp = max(0, int(row.get("huge_xp") or 0))
+                new_level = level
+                accumulated_xp = current_xp + xp_gain
+                while new_level < HUGE_PET_LEVEL_CAP:
+                    required = huge_level_required_xp(new_level)
+                    if required <= 0 or accumulated_xp < required:
+                        break
+                    accumulated_xp -= required
+                    new_level += 1
+                if new_level >= HUGE_PET_LEVEL_CAP:
+                    new_level = HUGE_PET_LEVEL_CAP
+                    accumulated_xp = 0
+                if new_level != level or accumulated_xp != current_xp:
+                    user_pet_id = int(row["id"])
+                    progress_updates[user_pet_id] = (new_level, accumulated_xp)
+
+            for pet_id, (new_level, new_xp) in progress_updates.items():
+                await connection.execute(
+                    "UPDATE user_pets SET huge_level = $2, huge_xp = $3 WHERE id = $1",
+                    pet_id,
+                    new_level,
+                    new_xp,
+                )
+
         booster_info: dict[str, float] = {}
         if booster_multiplier > 1:
             booster_info = {
@@ -2171,7 +2241,7 @@ class Database:
                 "remaining_seconds": float(max(0.0, booster_remaining)),
             }
 
-        return income, rows, elapsed_seconds, booster_info, clan_info
+        return income, rows, elapsed_seconds, booster_info, clan_info, progress_updates
 
     async def record_pet_opening(self, user_id: int, pet_id: int) -> None:
         await self.ensure_user(user_id)

@@ -26,10 +26,13 @@ from config import (
     RAINBOW_PET_CHANCE,
     RAINBOW_PET_COMBINE_REQUIRED,
     RAINBOW_PET_MULTIPLIER,
+    HUGE_PET_LEVEL_CAP,
     HUGE_PET_NAME,
     HUGE_PET_MIN_INCOME,
     HUGE_PET_SOURCES,
-    get_huge_multiplier,
+    get_huge_level_multiplier,
+    get_huge_level_progress,
+    huge_level_required_xp,
     PetDefinition,
     PetEggDefinition,
     PetZoneDefinition,
@@ -280,13 +283,33 @@ class Pets(commands.Cog):
 
     @staticmethod
     def _compute_huge_income(
-        best_non_huge_income: int | None, *, pet_name: str | None = None
+        best_non_huge_income: int | None,
+        *,
+        pet_name: str | None = None,
+        level: int = 1,
     ) -> int:
         best_value = max(0, int(best_non_huge_income or 0))
-        multiplier = get_huge_multiplier(pet_name or "")
+        multiplier = get_huge_level_multiplier(pet_name or "", level)
         if best_value <= 0:
             return HUGE_PET_MIN_INCOME
-        return max(HUGE_PET_MIN_INCOME, best_value * multiplier)
+        scaled = int(best_value * multiplier)
+        return max(HUGE_PET_MIN_INCOME, scaled)
+
+    @staticmethod
+    def _apply_huge_progress_fields(data: Dict[str, Any], level: int, xp: int) -> None:
+        clamped_level = max(1, min(level, HUGE_PET_LEVEL_CAP))
+        xp = max(0, xp)
+        data["huge_level"] = clamped_level
+        if clamped_level >= HUGE_PET_LEVEL_CAP:
+            data["huge_xp"] = 0
+            data["huge_xp_required"] = 0
+            data["huge_progress"] = 1.0
+        else:
+            required = huge_level_required_xp(clamped_level)
+            progress_xp = min(xp, required)
+            data["huge_xp"] = progress_xp
+            data["huge_xp_required"] = required
+            data["huge_progress"] = get_huge_level_progress(clamped_level, progress_xp)
 
     def _convert_record(
         self, record: Mapping[str, Any], *, best_non_huge_income: int | None = None
@@ -313,10 +336,19 @@ class Pets(commands.Cog):
         data["is_huge"] = is_huge
 
         if is_huge:
+            level = int(record.get("huge_level") or 1)
+            xp = int(record.get("huge_xp") or 0)
+            self._apply_huge_progress_fields(data, level, xp)
+            data["_reference_income"] = int(best_non_huge_income or 0)
             effective_income = self._compute_huge_income(
-                best_non_huge_income, pet_name=pet_name
+                best_non_huge_income, pet_name=pet_name, level=level
             )
         else:
+            data.pop("huge_level", None)
+            data.pop("huge_xp", None)
+            data.pop("huge_xp_required", None)
+            data.pop("huge_progress", None)
+            data.pop("_reference_income", None)
             if is_rainbow:
                 effective_income = base_income * RAINBOW_PET_MULTIPLIER
             elif is_gold:
@@ -746,7 +778,7 @@ class Pets(commands.Cog):
         if pet_definition.is_huge:
             best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
             income_per_hour = self._compute_huge_income(
-                best_non_huge_income, pet_name=pet_definition.name
+                best_non_huge_income, pet_name=pet_definition.name, level=1
             )
         else:
             multiplier = 1
@@ -797,6 +829,7 @@ class Pets(commands.Cog):
             pet_identifier = int(data.get("pet_id", 0))
             if market_values:
                 data["market_value"] = int(market_values.get(pet_identifier, 0))
+            data.pop("_reference_income", None)
             converted.append(data)
 
         converted.sort(
@@ -1342,14 +1375,58 @@ class Pets(commands.Cog):
 
     @commands.command(name="claim")
     async def claim(self, ctx: commands.Context) -> None:
-        amount, rows, elapsed, booster_info, clan_info = await self.database.claim_active_pet_income(
-            ctx.author.id
-        )
+        (
+            amount,
+            rows,
+            elapsed,
+            booster_info,
+            clan_info,
+            progress_updates,
+        ) = await self.database.claim_active_pet_income(ctx.author.id)
         if not rows:
             await ctx.send(embed=embeds.error_embed("Tu dois équiper un pet avant de pouvoir collecter ses revenus."))
             return
 
+        original_levels: Dict[int, int] = {
+            int(row["id"]): int(row.get("huge_level") or 1)
+            for row in rows
+            if bool(row.get("is_huge"))
+        }
         pets_data = await self._prepare_pet_data(ctx.author.id, rows)
+
+        if progress_updates:
+            for pet in pets_data:
+                user_pet_id = int(pet.get("id", 0))
+                update = progress_updates.get(user_pet_id)
+                if not update:
+                    continue
+                new_level, new_xp = update
+                self._apply_huge_progress_fields(pet, new_level, new_xp)
+                if pet.get("is_huge"):
+                    reference = int(pet.get("_reference_income", 0))
+                    income_value = self._compute_huge_income(
+                        reference,
+                        pet_name=str(pet.get("name", "")),
+                        level=new_level,
+                    )
+                    pet["base_income_per_hour"] = income_value
+                    if "income" in pet:
+                        pet["income"] = income_value
+
+        for pet in pets_data:
+            pet.pop("_reference_income", None)
+
+        level_up_lines: List[str] = []
+        if original_levels and pets_data:
+            for pet in pets_data:
+                if not pet.get("is_huge"):
+                    continue
+                user_pet_id = int(pet.get("id", 0))
+                old_level = original_levels.get(user_pet_id)
+                new_level = int(pet.get("huge_level", old_level or 1))
+                if old_level is not None and new_level > old_level:
+                    name = str(pet.get("name", "Pet"))
+                    level_up_lines.append(f"🎉 Ton Huge {name} monte niveau {new_level} !")
 
         if clan_info:
             clan_id = int(clan_info.get("id", 0))
@@ -1382,6 +1459,9 @@ class Pets(commands.Cog):
             clan=clan_info if clan_info else None,
         )
         await ctx.send(embed=embed)
+
+        if level_up_lines:
+            await ctx.send("\n".join(level_up_lines))
 
     @commands.command(name="petstats", aliases=("petsstats",))
     async def pets_stats(self, ctx: commands.Context) -> None:
