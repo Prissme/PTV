@@ -2004,6 +2004,7 @@ class Database:
                     up.is_active,
                     up.is_huge,
                     up.is_gold,
+                    up.is_rainbow,
                     up.huge_level,
                     up.huge_xp,
                     up.acquired_at,
