@@ -1,6 +1,7 @@
 """Configuration centralisée et minimaliste pour EcoBot."""
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from typing import Dict, Final, Tuple
@@ -212,6 +213,9 @@ RAINBOW_PET_CHANCE: Final[float] = 0.01
 HUGE_PET_NAME: Final[str] = "Huge Shelly"
 HUGE_PET_MULTIPLIER: Final[int] = 5
 HUGE_PET_MIN_INCOME: Final[int] = 500
+HUGE_PET_LEVEL_CAP: Final[int] = 64
+HUGE_PET_LEVEL_BASE_XP: Final[int] = 150
+HUGE_PET_LEVEL_EXPONENT: Final[float] = 1.35
 HUGE_GALE_NAME: Final[str] = "Huge Gale"
 HUGE_GRIFF_NAME: Final[str] = "Huge Griff"
 HUGE_KENJI_ONI_NAME: Final[str] = "Huge Kenji Oni"
@@ -239,6 +243,40 @@ def get_huge_multiplier(name: str) -> int:
         if pet_name.lower() == normalized:
             return multiplier
     return HUGE_PET_MULTIPLIER
+
+
+def huge_level_required_xp(level: int) -> int:
+    """Calcule l'expérience requise pour monter au niveau suivant."""
+
+    if level >= HUGE_PET_LEVEL_CAP:
+        return 0
+    if level < 1:
+        level = 1
+    required = math.ceil(HUGE_PET_LEVEL_BASE_XP * (level**HUGE_PET_LEVEL_EXPONENT))
+    return max(0, int(required))
+
+
+def get_huge_level_progress(level: int, xp: int) -> float:
+    """Retourne la progression (0-1) du niveau actuel d'un énorme pet."""
+
+    if level >= HUGE_PET_LEVEL_CAP:
+        return 1.0
+    required = huge_level_required_xp(level)
+    if required <= 0:
+        return 0.0
+    return max(0.0, min(1.0, xp / required))
+
+
+def get_huge_level_multiplier(name: str, level: int) -> float:
+    """Calcule le multiplicateur effectif d'un énorme pet à un niveau donné."""
+
+    final_multiplier = float(max(1, get_huge_multiplier(name)))
+    if level <= 1:
+        return 1.0
+    clamped_level = max(1, min(level, HUGE_PET_LEVEL_CAP))
+    span = max(1, HUGE_PET_LEVEL_CAP - 1)
+    progress = (clamped_level - 1) / span
+    return 1.0 + (final_multiplier - 1.0) * progress
 
 
 HUGE_PET_SOURCES: Final[Dict[str, str]] = {

@@ -28,7 +28,7 @@ from config import (
     PET_DEFINITIONS,
     PET_EMOJIS,
     PREFIX,
-    get_huge_multiplier,
+    get_huge_level_multiplier,
 )
 from utils import embeds
 from database.db import Database, DatabaseError, InsufficientBalanceError
@@ -455,8 +455,8 @@ class MastermindSession:
             return False
 
         best_non_huge = await self.database.get_best_non_huge_income(self.ctx.author.id)
-        multiplier = max(1, get_huge_multiplier(HUGE_KENJI_ONI_NAME))
-        huge_income = max(HUGE_PET_MIN_INCOME, best_non_huge * multiplier)
+        multiplier = get_huge_level_multiplier(HUGE_KENJI_ONI_NAME, 1)
+        huge_income = max(HUGE_PET_MIN_INCOME, int(best_non_huge * multiplier))
         emoji = PET_EMOJIS.get(HUGE_KENJI_ONI_NAME, PET_EMOJIS.get("default", "🐾"))
         self.status_lines.append(
             "🔥 Jackpot ! Tu remportes "
