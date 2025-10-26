@@ -22,12 +22,14 @@ from config import (
     HUGE_GALE_NAME,
     HUGE_GRIFF_NAME,
     HUGE_KENJI_ONI_NAME,
+    HUGE_MORTIS_NAME,
     HUGE_PET_MIN_INCOME,
     MESSAGE_COOLDOWN,
     MESSAGE_REWARD,
     PET_DEFINITIONS,
     PET_EMOJIS,
     PREFIX,
+    VIP_ROLE_ID,
     get_huge_level_multiplier,
 )
 from utils import embeds
@@ -1183,8 +1185,25 @@ class Economy(commands.Cog):
             return "Le montant doit être supérieur à 0."
         return None
 
-    @commands.command(name="give")
-    async def give(self, ctx: commands.Context, member: discord.Member, amount: int) -> None:
+    @commands.group(name="give", invoke_without_command=True)
+    async def give(
+        self,
+        ctx: commands.Context,
+        member: discord.Member | None = None,
+        amount: int | None = None,
+    ) -> None:
+        if ctx.invoked_subcommand is not None:
+            return
+
+        if member is None or amount is None:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Utilisation : e!give @membre montant",
+                    title="Commande incomplète",
+                )
+            )
+            return
+
         error = self._validate_give_request(ctx.author, member, amount)
         if error:
             await ctx.send(embed=embeds.error_embed(error))
@@ -1226,6 +1245,92 @@ class Economy(commands.Cog):
             f"Solde de {member.display_name} : {embeds.format_currency(transfer['recipient']['after'])}",
         ]
         await ctx.send(embed=embeds.success_embed("\n".join(lines), title="Transfert réussi"))
+
+    @give.command(name="mortis")
+    @commands.guild_only()
+    @commands.is_owner()
+    async def give_mortis(self, ctx: commands.Context) -> None:
+        guild = ctx.guild
+        assert guild is not None  # guild_only garantit la présence de la guilde
+
+        role = guild.get_role(VIP_ROLE_ID)
+        if role is None:
+            await ctx.send(embed=embeds.error_embed("Le rôle VIP est introuvable sur ce serveur."))
+            return
+
+        vip_members = [member for member in role.members if not member.bot]
+        if not vip_members:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    "Aucun membre éligible n'a le rôle VIP pour recevoir la récompense.",
+                    title="Aucune distribution",
+                )
+            )
+            return
+
+        pet_id = await self.database.get_pet_id_by_name(HUGE_MORTIS_NAME)
+        if pet_id is None:
+            await ctx.send(
+                embed=embeds.error_embed("Huge Mortis n'est pas encore enregistré dans la base de données."),
+            )
+            return
+
+        emoji = PET_EMOJIS.get(HUGE_MORTIS_NAME, PET_EMOJIS.get("default", "🐾"))
+        awarded = 0
+        already_owned = 0
+        failed: list[int] = []
+
+        for member in vip_members:
+            try:
+                existing = await self.database.get_user_pet_by_name(
+                    member.id,
+                    HUGE_MORTIS_NAME,
+                )
+            except DatabaseError:
+                logger.exception("Impossible de vérifier les pets de %s", member.id)
+                failed.append(member.id)
+                continue
+
+            if existing:
+                already_owned += 1
+                continue
+
+            try:
+                await self.database.add_user_pet(member.id, pet_id, is_huge=True)
+            except DatabaseError:
+                logger.exception("Impossible d'ajouter Huge Mortis à %s", member.id)
+                failed.append(member.id)
+                continue
+
+            awarded += 1
+
+        summary_lines = [
+            f"Rôle ciblé : {role.mention} ({len(vip_members)} membres)",
+            f"Récompense : {emoji} **{HUGE_MORTIS_NAME}**",
+            f"Distribués : **{awarded}**",
+        ]
+        if already_owned:
+            summary_lines.append(f"Déjà équipés : **{already_owned}**")
+        if failed:
+            summary_lines.append(f"Échecs : **{len(failed)}**")
+
+        await ctx.send(
+            embed=embeds.success_embed(
+                "\n".join(summary_lines),
+                title="Distribution Huge Mortis",
+            )
+        )
+
+        logger.info(
+            "Huge Mortis distribution",
+            extra={
+                "admin_id": ctx.author.id,
+                "role_id": VIP_ROLE_ID,
+                "awarded": awarded,
+                "already_owned": already_owned,
+                "failed": failed,
+            },
+        )
 
     @commands.cooldown(1, 6, commands.BucketType.user)
     @commands.command(name="slots", aliases=("slot", "machine"))

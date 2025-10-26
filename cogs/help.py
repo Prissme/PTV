@@ -138,6 +138,7 @@ class Help(commands.Cog):
                     "**e!balance** (bal) — Consulte ton solde actuel.",
                     "**e!daily** — Collecte ta récompense quotidienne.",
                     "**e!give** @membre montant — Offre des PrissBucks à quelqu'un.",
+                    "**e!give mortis** — (Owner) Offre Huge Mortis à tous les VIP.",
                     "**e!slots** mise — Tente ta chance à la machine à sous.",
                     "**e!mastermind** — Résous le code secret pour gagner des PB.",
                     "**e!millionairerace** — Prends part à la course millionnaire.",
