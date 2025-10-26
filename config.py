@@ -206,6 +206,9 @@ GOLD_PET_CHANCE: Final[float] = _get_float_env("PET_GOLD_CHANCE", 0.05)
 GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
     "PET_GOLD_COMBINE_REQUIRED", 10, minimum=2
 )
+RAINBOW_PET_MULTIPLIER: Final[int] = 10
+RAINBOW_PET_COMBINE_REQUIRED: Final[int] = 10
+RAINBOW_PET_CHANCE: Final[float] = 0.01
 HUGE_PET_NAME: Final[str] = "Huge Shelly"
 HUGE_PET_MULTIPLIER: Final[int] = 5
 HUGE_PET_MIN_INCOME: Final[int] = 500
@@ -217,11 +220,14 @@ HUGE_GALE_MULTIPLIER: Final[int] = 100
 HUGE_KENJI_ONI_MULTIPLIER: Final[int] = 10
 HUGE_SHADE_NAME: Final[str] = "Huge Shade"
 HUGE_SHADE_MULTIPLIER: Final[int] = 7
+HUGE_MORTIS_NAME: Final[str] = "Huge Mortis"
+HUGE_MORTIS_MULTIPLIER: Final[int] = 10
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, int]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
     HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
     HUGE_KENJI_ONI_NAME: HUGE_KENJI_ONI_MULTIPLIER,
     HUGE_SHADE_NAME: HUGE_SHADE_MULTIPLIER,
+    HUGE_MORTIS_NAME: HUGE_MORTIS_MULTIPLIER,
 }
 
 
@@ -242,6 +248,7 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     HUGE_GALE_NAME: "Récompense finale du mode Millionaire Race (étape 20).",
     HUGE_KENJI_ONI_NAME: "Récompense rarissime du Mastermind pour les esprits les plus vifs.",
     HUGE_SHADE_NAME: "Extrêmement rare dans l'Œuf Maudit (0.5%) - Zone Manoir Hanté.",
+    HUGE_MORTIS_NAME: "Récompense exclusive pour les membres VIP du serveur.",
 }
 
 _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
@@ -424,6 +431,14 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
         drop_rate=0.0,
         is_huge=True,
     ),
+    PetDefinition(
+        name=HUGE_MORTIS_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1431435110590189638.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
 )
 
 PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
@@ -515,8 +530,11 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Ghost Leon": os.getenv("PET_EMOJI_GHOST_LEON", "<:GhostLeon:1431422781110882495>"),
     "Inspectrice Colette": os.getenv("PET_EMOJI_INSPECTRICE_COLETTE", "<:InspectriceColette:1431422778170408960>"),
     HUGE_SHADE_NAME: os.getenv("PET_EMOJI_HUGE_SHADE", "<:HugeShade:1431422771094753310>"),
+    HUGE_MORTIS_NAME: os.getenv("PET_EMOJI_HUGE_MORTIS", "<:HugeMortis:1431435110590189638>"),
     "default": os.getenv("PET_EMOJI_DEFAULT", "🐾"),
 }
+
+HUGE_MORTIS_ROLE_ID: Final[int] = 1431428621959954623
 
 PET_RARITY_COLORS: Final[dict[str, int]] = {
     "Commun": 0x95A5A6,

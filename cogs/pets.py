@@ -6,6 +6,8 @@ import contextlib
 import logging
 import math
 import random
+import unicodedata
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
 import discord
@@ -21,6 +23,9 @@ from config import (
     PET_EGG_DEFINITIONS,
     PET_RARITY_ORDER,
     PET_ZONES,
+    RAINBOW_PET_CHANCE,
+    RAINBOW_PET_COMBINE_REQUIRED,
+    RAINBOW_PET_MULTIPLIER,
     HUGE_PET_NAME,
     HUGE_PET_MIN_INCOME,
     HUGE_PET_SOURCES,
@@ -30,7 +35,7 @@ from config import (
     PetZoneDefinition,
 )
 from utils import embeds
-from database.db import DatabaseError
+from database.db import ActivePetLimitError, DatabaseError
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +126,100 @@ class PetInventoryView(discord.ui.View):
             with contextlib.suppress(discord.HTTPException):
                 await self.message.edit(view=self)
 
+
+class PetSelectionView(discord.ui.View):
+    """Vue interactive permettant de sélectionner un pet parmi plusieurs."""
+
+    def __init__(
+        self,
+        *,
+        ctx: commands.Context,
+        candidates: Sequence[Mapping[str, Any]],
+    ) -> None:
+        super().__init__(timeout=60)
+        self.ctx = ctx
+        self.member = ctx.author
+        self.candidates: List[Mapping[str, Any]] = list(candidates)
+        self.selection: Optional[Mapping[str, Any]] = None
+        self.cancelled = False
+        self.message: discord.Message | None = None
+
+        for index, candidate in enumerate(self.candidates, start=1):
+            label = self._build_label(candidate, index)
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary)
+            button.callback = self._make_callback(index - 1)
+            self.add_item(button)
+
+        cancel_button = discord.ui.Button(label="Annuler", style=discord.ButtonStyle.secondary)
+        cancel_button.callback = self._cancel
+        self.add_item(cancel_button)
+
+    @staticmethod
+    def _build_label(candidate: Mapping[str, Any], index: int) -> str:
+        data = candidate.get("data", {})
+        name = str(data.get("name", "Pet"))
+        is_rainbow = bool(data.get("is_rainbow"))
+        is_gold = bool(data.get("is_gold"))
+        is_active = bool(data.get("is_active"))
+        income = int(data.get("base_income_per_hour", 0))
+        marker = " 🌈" if is_rainbow else (" 🥇" if is_gold else "")
+        active_marker = "⭐ " if is_active else ""
+        base_label = f"{index}. {active_marker}{name}{marker}"
+        income_part = f" • {income:,} PB/h" if income else ""
+        label = f"{base_label}{income_part}".replace(",", " ")
+        return label[:80]
+
+    def _make_callback(self, index: int):
+        async def _callback(interaction: discord.Interaction) -> None:
+            if interaction.user.id != self.ctx.author.id:
+                await interaction.response.send_message(
+                    "Tu ne peux pas sélectionner un pet pour quelqu'un d'autre.",
+                    ephemeral=True,
+                )
+                return
+            self.selection = self.candidates[index]
+            self.disable_all()
+            if interaction.response.is_done():
+                await interaction.followup.edit_message(interaction.message.id, view=self)
+            else:
+                await interaction.response.edit_message(view=self)
+            self.stop()
+
+        return _callback
+
+    async def _cancel(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Tu ne peux pas annuler cette sélection.", ephemeral=True
+            )
+            return
+        self.cancelled = True
+        self.selection = None
+        self.disable_all()
+        if interaction.response.is_done():
+            await interaction.followup.edit_message(interaction.message.id, view=self)
+        else:
+            await interaction.response.edit_message(view=self)
+        self.stop()
+
+    def disable_all(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Tu ne peux pas interagir avec ce menu.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        self.disable_all()
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=self)
+
 class Pets(commands.Cog):
     """Commande de collection de pets inspirée de Brawl Stars."""
 
@@ -129,9 +228,15 @@ class Pets(commands.Cog):
         self.database = bot.database
         self._definitions: List[PetDefinition] = list(PET_DEFINITIONS)
         self._definition_by_name: Dict[str, PetDefinition] = {pet.name: pet for pet in self._definitions}
-        self._definition_by_slug: Dict[str, PetDefinition] = {
-            pet.name.lower(): pet for pet in self._definitions
-        }
+        self._definition_by_slug: Dict[str, PetDefinition] = {}
+        for pet in self._definitions:
+            keys = {
+                pet.name.lower(),
+                self._normalize_pet_key(pet.name),
+            }
+            for key in keys:
+                if key:
+                    self._definition_by_slug[key] = pet
         self._definition_by_id: Dict[int, PetDefinition] = {}
         self._pet_ids: Dict[str, int] = {}
         self._eggs: Dict[str, PetEggDefinition] = {
@@ -152,6 +257,12 @@ class Pets(commands.Cog):
                     self._egg_lookup[key] = egg.slug
         if self._default_egg_slug:
             self._egg_lookup.setdefault(self._default_egg_slug, self._default_egg_slug)
+
+    @staticmethod
+    def _normalize_pet_key(value: str) -> str:
+        normalized = unicodedata.normalize("NFKD", value)
+        normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        return "".join(ch for ch in normalized.lower() if ch.isalnum())
 
     async def cog_load(self) -> None:
         self._pet_ids = await self.database.sync_pets(self._definitions)
@@ -184,8 +295,10 @@ class Pets(commands.Cog):
         pet_identifier = int(record.get("pet_id", 0))
         definition = self._definition_by_id.get(pet_identifier)
         is_gold = bool(record.get("is_gold"))
+        is_rainbow = bool(record.get("is_rainbow"))
         is_huge = bool(record.get("is_huge"))
         data["is_gold"] = is_gold
+        data["is_rainbow"] = is_rainbow
         base_income = int(record.get("base_income_per_hour", data.get("base_income_per_hour", 0)))
         pet_name = str(data.get("name", ""))
         if definition is not None:
@@ -204,8 +317,12 @@ class Pets(commands.Cog):
                 best_non_huge_income, pet_name=pet_name
             )
         else:
-            multiplier = GOLD_PET_MULTIPLIER if is_gold else 1
-            effective_income = base_income * multiplier
+            if is_rainbow:
+                effective_income = base_income * RAINBOW_PET_MULTIPLIER
+            elif is_gold:
+                effective_income = base_income * GOLD_PET_MULTIPLIER
+            else:
+                effective_income = base_income
 
         data["base_income_per_hour"] = int(effective_income)
         return data
@@ -256,6 +373,192 @@ class Pets(commands.Cog):
         if member is None:
             return
         self.bot.dispatch("grade_quest_progress", member, quest_type, amount, ctx.channel)
+
+    def _parse_pet_query(self, raw: str) -> tuple[str, Optional[int], Optional[str]]:
+        tokens = [token for token in raw.split() if token]
+        if not tokens:
+            return "", None, None
+
+        variant: Optional[str] = None
+        ordinal: Optional[int] = None
+        name_parts: List[str] = []
+
+        gold_aliases = {"gold", "doré", "doree", "or"}
+        rainbow_aliases = {"rainbow", "rb", "arcenciel", "arc-en-ciel"}
+        normal_aliases = {"normal", "base", "standard"}
+
+        for token in tokens:
+            lowered = token.lower()
+            if lowered.isdigit():
+                ordinal = int(lowered)
+                continue
+            if lowered in gold_aliases:
+                variant = "gold"
+                continue
+            if lowered in rainbow_aliases:
+                variant = "rainbow"
+                continue
+            if lowered in normal_aliases:
+                variant = "normal"
+                continue
+            name_parts.append(token)
+
+        if not name_parts:
+            name_parts = tokens
+
+        normalized = self._normalize_pet_key(" ".join(name_parts))
+        return normalized, ordinal, variant
+
+    async def _resolve_user_pet_candidates(
+        self,
+        ctx: commands.Context,
+        raw_name: str,
+        *,
+        include_active: bool = True,
+        include_inactive: bool = True,
+    ) -> tuple[Optional[PetDefinition], List[Mapping[str, Any]], Optional[int], Optional[str]]:
+        slug, ordinal, variant = self._parse_pet_query(raw_name)
+        if not slug:
+            return None, [], None, None
+
+        definition = self._definition_by_slug.get(slug)
+        if definition is None:
+            return None, [], ordinal, variant
+
+        is_gold: Optional[bool]
+        is_rainbow: Optional[bool]
+        if variant == "gold":
+            is_gold = True
+            is_rainbow = False
+        elif variant == "rainbow":
+            is_gold = False
+            is_rainbow = True
+        elif variant == "normal":
+            is_gold = False
+            is_rainbow = False
+        else:
+            is_gold = None
+            is_rainbow = None
+
+        rows = await self.database.get_user_pet_by_name(
+            ctx.author.id,
+            definition.name,
+            is_gold=is_gold,
+            is_rainbow=is_rainbow,
+            include_active=include_active,
+            include_inactive=include_inactive,
+        )
+        return definition, list(rows), ordinal, variant
+
+    def _build_pet_choice_embed(
+        self,
+        ctx: commands.Context,
+        *,
+        title: str,
+        description: str,
+        candidates: Sequence[Mapping[str, Any]],
+    ) -> discord.Embed:
+        lines: List[str] = []
+        for index, candidate in enumerate(candidates, start=1):
+            data = candidate.get("data", {})
+            record = candidate.get("record", {})
+            name = str(data.get("name", "Pet"))
+            rarity = str(data.get("rarity", ""))
+            emoji = embeds._pet_emoji(name) if hasattr(embeds, "_pet_emoji") else ""
+            emoji_prefix = f"{emoji} " if emoji else ""
+            is_active = bool(data.get("is_active"))
+            is_gold = bool(data.get("is_gold"))
+            is_rainbow = bool(data.get("is_rainbow"))
+            income = int(data.get("base_income_per_hour", 0))
+            acquired_at = record.get("acquired_at")
+            acquired_text = ""
+            if isinstance(acquired_at, datetime):
+                acquired_text = acquired_at.strftime("%d/%m/%Y")
+            markers = ""
+            if is_rainbow:
+                markers += " 🌈"
+            elif is_gold:
+                markers += " 🥇"
+            status = "⭐ Actif" if is_active else "Disponible"
+            line = (
+                f"**{index}. {emoji_prefix}{name}{markers}** — {income:,} PB/h"
+            ).replace(",", " ")
+            if rarity:
+                line += f" ({rarity})"
+            line += f"\n{status}"
+            if acquired_text:
+                line += f" • Obtenu le {acquired_text}"
+            lines.append(line)
+
+        body = description
+        if lines:
+            body = f"{description}\n\n" + "\n\n".join(lines)
+        embed = embeds.info_embed(body, title=title)
+        embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+        return embed
+
+    async def _prompt_pet_selection(
+        self,
+        ctx: commands.Context,
+        *,
+        title: str,
+        description: str,
+        candidates: Sequence[Mapping[str, Any]],
+    ) -> Optional[Mapping[str, Any]]:
+        if not candidates:
+            return None
+
+        view = PetSelectionView(ctx=ctx, candidates=candidates)
+        embed = self._build_pet_choice_embed(
+            ctx,
+            title=title,
+            description=description,
+            candidates=candidates,
+        )
+        message = await ctx.send(embed=embed, view=view)
+        view.message = message
+        timed_out = await view.wait()
+
+        if view.selection is not None:
+            return view.selection
+
+        if view.cancelled:
+            await ctx.send(embed=embeds.warning_embed("Sélection annulée."))
+        elif timed_out:
+            await ctx.send(embed=embeds.warning_embed("Temps écoulé pour la sélection."))
+        return None
+
+    async def _make_candidates(
+        self, ctx: commands.Context, rows: Sequence[Mapping[str, Any]]
+    ) -> List[Mapping[str, Any]]:
+        pet_data = await self._prepare_pet_data(ctx.author.id, rows)
+        return [
+            {"record": row, "data": data}
+            for row, data in zip(rows, pet_data)
+        ]
+
+    async def _build_pet_equip_embed(
+        self,
+        ctx: commands.Context,
+        record: Mapping[str, Any],
+        *,
+        activated: bool,
+        active_count: int,
+        slot_limit: int,
+    ) -> discord.Embed:
+        best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
+        pet_data = self._convert_record(record, best_non_huge_income=best_non_huge_income)
+        market_values = await self.database.get_pet_market_values()
+        pet_identifier = int(pet_data.get("pet_id", 0))
+        pet_data["market_value"] = int(market_values.get(pet_identifier, 0))
+        embed = embeds.pet_equip_embed(
+            member=ctx.author,
+            pet=pet_data,
+            activated=activated,
+            active_count=active_count,
+            slot_limit=slot_limit,
+        )
+        return embed
 
     def _resolve_egg(self, raw: str | None) -> PetEggDefinition | None:
         if not self._eggs:
@@ -410,13 +713,20 @@ class Pets(commands.Cog):
         )
         pet_definition, pet_id = self._choose_pet(egg)
         is_gold = False
-        if not pet_definition.is_huge and GOLD_PET_CHANCE > 0:
-            is_gold = random.random() < GOLD_PET_CHANCE
-        user_pet = await self.database.add_user_pet(
+        is_rainbow = False
+        if not pet_definition.is_huge:
+            if GOLD_PET_CHANCE > 0:
+                is_gold = random.random() < GOLD_PET_CHANCE
+            if RAINBOW_PET_CHANCE > 0:
+                is_rainbow = random.random() < RAINBOW_PET_CHANCE
+                if is_rainbow:
+                    is_gold = False
+        _user_pet = await self.database.add_user_pet(
             ctx.author.id,
             pet_id,
             is_huge=pet_definition.is_huge,
             is_gold=is_gold,
+            is_rainbow=is_rainbow,
         )
         await self.database.record_pet_opening(ctx.author.id, pet_id)
 
@@ -439,10 +749,12 @@ class Pets(commands.Cog):
                 best_non_huge_income, pet_name=pet_definition.name
             )
         else:
-            income_per_hour = int(
-                pet_definition.base_income_per_hour
-                * (GOLD_PET_MULTIPLIER if is_gold else 1)
-            )
+            multiplier = 1
+            if is_rainbow:
+                multiplier = RAINBOW_PET_MULTIPLIER
+            elif is_gold:
+                multiplier = GOLD_PET_MULTIPLIER
+            income_per_hour = int(pet_definition.base_income_per_hour * multiplier)
         reveal_embed = embeds.pet_reveal_embed(
             name=pet_definition.name,
             rarity=pet_definition.rarity,
@@ -450,13 +762,10 @@ class Pets(commands.Cog):
             income_per_hour=income_per_hour,
             is_huge=pet_definition.is_huge,
             is_gold=is_gold,
+            is_rainbow=is_rainbow,
             market_value=market_value,
         )
-        reveal_embed.set_footer(
-            text=(
-                f"ID du pet : #{user_pet['id']} • Utilise e!equip {user_pet['id']} pour l'équiper !"
-            )
-        )
+        reveal_embed.set_footer(text=f"Utilise e!equip {pet_definition.name} pour l'équiper !")
         await message.edit(embed=reveal_embed)
 
         if pet_definition.name == HUGE_PET_NAME:
@@ -474,7 +783,9 @@ class Pets(commands.Cog):
         for record in record_list:
             if not bool(record.get("is_huge")):
                 base_income = int(record.get("base_income_per_hour", 0))
-                if bool(record.get("is_gold")):
+                if bool(record.get("is_rainbow")):
+                    base_income *= RAINBOW_PET_MULTIPLIER
+                elif bool(record.get("is_gold")):
                     base_income *= GOLD_PET_MULTIPLIER
                 if base_income > best_non_huge_income:
                     best_non_huge_income = base_income
@@ -596,23 +907,322 @@ class Pets(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name="equip")
-    async def equip(self, ctx: commands.Context, pet_id: int) -> None:
+    async def equip(self, ctx: commands.Context, *, pet_name: str) -> None:
+        definition, rows, ordinal, variant = await self._resolve_user_pet_candidates(
+            ctx,
+            pet_name,
+            include_active=True,
+            include_inactive=True,
+        )
+        if definition is None:
+            await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
+            return
+
+        if not rows:
+            variant_text = ""
+            if variant == "gold":
+                variant_text = " doré"
+            elif variant == "rainbow":
+                variant_text = " rainbow"
+            elif variant == "normal":
+                variant_text = " classique"
+            await ctx.send(
+                embed=embeds.error_embed(
+                    f"Tu ne possèdes aucun {definition.name}{variant_text} correspondant."
+                )
+            )
+            return
+
+        candidates = await self._make_candidates(ctx, rows)
+
+        async def activate_candidate(candidate: Mapping[str, Any]) -> None:
+            record = candidate.get("record", {})
+            if bool(record.get("is_active")):
+                await ctx.send(
+                    embed=embeds.warning_embed(
+                        f"⚠️ {definition.name} est déjà équipé ! Utilise `e!unequip {definition.name}` pour le retirer."
+                    )
+                )
+                return
+
+            user_pet_id = int(record.get("id") or 0)
+            if user_pet_id <= 0:
+                await ctx.send(embed=embeds.error_embed("Pet introuvable."))
+                return
+
+            try:
+                db_record, active_count, max_slots = await self.database.activate_user_pet(
+                    ctx.author.id,
+                    user_pet_id,
+                )
+            except ActivePetLimitError as exc:
+                message = (
+                    "❌ Tous tes slots sont pleins "
+                    f"({exc.active}/{exc.limit}) ! Options :\n"
+                    "• Utilise `e!unequip <nom>` pour libérer un slot\n"
+                    "• Ou utilise `e!swap <ancien> <nouveau>` pour remplacer directement"
+                )
+                await ctx.send(embed=embeds.error_embed(message))
+                return
+            except DatabaseError as exc:
+                await ctx.send(embed=embeds.error_embed(str(exc)))
+                return
+
+            if db_record is None:
+                await ctx.send(embed=embeds.error_embed("Pet introuvable."))
+                return
+
+            embed = await self._build_pet_equip_embed(
+                ctx,
+                db_record,
+                activated=True,
+                active_count=active_count,
+                slot_limit=max_slots,
+            )
+            await ctx.send(embed=embed)
+
+        if ordinal is not None:
+            index = ordinal - 1
+            if index < 0 or index >= len(candidates):
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        f"Tu as seulement {len(candidates)} exemplaires de {definition.name}."
+                    )
+                )
+                return
+            await activate_candidate(candidates[index])
+            return
+
+        if len(candidates) == 1:
+            await activate_candidate(candidates[0])
+            return
+
+        selection = await self._prompt_pet_selection(
+            ctx,
+            title=f"Quel {definition.name} veux-tu équiper ?",
+            description=f"Tu as {len(candidates)} exemplaires disponibles.",
+            candidates=candidates,
+        )
+        if selection is None:
+            return
+        await activate_candidate(selection)
+
+    @commands.command(name="unequip", aliases=("desequip", "remove"))
+    async def unequip(self, ctx: commands.Context, *, pet_name: str) -> None:
+        definition, rows, ordinal, variant = await self._resolve_user_pet_candidates(
+            ctx,
+            pet_name,
+            include_active=True,
+            include_inactive=False,
+        )
+        if definition is None:
+            await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
+            return
+
+        if not rows:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    f"⚠️ {definition.name} n'est pas équipé actuellement. Utilise `e!pets` pour voir tes pets actifs."
+                )
+            )
+            return
+
+        candidates = await self._make_candidates(ctx, rows)
+
+        async def deactivate_candidate(candidate: Mapping[str, Any]) -> None:
+            record = candidate.get("record", {})
+            if not bool(record.get("is_active")):
+                await ctx.send(
+                    embed=embeds.warning_embed(
+                        f"⚠️ {definition.name} n'est pas équipé actuellement. Utilise `e!pets` pour voir tes pets actifs."
+                    )
+                )
+                return
+
+            user_pet_id = int(record.get("id") or 0)
+            if user_pet_id <= 0:
+                await ctx.send(embed=embeds.error_embed("Pet introuvable."))
+                return
+
+            try:
+                db_record, active_count, max_slots = await self.database.deactivate_user_pet(
+                    ctx.author.id,
+                    user_pet_id,
+                )
+            except DatabaseError as exc:
+                await ctx.send(embed=embeds.error_embed(str(exc)))
+                return
+
+            if db_record is None:
+                await ctx.send(embed=embeds.error_embed("Pet introuvable."))
+                return
+
+            embed = await self._build_pet_equip_embed(
+                ctx,
+                db_record,
+                activated=False,
+                active_count=active_count,
+                slot_limit=max_slots,
+            )
+            await ctx.send(embed=embed)
+
+        if ordinal is not None:
+            index = ordinal - 1
+            if index < 0 or index >= len(candidates):
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        f"Tu as seulement {len(candidates)} exemplaires actifs de {definition.name}."
+                    )
+                )
+                return
+            await deactivate_candidate(candidates[index])
+            return
+
+        if len(candidates) == 1:
+            await deactivate_candidate(candidates[0])
+            return
+
+        selection = await self._prompt_pet_selection(
+            ctx,
+            title=f"Quel {definition.name} veux-tu retirer ?",
+            description=f"Tu as {len(candidates)} exemplaires équipés.",
+            candidates=candidates,
+        )
+        if selection is None:
+            return
+        await deactivate_candidate(selection)
+
+    @commands.command(name="swap")
+    async def swap(self, ctx: commands.Context, pet_out: str, *, pet_in: str) -> None:
+        out_definition, out_rows, out_ordinal, _ = await self._resolve_user_pet_candidates(
+            ctx,
+            pet_out,
+            include_active=True,
+            include_inactive=False,
+        )
+        if out_definition is None:
+            await ctx.send(embed=embeds.error_embed("Le pet à retirer est introuvable."))
+            return
+        if not out_rows:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    f"⚠️ {out_definition.name} n'est pas équipé actuellement. Utilise `e!pets` pour voir tes pets actifs."
+                )
+            )
+            return
+
+        in_definition, in_rows, in_ordinal, in_variant = await self._resolve_user_pet_candidates(
+            ctx,
+            pet_in,
+            include_active=True,
+            include_inactive=True,
+        )
+        if in_definition is None:
+            await ctx.send(embed=embeds.error_embed("Le pet à équiper est introuvable."))
+            return
+        if not in_rows:
+            variant_text = ""
+            if in_variant == "gold":
+                variant_text = " doré"
+            elif in_variant == "rainbow":
+                variant_text = " rainbow"
+            elif in_variant == "normal":
+                variant_text = " classique"
+            await ctx.send(
+                embed=embeds.error_embed(
+                    f"Tu ne possèdes aucun {in_definition.name}{variant_text} correspondant."
+                )
+            )
+            return
+
+        out_candidates = await self._make_candidates(ctx, out_rows)
+        in_candidates = await self._make_candidates(ctx, in_rows)
+
+        async def resolve_candidate(
+            definition: PetDefinition,
+            candidates: List[Mapping[str, Any]],
+            ordinal: Optional[int],
+            *,
+            prompt: str,
+        ) -> Optional[Mapping[str, Any]]:
+            if ordinal is not None:
+                index = ordinal - 1
+                if index < 0 or index >= len(candidates):
+                    await ctx.send(
+                        embed=embeds.error_embed(
+                            f"Tu as seulement {len(candidates)} exemplaires de {definition.name}."
+                        )
+                    )
+                    return None
+                return candidates[index]
+
+            if len(candidates) == 1:
+                return candidates[0]
+
+            return await self._prompt_pet_selection(
+                ctx,
+                title=prompt,
+                description=f"Tu as {len(candidates)} exemplaires disponibles.",
+                candidates=candidates,
+            )
+
+        selected_out = await resolve_candidate(
+            out_definition,
+            out_candidates,
+            out_ordinal,
+            prompt=f"Quel {out_definition.name} veux-tu retirer ?",
+        )
+        if selected_out is None:
+            return
+
+        selected_in = await resolve_candidate(
+            in_definition,
+            in_candidates,
+            in_ordinal,
+            prompt=f"Quel {in_definition.name} veux-tu équiper ?",
+        )
+        if selected_in is None:
+            return
+
+        out_id = int(selected_out["record"].get("id") or 0)
+        in_id = int(selected_in["record"].get("id") or 0)
+        if out_id <= 0 or in_id <= 0:
+            await ctx.send(embed=embeds.error_embed("Impossible de déterminer les pets sélectionnés."))
+            return
+
+        if out_id == in_id:
+            await ctx.send(embed=embeds.error_embed("Tu dois sélectionner deux pets différents pour le swap."))
+            return
+
         try:
-            row, activated, active_count = await self.database.set_active_pet(ctx.author.id, pet_id)
+            removed, added, active_count, max_slots = await self.database.swap_active_pets(
+                ctx.author.id,
+                out_id,
+                in_id,
+            )
         except DatabaseError as exc:
             await ctx.send(embed=embeds.error_embed(str(exc)))
             return
 
-        if row is None:
-            await ctx.send(embed=embeds.error_embed("Pet introuvable. Vérifie l'identifiant avec `e!pets`."))
-            return
+        out_data = selected_out.get("data", {})
+        out_label = str(out_data.get("name", out_definition.name))
+        if out_data.get("is_rainbow"):
+            out_label += " 🌈"
+        elif out_data.get("is_gold"):
+            out_label += " 🥇"
 
-        best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
-        pet_data = self._convert_record(row, best_non_huge_income=best_non_huge_income)
-        market_values = await self.database.get_pet_market_values()
-        pet_identifier = int(pet_data.get("pet_id", 0))
-        pet_data["market_value"] = int(market_values.get(pet_identifier, 0))
-        embed = embeds.pet_equip_embed(member=ctx.author, pet=pet_data, activated=activated, active_count=active_count)
+        embed = await self._build_pet_equip_embed(
+            ctx,
+            added,
+            activated=True,
+            active_count=active_count,
+            slot_limit=max_slots,
+        )
+        embed.add_field(
+            name="Swap effectué",
+            value=f"{out_label} se repose désormais.",
+            inline=False,
+        )
         await ctx.send(embed=embed)
 
     @commands.command(name="goldify", aliases=("gold", "fusion"))
@@ -671,11 +1281,62 @@ class Pets(commands.Cog):
         user_pet_id = int(pet_data.get("id", 0))
         if user_pet_id:
             reveal_embed.set_footer(
-                text=(
-                    f"ID du pet : #{user_pet_id} • Utilise e!equip {user_pet_id} pour l'équiper !"
-                )
+                text=f"Utilise e!equip {definition.name} pour l'équiper !"
             )
         await ctx.send(embed=reveal_embed)
+
+        self._dispatch_grade_progress(ctx, "gold", 1)
+
+    @commands.command(name="rainbow", aliases=("rainbowify", "rb"))
+    async def rainbow(self, ctx: commands.Context, *, pet_name: str) -> None:
+        slug, _, _ = self._parse_pet_query(pet_name)
+        if not slug:
+            await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
+            return
+
+        definition = self._definition_by_slug.get(slug)
+        if definition is None:
+            await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
+            return
+        if definition.is_huge:
+            await ctx.send(embed=embeds.error_embed("Les Huge pets ne peuvent pas être rainbow."))
+            return
+
+        pet_id = self._pet_ids.get(definition.name)
+        if pet_id is None:
+            await ctx.send(embed=embeds.error_embed("Pet non synchronisé."))
+            return
+
+        try:
+            _record, consumed = await self.database.upgrade_pet_to_rainbow(ctx.author.id, pet_id)
+        except DatabaseError as exc:
+            await ctx.send(embed=embeds.error_embed(str(exc)))
+            return
+
+        base_income = definition.base_income_per_hour
+        rainbow_income = base_income * RAINBOW_PET_MULTIPLIER
+
+        embed = embeds.pet_reveal_embed(
+            name=definition.name,
+            rarity=definition.rarity,
+            image_url=definition.image_url,
+            income_per_hour=rainbow_income,
+            is_huge=False,
+            is_gold=False,
+            is_rainbow=True,
+            market_value=0,
+        )
+        embed.add_field(
+            name="🌈 Fusion Rainbow",
+            value=(
+                f"🎉 {consumed} pets GOLD fusionnés en 1 RAINBOW !\n"
+                f"Puissance : **{rainbow_income:,} PB/h** ({RAINBOW_PET_MULTIPLIER}x le pet de base)\n"
+                "Les pets utilisés ont été retirés de ton inventaire."
+            ).replace(",", " "),
+            inline=False,
+        )
+
+        await ctx.send(embed=embed)
 
         self._dispatch_grade_progress(ctx, "gold", 1)
 
