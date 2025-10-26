@@ -13,7 +13,7 @@ import discord
 from aiohttp import web
 from discord.ext import commands
 
-from config import DATABASE_URL, LOG_LEVEL, OWNER_ID, PREFIX, TOKEN
+from config import DATABASE_URL, LOG_LEVEL, OWNER_ID, PREFIX, TOKEN, PET_DEFINITIONS
 from database.db import Database, DatabaseError
 
 logger = logging.getLogger(__name__)
@@ -178,6 +178,14 @@ async def start_bot() -> None:
     configure_logging()
     database = Database(DATABASE_URL)
     await database.connect()
+
+    try:
+        synced = await database.sync_pets(PET_DEFINITIONS)
+    except Exception:
+        logger.exception("Synchronisation des pets échouée lors du démarrage")
+        raise
+    else:
+        logger.info("Catalogue des pets synchronisé (%d entrées)", len(synced))
 
     intents = discord.Intents.default()
     intents.message_content = True
