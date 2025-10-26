@@ -2463,6 +2463,22 @@ class Database:
             if bool(pet_row["is_active"]):
                 raise DatabaseError("Le pet doit être déséquipé avant d'être échangé")
 
+            conflict = await connection.fetchval(
+                """
+                SELECT 1
+                FROM trade_pets AS tp
+                JOIN trades AS t ON t.id = tp.trade_id
+                WHERE tp.user_pet_id = $1
+                  AND tp.trade_id != $2
+                  AND t.status = 'pending'
+                LIMIT 1
+                """,
+                user_pet_id,
+                trade_id,
+            )
+            if conflict:
+                raise DatabaseError("Ce pet est déjà proposé dans un autre échange en cours")
+
             exists = await connection.fetchval(
                 "SELECT 1 FROM trade_pets WHERE trade_id = $1 AND user_pet_id = $2",
                 trade_id,
