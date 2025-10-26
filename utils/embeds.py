@@ -19,6 +19,52 @@ from config import (
     RAINBOW_PET_MULTIPLIER,
 )
 
+_BRANDING_REPLACEMENTS: dict[str, str] = {
+    "Freescape": "PrissCup",
+    "freescape": "prisscup",
+    "FREESCAPE": "PRISSCUP",
+}
+
+
+def _apply_branding(text: str | None) -> str | None:
+    """Remplace les anciennes références de marque par les nouvelles."""
+
+    if text is None:
+        return None
+    replaced = text
+    for old, new in _BRANDING_REPLACEMENTS.items():
+        replaced = replaced.replace(old, new)
+    return replaced
+
+
+def _finalize_embed(embed: discord.Embed) -> discord.Embed:
+    """Applique les règles de branding à l'embed fourni."""
+
+    if embed.title:
+        embed.title = _apply_branding(embed.title) or embed.title
+    if embed.description:
+        embed.description = _apply_branding(embed.description) or embed.description
+
+    footer = embed.footer
+    if footer and footer.text:
+        embed.set_footer(text=_apply_branding(footer.text) or footer.text, icon_url=footer.icon_url)
+
+    author = embed.author
+    if author and author.name:
+        embed.set_author(
+            name=_apply_branding(author.name) or author.name,
+            url=author.url,
+            icon_url=author.icon_url,
+        )
+
+    for index, field in enumerate(embed.fields):
+        new_name = _apply_branding(field.name) or field.name
+        new_value = _apply_branding(field.value) or field.value
+        if new_name != field.name or new_value != field.value:
+            embed.set_field_at(index, name=new_name, value=new_value, inline=field.inline)
+
+    return embed
+
 __all__ = [
     "format_currency",
     "cooldown_embed",
@@ -59,7 +105,7 @@ def format_currency(amount: int) -> str:
 def _base_embed(title: str, description: str, *, color: int) -> discord.Embed:
     embed = discord.Embed(title=title, description=description, color=color)
     embed.timestamp = datetime.utcnow()
-    return embed
+    return _finalize_embed(embed)
 
 
 def cooldown_embed(command: str, remaining: float) -> discord.Embed:
@@ -100,7 +146,7 @@ def balance_embed(member: discord.Member, *, balance: int) -> discord.Embed:
     embed = _base_embed("Solde", description, color=Colors.SUCCESS if balance else Colors.NEUTRAL)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
     embed.set_footer(text=f"Utilise {PREFIX}daily pour collecter ta récompense")
-    return embed
+    return _finalize_embed(embed)
 
 
 def daily_embed(member: discord.Member, *, amount: int) -> discord.Embed:
@@ -108,7 +154,7 @@ def daily_embed(member: discord.Member, *, amount: int) -> discord.Embed:
     embed = _base_embed(f"{Emojis.DAILY} Récompense quotidienne", description, color=Colors.SUCCESS)
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.set_footer(text="Reviens demain pour récupérer ta prochaine récompense !")
-    return embed
+    return _finalize_embed(embed)
 
 
 def slot_machine_embed(
@@ -147,7 +193,7 @@ def slot_machine_embed(
 
     embed = _base_embed("🎰 Machine à sous", "\n".join(lines), color=color)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
-    return embed
+    return _finalize_embed(embed)
 
 
 def mastermind_board_embed(
@@ -196,7 +242,7 @@ def mastermind_board_embed(
     if status_lines:
         embed.add_field(name="Résultat", value="\n".join(status_lines), inline=False)
 
-    return embed
+    return _finalize_embed(embed)
 
 
 def leaderboard_embed(
@@ -219,7 +265,7 @@ def leaderboard_embed(
             value_display = f"{value:,} {symbol}".replace(",", " ")
         lines.append(f"**{rank}.** {name} — {value_display}")
     embed.description = "\n".join(lines) if lines else "Aucune donnée disponible."
-    return embed
+    return _finalize_embed(embed)
 
 
 def stats_overview_embed(
@@ -249,7 +295,7 @@ def stats_overview_embed(
     if guild.icon:
         embed.set_thumbnail(url=guild.icon.url)
     embed.set_footer(text=f"Fenêtre d'activité : {window_label}")
-    return embed
+    return _finalize_embed(embed)
 
 
 def user_activity_embed(
@@ -283,7 +329,7 @@ def user_activity_embed(
 
     embed = _base_embed("📊 Statistiques personnelles", "\n".join(lines), color=Colors.INFO)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
-    return embed
+    return _finalize_embed(embed)
 
 
 def _quest_progress_line(label: str, current: int, goal: int) -> str:
@@ -332,7 +378,7 @@ def grade_profile_embed(
     embed = _base_embed(f"{Emojis.XP} Profil de grade", description, color=Colors.INFO)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
     embed.add_field(name="Quêtes", value="\n".join(quest_lines), inline=False)
-    return embed
+    return _finalize_embed(embed)
 
 
 def grade_completed_embed(
@@ -353,7 +399,7 @@ def grade_completed_embed(
     ]
     embed = _base_embed("🎖️ Grade amélioré !", "\n".join(lines), color=Colors.SUCCESS)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
-    return embed
+    return _finalize_embed(embed)
 
 
 def pet_animation_embed(*, title: str, description: str) -> discord.Embed:
@@ -414,7 +460,7 @@ def pet_reveal_embed(
         color=base_color,
     )
     embed.set_image(url=image_url)
-    return embed
+    return _finalize_embed(embed)
 
 
 def pet_collection_embed(
@@ -493,7 +539,7 @@ def pet_collection_embed(
     footer += " • Consulte ta progression avec e!index"
     footer += f" • Page {current_page}/{total_pages}"
     embed.set_footer(text=footer)
-    return embed
+    return _finalize_embed(embed)
 
 
 def _chunk_field_values(lines: Iterable[str], *, limit: int = 1024) -> Iterable[str]:
@@ -569,7 +615,7 @@ def pet_index_embed(
             "Les pets dorés comptent également pour l'index. Ouvre un œuf avec e!openbox ou fusionne avec e!goldify !"
         )
     )
-    return embed
+    return _finalize_embed(embed)
 
 
 def pet_equip_embed(
@@ -609,7 +655,7 @@ def pet_equip_embed(
     if image_url:
         embed.set_thumbnail(url=image_url)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
-    return embed
+    return _finalize_embed(embed)
 
 
 def _format_duration(seconds: float) -> str:
@@ -743,7 +789,7 @@ def pet_claim_embed(
         if image:
             embed.set_thumbnail(url=image)
 
-    return embed
+    return _finalize_embed(embed)
 
 
 def clan_overview_embed(
@@ -804,7 +850,7 @@ def clan_overview_embed(
     embed.set_footer(
         text="Plus ton clan rugit, plus tes gains explosent. Active-toi et fais trembler le classement !"
     )
-    return embed
+    return _finalize_embed(embed)
 
 
 def pet_stats_embed(
@@ -823,7 +869,7 @@ def pet_stats_embed(
     description_lines.append(f"Énormes Shellys en circulation : **{huge_count}**")
     description_lines.append(f"Pets dorés en circulation : **{gold_count}**")
     embed = _base_embed("Statistiques des pets", "\n".join(description_lines), color=Colors.INFO)
-    return embed
+    return _finalize_embed(embed)
 
 
 def _trade_offer_lines(offer: Mapping[str, object]) -> str:
@@ -893,7 +939,7 @@ def trade_embed(
             " Lorsque tout le monde accepte, l'échange se finalise automatiquement."
         )
     )
-    return embed
+    return _finalize_embed(embed)
 
 
 def trade_completed_embed(
@@ -928,7 +974,7 @@ def trade_completed_embed(
         inline=False,
     )
     embed.set_footer(text="Merci d'avoir utilisé EcoBot pour vos échanges !")
-    return embed
+    return _finalize_embed(embed)
 
 
 def trade_cancelled_embed(*, trade_id: int, reason: str | None = None) -> discord.Embed:
@@ -946,7 +992,7 @@ def transaction_history_embed(
 
     if not entries:
         embed.description = "Aucun échange enregistré pour le moment."
-        return embed
+        return _finalize_embed(embed)
 
     lines: list[str] = []
     for entry in entries:
@@ -982,4 +1028,4 @@ def transaction_history_embed(
         )
 
     embed.description = "\n\n".join(lines)
-    return embed
+    return _finalize_embed(embed)
