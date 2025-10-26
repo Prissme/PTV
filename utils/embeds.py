@@ -16,6 +16,7 @@ from config import (
     PREFIX,
     GradeDefinition,
     PetDefinition,
+    RAINBOW_PET_MULTIPLIER,
 )
 
 __all__ = [
@@ -363,10 +364,23 @@ def _pet_emoji(name: str) -> str:
     return PET_EMOJIS.get(name, PET_EMOJIS.get("default", "🐾"))
 
 
-def _pet_title(name: str, rarity: str, is_huge: bool, is_gold: bool) -> str:
-    gold_marker = " 🥇" if is_gold else ""
-    display_name = f"{_pet_emoji(name)} {name}{gold_marker}".strip()
-    rarity_label = f"{rarity} Or" if is_gold else rarity
+def _pet_title(
+    name: str,
+    rarity: str,
+    is_huge: bool,
+    is_gold: bool,
+    *,
+    is_rainbow: bool = False,
+) -> str:
+    rainbow_marker = " 🌈" if is_rainbow else ""
+    gold_marker = " 🥇" if is_gold and not is_rainbow else ""
+    display_name = f"{_pet_emoji(name)} {name}{rainbow_marker}{gold_marker}".strip()
+    if is_rainbow:
+        rarity_label = f"{rarity} Rainbow"
+    elif is_gold:
+        rarity_label = f"{rarity} Or"
+    else:
+        rarity_label = rarity
     title = f"{display_name} ({rarity_label})"
     if is_huge:
         return f"✨ {title} ✨"
@@ -381,17 +395,24 @@ def pet_reveal_embed(
     income_per_hour: int,
     is_huge: bool,
     is_gold: bool,
+    is_rainbow: bool = False,
     market_value: int = 0,
 ) -> discord.Embed:
-    color = Colors.GOLD if is_gold else PET_RARITY_COLORS.get(rarity, Colors.INFO)
+    base_color = Colors.GOLD if is_gold or is_rainbow else PET_RARITY_COLORS.get(rarity, Colors.INFO)
     description = f"Revenus passifs : **{income_per_hour:,} PB/h**".replace(",", " ")
     if is_huge:
         description += f"\n🎉 Incroyable ! Tu as obtenu **{name}** ! 🎉"
-    if is_gold:
+    if is_rainbow:
+        description += f"\n🌈 Variante rainbow ! Puissance x{RAINBOW_PET_MULTIPLIER}."
+    elif is_gold:
         description += f"\n🥇 Variante or ! Puissance x{GOLD_PET_MULTIPLIER}."
     if market_value > 0 and not is_huge:
         description += f"\nValeur marché : **{format_currency(market_value)}**"
-    embed = _base_embed(_pet_title(name, rarity, is_huge, is_gold), description, color=color)
+    embed = _base_embed(
+        _pet_title(name, rarity, is_huge, is_gold, is_rainbow=is_rainbow),
+        description,
+        color=base_color,
+    )
     embed.set_image(url=image_url)
     return embed
 
@@ -420,8 +441,8 @@ def pet_collection_embed(
             is_active = bool(pet["is_active"])
             is_huge = bool(pet["is_huge"])
             is_gold = bool(pet.get("is_gold", False))
+            is_rainbow = bool(pet.get("is_rainbow", False))
             income = int(pet["income"])
-            user_pet_id = int(pet["id"])
             market_value = int(pet.get("market_value", 0))
             acquired_at = pet.get("acquired_at")
             acquired_text = ""
@@ -429,13 +450,16 @@ def pet_collection_embed(
                 acquired_text = acquired_at.strftime("%d/%m/%Y")
             star = "⭐" if is_active else ""
             huge = " ✨" if is_huge else ""
-            gold = " 🥇" if is_gold else ""
+            rainbow = " 🌈" if is_rainbow else ""
+            gold = " 🥇" if is_gold and not is_rainbow else ""
             header_parts = [
-                part for part in (star, _pet_emoji(name), f"**#{user_pet_id} {name}**{huge}{gold}") if part
+                part for part in (star, _pet_emoji(name), f"**{name}**{huge}{rainbow}{gold}") if part
             ]
             header = " ".join(header_parts)
             stats_line = f"Rareté : {rarity} — {income:,} PB/h".replace(",", " ")
-            if is_gold:
+            if is_rainbow:
+                stats_line += f" — Variante rainbow x{RAINBOW_PET_MULTIPLIER}"
+            elif is_gold:
                 stats_line += f" — Variante or x{GOLD_PET_MULTIPLIER}"
             if market_value > 0 and not is_huge:
                 stats_line += f" — Valeur : {format_currency(market_value)}"
@@ -454,7 +478,7 @@ def pet_collection_embed(
     footer = (
         f"Total de pets : {total_count} • Revenus par heure (actif) : {total_income_per_hour:,} PB/h"
     ).replace(",", " ")
-    footer += " • Utilise e!equip [id] pour gérer tes pets (max 4 actifs)"
+    footer += " • Utilise e!equip <nom> pour gérer tes pets"
     footer += " • Consulte ta progression avec e!index"
     footer += f" • Page {current_page}/{total_pages}"
     embed.set_footer(text=footer)
@@ -543,6 +567,7 @@ def pet_equip_embed(
     pet: Mapping[str, object],
     activated: bool,
     active_count: int,
+    slot_limit: int,
 ) -> discord.Embed:
     name = str(pet["name"])
     rarity = str(pet["rarity"])
@@ -550,21 +575,24 @@ def pet_equip_embed(
     income = int(pet["base_income_per_hour"])
     is_huge = bool(pet.get("is_huge", False))
     is_gold = bool(pet.get("is_gold", False))
+    is_rainbow = bool(pet.get("is_rainbow", False))
     market_value = int(pet.get("market_value", 0))
 
     status_symbol = "✅" if activated else "🛌"
-    title = f"{status_symbol} {_pet_title(name, rarity, is_huge, is_gold)}"
+    title = f"{status_symbol} {_pet_title(name, rarity, is_huge, is_gold, is_rainbow=is_rainbow)}"
     color = Colors.SUCCESS if activated else Colors.INFO
     lines = [
         "Ce pet génère désormais des revenus passifs !" if activated else "Ce pet se repose pour le moment.",
         f"Rareté : {rarity}",
         f"Revenus : {income:,} PB/h".replace(",", " "),
     ]
-    if is_gold:
+    if is_rainbow:
+        lines.append(f"Variante rainbow : puissance x{RAINBOW_PET_MULTIPLIER}")
+    elif is_gold:
         lines.append(f"Variante or : puissance x{GOLD_PET_MULTIPLIER}")
     if market_value > 0 and not is_huge:
         lines.append(f"Valeur marché : {format_currency(market_value)}")
-    lines.append(f"Pets actifs : **{active_count}/4**")
+    lines.append(f"Pets actifs : **{active_count}/{slot_limit}**")
 
     embed = _base_embed(title, "\n".join(lines), color=color)
     if image_url:
@@ -635,12 +663,15 @@ def pet_claim_embed(
         income = int(pet.get("base_income_per_hour", 0))
         is_huge = bool(pet.get("is_huge", False))
         is_gold = bool(pet.get("is_gold", False))
+        is_rainbow = bool(pet.get("is_rainbow", False))
         market_value = int(pet.get("market_value", 0))
         line_parts = [
-            f"{_pet_emoji(name)} **{name}** ({rarity}{' ✨' if is_huge else ''}{' 🥇' if is_gold else ''})",
+            f"{_pet_emoji(name)} **{name}** ({rarity}{' ✨' if is_huge else ''}{' 🌈' if is_rainbow else ''}{' 🥇' if is_gold and not is_rainbow else ''})",
             f"{income:,} PB/h".replace(",", " "),
         ]
-        if is_gold:
+        if is_rainbow:
+            line_parts.append(f"x{RAINBOW_PET_MULTIPLIER}")
+        elif is_gold:
             line_parts.append(f"x{GOLD_PET_MULTIPLIER}")
         if share > 0:
             line_parts.append(f"+{format_currency(share)}")
@@ -781,17 +812,20 @@ def _trade_offer_lines(offer: Mapping[str, object]) -> str:
 
     pets: Iterable[Mapping[str, object]] = offer.get("pets", [])  # type: ignore[assignment]
     for pet in pets:
-        user_pet_id = int(pet.get("user_pet_id", 0))
         name = str(pet.get("name", "Pet"))
         rarity = str(pet.get("rarity", "?"))
         is_huge = bool(pet.get("is_huge", False))
         is_gold = bool(pet.get("is_gold", False))
+        is_rainbow = bool(pet.get("is_rainbow", False))
         huge = " ✨" if is_huge else ""
-        gold = " 🥇" if is_gold else ""
+        rainbow = " 🌈" if is_rainbow else ""
+        gold = " 🥇" if is_gold and not is_rainbow else ""
         emoji = _pet_emoji(name)
         emoji_prefix = f"{emoji} " if emoji else ""
-        rarity_label = f"{rarity} Or" if is_gold else rarity
-        lines.append(f"• {emoji_prefix}#{user_pet_id} {name}{huge}{gold} ({rarity_label})")
+        rarity_label = (
+            f"{rarity} Rainbow" if is_rainbow else f"{rarity} Or" if is_gold else rarity
+        )
+        lines.append(f"• {emoji_prefix}{name}{huge}{rainbow}{gold} ({rarity_label})")
 
     if not lines:
         lines.append("• Rien pour le moment")
@@ -799,10 +833,7 @@ def _trade_offer_lines(offer: Mapping[str, object]) -> str:
 
 
 def _trade_status_line(offer: Mapping[str, object]) -> str:
-    confirmed = bool(offer.get("confirmed", False))
     accepted = bool(offer.get("accepted", False))
-    if confirmed:
-        return "🔒 Confirmé"
     if accepted:
         return "✅ Accepté"
     return "⏳ En attente"
@@ -834,7 +865,12 @@ def trade_embed(
         inline=False,
     )
 
-    embed.set_footer(text="Utilise les boutons pour modifier ton offre. Les validations sont réinitialisées à chaque changement.")
+    embed.set_footer(
+        text=(
+            "Utilise les boutons pour modifier ton offre. Les validations sont réinitialisées à chaque changement."
+            " Lorsque tout le monde accepte, l'échange se finalise automatiquement."
+        )
+    )
     return embed
 
 

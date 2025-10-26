@@ -22,10 +22,17 @@ from config import (
     HUGE_GRIFF_NAME,
     HUGE_PET_MIN_INCOME,
     HUGE_PET_MULTIPLIER,
+    RAINBOW_PET_COMBINE_REQUIRED,
+    RAINBOW_PET_MULTIPLIER,
     get_huge_multiplier,
 )
 
-__all__ = ["Database", "DatabaseError", "InsufficientBalanceError"]
+__all__ = [
+    "Database",
+    "DatabaseError",
+    "InsufficientBalanceError",
+    "ActivePetLimitError",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +43,15 @@ class DatabaseError(RuntimeError):
 
 class InsufficientBalanceError(DatabaseError):
     """Erreur dédiée lorsqu'un solde utilisateur est insuffisant."""
+
+
+class ActivePetLimitError(DatabaseError):
+    """Erreur levée lorsque tous les emplacements de pets actifs sont pleins."""
+
+    def __init__(self, active: int, limit: int) -> None:
+        self.active = int(active)
+        self.limit = int(limit)
+        super().__init__(f"Active pet slots full ({self.active}/{self.limit})")
 
 
 class Database:
@@ -178,6 +194,12 @@ class Database:
             )
             await connection.execute(
                 "ALTER TABLE user_pets ADD COLUMN IF NOT EXISTS is_gold BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            await connection.execute(
+                "ALTER TABLE user_pets ADD COLUMN IF NOT EXISTS is_rainbow BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_pets_rainbow ON user_pets(user_id) WHERE is_rainbow"
             )
             await connection.execute(
                 """
@@ -1162,7 +1184,7 @@ class Database:
         market_values = await self.get_pet_market_values()
         rows = await self.pool.fetch(
             """
-            SELECT up.user_id, up.pet_id, up.is_gold, up.is_huge, p.base_income_per_hour, p.name
+            SELECT up.user_id, up.pet_id, up.is_gold, up.is_huge, up.is_rainbow, p.base_income_per_hour, p.name
             FROM user_pets AS up
             JOIN pets AS p ON p.pet_id = up.pet_id
             """
@@ -1177,7 +1199,9 @@ class Database:
             value = int(market_values.get(pet_id, 0))
             if value <= 0:
                 value = max(base_income * 120, 1_000)
-            if bool(row["is_gold"]):
+            if bool(row.get("is_rainbow")):
+                value = int(value * RAINBOW_PET_MULTIPLIER)
+            elif bool(row["is_gold"]):
                 value = int(value * GOLD_PET_MULTIPLIER)
             if bool(row["is_huge"]):
                 multiplier = max(1, get_huge_multiplier(name))
@@ -1199,7 +1223,14 @@ class Database:
                 SELECT
                     up.user_id,
                     COALESCE(
-                        MAX(p.base_income_per_hour * CASE WHEN up.is_gold THEN $2 ELSE 1 END),
+                        MAX(
+                            p.base_income_per_hour
+                            * CASE
+                                WHEN up.is_rainbow THEN $9
+                                WHEN up.is_gold THEN $2
+                                ELSE 1
+                            END
+                        ),
                         0
                     ) AS best_income
                 FROM user_pets AS up
@@ -1221,7 +1252,12 @@ class Database:
                                         ELSE $4
                                     END
                             )
-                            ELSE p.base_income_per_hour * CASE WHEN up.is_gold THEN $2 ELSE 1 END
+                            ELSE p.base_income_per_hour
+                                * CASE
+                                    WHEN up.is_rainbow THEN $9
+                                    WHEN up.is_gold THEN $2
+                                    ELSE 1
+                                END
                         END
                     ) AS hourly_income
                 FROM user_pets AS up
@@ -1244,6 +1280,7 @@ class Database:
             get_huge_multiplier(HUGE_GRIFF_NAME),
             HUGE_GALE_NAME,
             get_huge_multiplier(HUGE_GALE_NAME),
+            RAINBOW_PET_MULTIPLIER,
         )
 
         return [(int(row["user_id"]), int(row["hourly_income"])) for row in rows]
@@ -1371,19 +1408,28 @@ class Database:
         return int(row["pet_id"])
 
     async def add_user_pet(
-        self, user_id: int, pet_id: int, *, is_huge: bool = False, is_gold: bool = False
+        self,
+        user_id: int,
+        pet_id: int,
+        *,
+        is_huge: bool = False,
+        is_gold: bool = False,
+        is_rainbow: bool = False,
     ) -> asyncpg.Record:
         await self.ensure_user(user_id)
+        if is_rainbow:
+            is_gold = False
         row = await self.pool.fetchrow(
             """
-            INSERT INTO user_pets (user_id, pet_id, is_huge, is_gold)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id, user_id, pet_id, is_active, is_huge, is_gold, acquired_at
+            INSERT INTO user_pets (user_id, pet_id, is_huge, is_gold, is_rainbow)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id, user_id, pet_id, is_active, is_huge, is_gold, is_rainbow, acquired_at
             """,
             user_id,
             pet_id,
             is_huge,
             is_gold,
+            is_rainbow,
         )
         if row is None:
             raise DatabaseError("Impossible de créer l'entrée user_pet")
@@ -1448,6 +1494,7 @@ class Database:
                     up.is_active,
                     up.is_huge,
                     up.is_gold,
+                    up.is_rainbow,
                     up.acquired_at,
                     p.pet_id,
                     p.name,
@@ -1465,6 +1512,86 @@ class Database:
             raise DatabaseError("Impossible de récupérer le pet doré généré")
         return new_record, required
 
+    async def upgrade_pet_to_rainbow(
+        self, user_id: int, pet_id: int
+    ) -> tuple[asyncpg.Record, int]:
+        await self.ensure_user(user_id)
+        async with self.transaction() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT up.id
+                FROM user_pets AS up
+                WHERE up.user_id = $1
+                  AND up.pet_id = $2
+                  AND up.is_gold
+                  AND NOT up.is_rainbow
+                  AND NOT up.is_active
+                  AND NOT EXISTS (
+                    SELECT 1 FROM trade_pets AS tp
+                    JOIN trades AS t ON t.id = tp.trade_id
+                    WHERE tp.user_pet_id = up.id AND t.status = 'pending'
+                  )
+                ORDER BY up.acquired_at
+                FOR UPDATE
+                """,
+                user_id,
+                pet_id,
+            )
+
+            available_ids = [int(row["id"]) for row in rows]
+            required = RAINBOW_PET_COMBINE_REQUIRED
+
+            if len(available_ids) < required:
+                raise DatabaseError(
+                    f"Tu as besoin de {required} exemplaires GOLD pour créer un Rainbow. Tu en as seulement {len(available_ids)}."
+                )
+
+            consumed_ids = available_ids[:required]
+            await connection.execute(
+                "DELETE FROM user_pets WHERE id = ANY($1::INT[])",
+                consumed_ids,
+            )
+
+            inserted = await connection.fetchrow(
+                """
+                INSERT INTO user_pets (user_id, pet_id, is_rainbow)
+                VALUES ($1, $2, TRUE)
+                RETURNING id
+                """,
+                user_id,
+                pet_id,
+            )
+
+            if inserted is None:
+                raise DatabaseError("Impossible de créer le pet rainbow")
+
+            new_record = await connection.fetchrow(
+                """
+                SELECT
+                    up.id,
+                    up.nickname,
+                    up.is_active,
+                    up.is_huge,
+                    up.is_gold,
+                    up.is_rainbow,
+                    up.acquired_at,
+                    p.pet_id,
+                    p.name,
+                    p.rarity,
+                    p.image_url,
+                    p.base_income_per_hour
+                FROM user_pets AS up
+                JOIN pets AS p ON p.pet_id = up.pet_id
+                WHERE up.id = $1
+                """,
+                int(inserted["id"]),
+            )
+
+        if new_record is None:
+            raise DatabaseError("Impossible de récupérer le pet rainbow")
+
+        return new_record, required
+
     async def get_user_pets(self, user_id: int) -> Sequence[asyncpg.Record]:
         return await self.pool.fetch(
             """
@@ -1474,6 +1601,7 @@ class Database:
                 up.is_active,
                 up.is_huge,
                 up.is_gold,
+                up.is_rainbow,
                 up.acquired_at,
                 p.pet_id,
                 p.name,
@@ -1497,6 +1625,7 @@ class Database:
                 up.is_active,
                 up.is_huge,
                 up.is_gold,
+                up.is_rainbow,
                 up.acquired_at,
                 p.pet_id,
                 p.name,
@@ -1511,6 +1640,59 @@ class Database:
             user_pet_id,
         )
 
+    async def get_user_pet_by_name(
+        self,
+        user_id: int,
+        pet_name: str,
+        *,
+        is_gold: bool | None = None,
+        is_rainbow: bool | None = None,
+        include_active: bool = True,
+        include_inactive: bool = True,
+    ) -> Sequence[asyncpg.Record]:
+        if not include_active and not include_inactive:
+            return []
+
+        where_clauses = ["up.user_id = $1", "LOWER(p.name) = LOWER($2)"]
+        params: list[object] = [user_id, pet_name]
+        index = 3
+
+        if is_gold is not None:
+            where_clauses.append(f"up.is_gold = ${index}")
+            params.append(is_gold)
+            index += 1
+        if is_rainbow is not None:
+            where_clauses.append(f"up.is_rainbow = ${index}")
+            params.append(is_rainbow)
+            index += 1
+        if not include_active:
+            where_clauses.append("NOT up.is_active")
+        if not include_inactive:
+            where_clauses.append("up.is_active")
+
+        where_sql = " AND ".join(where_clauses)
+        query = f"""
+            SELECT
+                up.id,
+                up.nickname,
+                up.is_active,
+                up.is_huge,
+                up.is_gold,
+                up.is_rainbow,
+                up.acquired_at,
+                p.pet_id,
+                p.name,
+                p.rarity,
+                p.image_url,
+                p.base_income_per_hour
+            FROM user_pets AS up
+            JOIN pets AS p ON p.pet_id = up.pet_id
+            WHERE {where_sql}
+            ORDER BY up.acquired_at
+        """
+
+        return await self.pool.fetch(query, *params)
+
     async def get_active_user_pet(self, user_id: int) -> Optional[asyncpg.Record]:
         return await self.pool.fetchrow(
             """
@@ -1520,6 +1702,7 @@ class Database:
                 up.is_active,
                 up.is_huge,
                 up.is_gold,
+                up.is_rainbow,
                 up.acquired_at,
                 p.pet_id,
                 p.name,
@@ -1539,7 +1722,14 @@ class Database:
     ) -> int:
         query = (
             """
-            SELECT MAX(p.base_income_per_hour * CASE WHEN up.is_gold THEN $2 ELSE 1 END) AS best_income
+            SELECT MAX(
+                p.base_income_per_hour
+                * CASE
+                    WHEN up.is_rainbow THEN $3
+                    WHEN up.is_gold THEN $2
+                    ELSE 1
+                END
+            ) AS best_income
             FROM user_pets AS up
             JOIN pets AS p ON p.pet_id = up.pet_id
             WHERE up.user_id = $1 AND NOT up.is_huge
@@ -1548,13 +1738,173 @@ class Database:
         executor = connection or self.pool
         if executor is None:
             raise DatabaseError("La connexion à la base de données n'est pas initialisée")
-        row = await executor.fetchrow(query, user_id, GOLD_PET_MULTIPLIER)
+        row = await executor.fetchrow(
+            query,
+            user_id,
+            GOLD_PET_MULTIPLIER,
+            RAINBOW_PET_MULTIPLIER,
+        )
         if row is None:
             return 0
         best_value = row.get("best_income")
         if best_value is None:
             return 0
         return int(best_value)
+
+    async def activate_user_pet(
+        self, user_id: int, user_pet_id: int
+    ) -> tuple[Optional[asyncpg.Record], int, int]:
+        await self.ensure_user(user_id)
+        async with self.transaction() as connection:
+            pet_row = await connection.fetchrow(
+                "SELECT id, is_active FROM user_pets WHERE user_id = $1 AND id = $2 FOR UPDATE",
+                user_id,
+                user_pet_id,
+            )
+            if pet_row is None:
+                return None, 0, BASE_PET_SLOTS
+
+            if bool(pet_row["is_active"]):
+                raise DatabaseError("Ce pet est déjà équipé.")
+
+            active_count = int(
+                await connection.fetchval(
+                    "SELECT COUNT(*) FROM user_pets WHERE user_id = $1 AND is_active",
+                    user_id,
+                )
+                or 0
+            )
+
+            grade_row = await connection.fetchrow(
+                "SELECT grade_level FROM user_grades WHERE user_id = $1",
+                user_id,
+            )
+            grade_level = int(grade_row["grade_level"]) if grade_row else 0
+            max_slots = BASE_PET_SLOTS + grade_level
+
+            if active_count >= max_slots:
+                raise ActivePetLimitError(active_count, max_slots)
+
+            await connection.execute(
+                "UPDATE user_pets SET is_active = TRUE WHERE id = $1",
+                user_pet_id,
+            )
+            new_active_count = active_count + 1
+
+            await connection.execute(
+                "UPDATE users SET pet_last_claim = NOW() WHERE user_id = $1",
+                user_id,
+            )
+
+        record = await self.get_user_pet(user_id, user_pet_id)
+        return record, new_active_count, max_slots
+
+    async def deactivate_user_pet(
+        self, user_id: int, user_pet_id: int
+    ) -> tuple[Optional[asyncpg.Record], int, int]:
+        await self.ensure_user(user_id)
+        async with self.transaction() as connection:
+            pet_row = await connection.fetchrow(
+                "SELECT id, is_active FROM user_pets WHERE user_id = $1 AND id = $2 FOR UPDATE",
+                user_id,
+                user_pet_id,
+            )
+            if pet_row is None:
+                return None, 0, BASE_PET_SLOTS
+
+            if not bool(pet_row["is_active"]):
+                raise DatabaseError("Ce pet n'est pas équipé.")
+
+            active_count = int(
+                await connection.fetchval(
+                    "SELECT COUNT(*) FROM user_pets WHERE user_id = $1 AND is_active",
+                    user_id,
+                )
+                or 0
+            )
+
+            grade_row = await connection.fetchrow(
+                "SELECT grade_level FROM user_grades WHERE user_id = $1",
+                user_id,
+            )
+            grade_level = int(grade_row["grade_level"]) if grade_row else 0
+            max_slots = BASE_PET_SLOTS + grade_level
+
+            await connection.execute(
+                "UPDATE user_pets SET is_active = FALSE WHERE id = $1",
+                user_pet_id,
+            )
+            new_active_count = max(0, active_count - 1)
+
+            await connection.execute(
+                "UPDATE users SET pet_last_claim = NOW() WHERE user_id = $1",
+                user_id,
+            )
+
+        record = await self.get_user_pet(user_id, user_pet_id)
+        return record, new_active_count, max_slots
+
+    async def swap_active_pets(
+        self, user_id: int, pet_out_id: int, pet_in_id: int
+    ) -> tuple[asyncpg.Record, asyncpg.Record, int, int]:
+        if pet_out_id == pet_in_id:
+            raise DatabaseError("Tu dois sélectionner deux pets différents pour le swap.")
+
+        await self.ensure_user(user_id)
+        async with self.transaction() as connection:
+            out_row = await connection.fetchrow(
+                "SELECT id, is_active FROM user_pets WHERE user_id = $1 AND id = $2 FOR UPDATE",
+                user_id,
+                pet_out_id,
+            )
+            if out_row is None:
+                raise DatabaseError("Le pet à retirer est introuvable.")
+            if not bool(out_row["is_active"]):
+                raise DatabaseError("Le pet à retirer n'est pas actuellement équipé.")
+
+            in_row = await connection.fetchrow(
+                "SELECT id, is_active FROM user_pets WHERE user_id = $1 AND id = $2 FOR UPDATE",
+                user_id,
+                pet_in_id,
+            )
+            if in_row is None:
+                raise DatabaseError("Le pet à équiper est introuvable.")
+            if bool(in_row["is_active"]):
+                raise DatabaseError("Le pet à équiper est déjà actif.")
+
+            active_count = int(
+                await connection.fetchval(
+                    "SELECT COUNT(*) FROM user_pets WHERE user_id = $1 AND is_active",
+                    user_id,
+                )
+                or 0
+            )
+
+            grade_row = await connection.fetchrow(
+                "SELECT grade_level FROM user_grades WHERE user_id = $1",
+                user_id,
+            )
+            grade_level = int(grade_row["grade_level"]) if grade_row else 0
+            max_slots = BASE_PET_SLOTS + grade_level
+
+            await connection.execute(
+                "UPDATE user_pets SET is_active = FALSE WHERE id = $1",
+                pet_out_id,
+            )
+            await connection.execute(
+                "UPDATE user_pets SET is_active = TRUE WHERE id = $1",
+                pet_in_id,
+            )
+            await connection.execute(
+                "UPDATE users SET pet_last_claim = NOW() WHERE user_id = $1",
+                user_id,
+            )
+
+        removed = await self.get_user_pet(user_id, pet_out_id)
+        added = await self.get_user_pet(user_id, pet_in_id)
+        if removed is None or added is None:
+            raise DatabaseError("Impossible de récupérer les informations du swap.")
+        return removed, added, active_count, max_slots
 
     async def set_active_pet(
         self, user_id: int, user_pet_id: int
@@ -1711,8 +2061,12 @@ class Database:
                         best_non_huge_income * multiplier,
                     )
                 else:
-                    multiplier = GOLD_PET_MULTIPLIER if bool(row["is_gold"]) else 1
-                    income_value = base_income * multiplier
+                    if bool(row.get("is_rainbow")):
+                        income_value = base_income * RAINBOW_PET_MULTIPLIER
+                    elif bool(row["is_gold"]):
+                        income_value = base_income * GOLD_PET_MULTIPLIER
+                    else:
+                        income_value = base_income
                 effective_incomes.append(income_value)
 
             hourly_income = sum(effective_incomes)
@@ -2098,6 +2452,7 @@ class Database:
                 up.user_id,
                 up.is_huge,
                 up.is_gold,
+                up.is_rainbow,
                 p.name,
                 p.rarity,
                 p.image_url
@@ -2154,6 +2509,7 @@ class Database:
                     up.is_active,
                     up.is_huge,
                     up.is_gold,
+                    up.is_rainbow,
                     p.name,
                     p.rarity
                 FROM trade_pets AS tp
@@ -2187,6 +2543,7 @@ class Database:
                         "rarity": str(pet["rarity"]),
                         "is_huge": bool(pet["is_huge"]),
                         "is_gold": bool(pet["is_gold"]),
+                        "is_rainbow": bool(pet["is_rainbow"]),
                     }
                 )
 
