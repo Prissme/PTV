@@ -224,8 +224,10 @@ HUGE_PET_LEVEL_BASE_XP: Final[int] = 150
 HUGE_PET_LEVEL_EXPONENT: Final[float] = 1.35
 HUGE_GALE_NAME: Final[str] = "Huge Gale"
 HUGE_GRIFF_NAME: Final[str] = "Huge Griff"
+TITANIC_GRIFF_NAME: Final[str] = "Titanic Griff"
 HUGE_KENJI_ONI_NAME: Final[str] = "Huge Kenji Oni"
 HUGE_GRIFF_MULTIPLIER: Final[int] = 3
+TITANIC_GRIFF_MULTIPLIER: Final[int] = 1_000
 HUGE_GALE_MULTIPLIER: Final[int] = 100
 HUGE_KENJI_ONI_MULTIPLIER: Final[int] = 10
 HUGE_SHADE_NAME: Final[str] = "Huge Shade"
@@ -238,6 +240,11 @@ HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, int]] = {
     HUGE_KENJI_ONI_NAME: HUGE_KENJI_ONI_MULTIPLIER,
     HUGE_SHADE_NAME: HUGE_SHADE_MULTIPLIER,
     HUGE_MORTIS_NAME: HUGE_MORTIS_MULTIPLIER,
+    TITANIC_GRIFF_NAME: TITANIC_GRIFF_MULTIPLIER,
+}
+
+HUGE_PET_MIN_LEVEL_MULTIPLIERS: Final[Dict[str, float]] = {
+    TITANIC_GRIFF_NAME: 10.0,
 }
 
 
@@ -276,19 +283,28 @@ def get_huge_level_progress(level: int, xp: int) -> float:
 def get_huge_level_multiplier(name: str, level: int) -> float:
     """Calcule le multiplicateur effectif d'un énorme pet à un niveau donné."""
 
-    final_multiplier = float(max(1, get_huge_multiplier(name)))
+    normalized = name.strip().lower() if name else ""
+    min_multiplier = 1.0
+    for pet_name, multiplier in HUGE_PET_MIN_LEVEL_MULTIPLIERS.items():
+        if pet_name.lower() == normalized:
+            min_multiplier = max(1.0, float(multiplier))
+            break
+
+    final_multiplier = max(min_multiplier, float(max(1, get_huge_multiplier(name))))
     if level <= 1:
-        return 1.0
+        return min_multiplier
+
     clamped_level = max(1, min(level, HUGE_PET_LEVEL_CAP))
     span = max(1, HUGE_PET_LEVEL_CAP - 1)
     progress = (clamped_level - 1) / span
-    return 1.0 + (final_multiplier - 1.0) * progress
+    return min_multiplier + (final_multiplier - min_multiplier) * progress
 
 
 HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     HUGE_PET_NAME: "Extrêmement rare dans l'œuf basique.",
     "Huge Trunk": "Peut apparaître dans l'œuf bio avec un taux minuscule.",
     HUGE_GRIFF_NAME: "Récompense spéciale lors d'événements ou de giveaways du staff.",
+    TITANIC_GRIFF_NAME: "Jackpot quasi impossible du casino, 10 000× plus rare que Huge Griff.",
     HUGE_GALE_NAME: "Récompense finale du mode Millionaire Race (étape 20).",
     HUGE_KENJI_ONI_NAME: "Récompense rarissime du Mastermind pour les esprits les plus vifs.",
     HUGE_SHADE_NAME: "Extrêmement rare dans l'Œuf Maudit (0.5%) - Zone Manoir Hanté.",
@@ -468,6 +484,14 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
         is_huge=True,
     ),
     PetDefinition(
+        name=TITANIC_GRIFF_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1432161869342183525.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
         name=HUGE_KENJI_ONI_NAME,
         rarity="Secret",
         image_url="https://example.com/document56.png",
@@ -568,6 +592,9 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Huge Trunk": os.getenv("PET_EMOJI_HUGE_TRUNK", "<:HugeTrunk:1430876043400446013>"),
     HUGE_GALE_NAME: os.getenv("PET_EMOJI_HUGE_GALE", "<:HugeGale:1430981225375600641>"),
     HUGE_GRIFF_NAME: os.getenv("PET_EMOJI_HUGE_GRIFF", "<:HugeGriff:1431005620227670036>"),
+    TITANIC_GRIFF_NAME: os.getenv(
+        "PET_EMOJI_TITANIC_GRIFF", "<:TITANICGRIFF:1432161869342183525>"
+    ),
     HUGE_KENJI_ONI_NAME: os.getenv("PET_EMOJI_HUGE_KENJI_ONI", "<:HugeKenjiOni:1431057254337089576>"),
     "Gus": os.getenv("PET_EMOJI_GUS", "<:Gus:1431422788266364999>"),
     "Ghost Squeak": os.getenv("PET_EMOJI_GHOST_SQUEAK", "<:GhostSqueak:1431422784537628722>"),
