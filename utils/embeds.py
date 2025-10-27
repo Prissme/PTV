@@ -473,72 +473,57 @@ def pet_collection_embed(
     page_count: int = 1,
     huge_descriptions: Mapping[str, str] | None = None,
 ) -> discord.Embed:
-    embed = _base_embed("Ta collection de pets", "", color=Colors.GOLD if pets else Colors.NEUTRAL)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    del huge_descriptions  # Non utilisé dans la version minimaliste
 
-    huge_info = dict(huge_descriptions or {})
-    if not pets:
-        embed.description = "Tu n'as encore aucun pet. Ouvre un œuf avec `e!openbox` !"
+    active_count = sum(1 for pet in pets if bool(pet.get("is_active")))
+    header = [
+        f"Total : {total_count}",
+        f"Actifs : {active_count}",
+        f"Revenu actif : {format_currency(total_income_per_hour)}/h",
+    ]
+
+    description_lines: list[str] = []
+    for pet in pets:
+        name = str(pet.get("name", "Pet"))
+        rarity = str(pet.get("rarity", "?"))
+        is_active = bool(pet.get("is_active"))
+        is_huge = bool(pet.get("is_huge"))
+        is_gold = bool(pet.get("is_gold"))
+        is_rainbow = bool(pet.get("is_rainbow"))
+        income = int(pet.get("income", pet.get("base_income_per_hour", 0)))
+        tags: list[str] = []
+        if is_huge:
+            level = int(pet.get("huge_level", 1))
+            tags.append(f"Niv. {level}")
+        if is_rainbow:
+            tags.append("Rainbow")
+        elif is_gold:
+            tags.append("Gold")
+        line_parts = [
+            "⭐" if is_active else "",
+            _pet_emoji(name),
+            name,
+            rarity,
+            f"{income:,} PB/h".replace(",", " "),
+        ]
+        if tags:
+            line_parts.append(" ".join(tags))
+        description_lines.append(
+            " ".join(part for part in line_parts if part).replace("  ", " ")
+        )
+
+    embed_description = " • ".join(header)
+    if description_lines:
+        embed_description += "\n\n" + "\n".join(f"• {line}" for line in description_lines)
     else:
-        lines: list[str] = []
-        for pet in pets:
-            name = str(pet["name"])
-            rarity = str(pet["rarity"])
-            is_active = bool(pet["is_active"])
-            is_huge = bool(pet["is_huge"])
-            is_gold = bool(pet.get("is_gold", False))
-            is_rainbow = bool(pet.get("is_rainbow", False))
-            income = int(pet["income"])
-            market_value = int(pet.get("market_value", 0))
-            acquired_at = pet.get("acquired_at")
-            acquired_text = ""
-            if isinstance(acquired_at, datetime):
-                acquired_text = acquired_at.strftime("%d/%m/%Y")
-            star = "⭐" if is_active else ""
-            huge = " ✨" if is_huge else ""
-            rainbow = " 🌈" if is_rainbow else ""
-            gold = " 🥇" if is_gold and not is_rainbow else ""
-            header_parts = [
-                part for part in (star, _pet_emoji(name), f"**{name}**{huge}{rainbow}{gold}") if part
-            ]
-            header = " ".join(header_parts)
-            stats_line = f"Rareté : {rarity} — {income:,} PB/h".replace(",", " ")
-            if is_rainbow:
-                stats_line += f" — Variante rainbow x{RAINBOW_PET_MULTIPLIER}"
-            elif is_gold:
-                stats_line += f" — Variante or x{GOLD_PET_MULTIPLIER}"
-            if is_huge:
-                level = int(pet.get("huge_level", 1))
-                xp_required = int(pet.get("huge_xp_required", 0))
-                xp_value = int(pet.get("huge_xp", 0))
-                progress_ratio = float(pet.get("huge_progress", 0.0))
-                if xp_required > 0:
-                    xp_text = f"{xp_value:,}/{xp_required:,}".replace(",", " ")
-                    progress_percent = int(round(max(0.0, min(1.0, progress_ratio)) * 100))
-                    stats_line += f" — Niveau {level} ({xp_text} XP, {progress_percent}%)"
-                else:
-                    stats_line += f" — Niveau {level} (MAX)"
-            if market_value > 0 and not is_huge:
-                stats_line += f" — Valeur : {format_currency(market_value)}"
-            line = f"{header}\n{stats_line}"
-            if acquired_text:
-                line += f"\nObtenu le {acquired_text}"
-            if is_huge:
-                description = huge_info.get(name)
-                if description:
-                    line += f"\nComment l'obtenir : {description}"
-            lines.append(line)
-        embed.description = "\n\n".join(lines)
+        embed_description += "\n\nAucun pet pour le moment. Ouvre un œuf avec e!openbox."
+
+    embed = _base_embed("Inventaire des pets", embed_description, color=Colors.NEUTRAL)
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
 
     current_page = max(1, page)
     total_pages = max(1, page_count)
-    footer = (
-        f"Total de pets : {total_count} • Revenus par heure (actif) : {total_income_per_hour:,} PB/h"
-    ).replace(",", " ")
-    footer += " • Utilise e!equip <nom> pour gérer tes pets"
-    footer += " • Consulte ta progression avec e!index"
-    footer += f" • Page {current_page}/{total_pages}"
-    embed.set_footer(text=footer)
+    embed.set_footer(text=f"Page {current_page}/{total_pages}")
     return _finalize_embed(embed)
 
 
@@ -684,13 +669,35 @@ def pet_claim_embed(
     total_income = sum(int(pet.get("base_income_per_hour", 0)) for pet in pets)
     duration = _format_duration(elapsed_seconds)
     if amount > 0:
-        description = f"Tes pets ont généré **{amount:,} PB** en {duration}."
+        description = f"+{format_currency(amount)} en {duration}"
     else:
-        description = "Tes pets viennent juste de se mettre au travail. Reviens plus tard !"
-    description = description.replace(",", " ")
+        description = "Aucun gain pour l'instant. Reviens plus tard !"
+
+    extra_info: list[str] = []
+    if booster:
+        multiplier = float(booster.get("multiplier", 1.0))
+        if multiplier > 1.0:
+            remaining = float(booster.get("remaining_seconds", 0.0))
+            info = f"Booster x{multiplier:g}"
+            if remaining > 0:
+                info += f" ({_format_duration(remaining)} restants)"
+            extra_info.append(info)
+    if clan:
+        clan_name = str(clan.get("name", "Clan"))
+        clan_multiplier = float(clan.get("multiplier", 1.0))
+        clan_bonus = int(clan.get("bonus", 0))
+        clan_line = f"Clan {clan_name}"
+        if clan_multiplier > 1.0:
+            clan_line += f" x{clan_multiplier:.2f}"
+        if clan_bonus > 0:
+            clan_line += f" (+{format_currency(clan_bonus)})"
+        extra_info.append(clan_line)
 
     color = Colors.SUCCESS if amount else Colors.INFO
-    embed = _base_embed("Récolte des pets", description, color=color)
+    description_text = description
+    if extra_info:
+        description_text += "\n" + " • ".join(extra_info)
+    embed = _base_embed("Gains des pets", description_text, color=color)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
 
     shares: list[int] = []
@@ -716,78 +723,34 @@ def pet_claim_embed(
     lines: list[str] = []
     for pet, share in zip(pets, shares):
         name = str(pet.get("name", "Pet"))
-        rarity = str(pet.get("rarity", "?"))
         income = int(pet.get("base_income_per_hour", 0))
+        is_active = bool(pet.get("is_active", False))
         is_huge = bool(pet.get("is_huge", False))
         is_gold = bool(pet.get("is_gold", False))
         is_rainbow = bool(pet.get("is_rainbow", False))
-        market_value = int(pet.get("market_value", 0))
-        line_parts = [
-            f"{_pet_emoji(name)} **{name}** ({rarity}{' ✨' if is_huge else ''}{' 🌈' if is_rainbow else ''}{' 🥇' if is_gold and not is_rainbow else ''})",
-            f"{income:,} PB/h".replace(",", " "),
-        ]
-        if is_rainbow:
-            line_parts.append(f"x{RAINBOW_PET_MULTIPLIER}")
-        elif is_gold:
-            line_parts.append(f"x{GOLD_PET_MULTIPLIER}")
-        if share > 0:
-            line_parts.append(f"+{format_currency(share)}")
+        level = int(pet.get("huge_level", 1)) if is_huge else 0
+        tags: list[str] = []
+        if is_active:
+            tags.append("Actif")
         if is_huge:
-            level = int(pet.get("huge_level", 1))
-            xp_required = int(pet.get("huge_xp_required", 0))
-            xp_value = int(pet.get("huge_xp", 0))
-            progress_ratio = float(pet.get("huge_progress", 0.0))
-            if xp_required > 0:
-                xp_text = f"{xp_value:,}/{xp_required:,}".replace(",", " ")
-                progress_percent = int(round(max(0.0, min(1.0, progress_ratio)) * 100))
-                line_parts.append(f"Niv. {level} — XP {xp_text} ({progress_percent}%)")
-            else:
-                line_parts.append(f"Niv. {level} — MAX")
-        if market_value > 0:
-            line_parts.append(f"Valeur : {format_currency(market_value)}")
-        lines.append(" • ".join(part for part in line_parts if part))
+            tags.append(f"Niv. {level}")
+        if is_rainbow:
+            tags.append("Rainbow")
+        elif is_gold:
+            tags.append("Gold")
+        share_text = f"+{format_currency(share)}" if share > 0 else "0 PB"
+        line_parts = [
+            _pet_emoji(name),
+            name,
+            f"{income:,} PB/h".replace(",", " "),
+            share_text,
+        ]
+        if tags:
+            line_parts.append(" ".join(tags))
+        lines.append(" ".join(part for part in line_parts if part).replace("  ", " "))
 
     if lines:
-        embed.add_field(name="Détails", value="\n".join(lines), inline=False)
-
-    if booster:
-        multiplier = float(booster.get("multiplier", 1.0))
-        if multiplier > 1.0:
-            extra_amount = int(booster.get("extra", 0))
-            remaining = float(booster.get("remaining_seconds", 0.0))
-            booster_lines = [f"Multiplicateur actif : x{multiplier:g}"]
-            if extra_amount > 0:
-                booster_lines.append(f"Bonus gagné : +{format_currency(extra_amount)}")
-            if remaining > 0:
-                booster_lines.append(f"Temps restant : {_format_duration(remaining)}")
-            else:
-                booster_lines.append("Le booster vient d'expirer !")
-            embed.add_field(name="Booster de pets", value="\n".join(booster_lines), inline=False)
-
-    if clan:
-        clan_name = str(clan.get("name", "Clan"))
-        clan_multiplier = float(clan.get("multiplier", 1.0))
-        clan_bonus = int(clan.get("bonus", 0))
-        clan_lines = [f"**{clan_name}** hurle la charge !"]
-        if clan_multiplier > 1.0:
-            clan_lines.append(f"Turbo permanent : x{clan_multiplier:.2f}")
-        if clan_bonus > 0:
-            clan_lines.append(f"+{format_currency(clan_bonus)} arrachés grâce à l'élan du clan")
-        top_contributors = clan.get("top_contributors")
-        if isinstance(top_contributors, Sequence) and top_contributors:
-            formatted: list[str] = []
-            for index, entry in enumerate(top_contributors, start=1):
-                user_display = str(entry.get("display", entry.get("mention", "?")))
-                contribution = int(entry.get("contribution", 0))
-                formatted.append(f"#{index} {user_display} — {format_currency(contribution)}")
-            clan_lines.append("Classement contribution :\n" + "\n".join(formatted))
-        embed.add_field(name="🔥 Guerre de clans", value="\n".join(clan_lines), inline=False)
-
-    if pets:
-        best_pet = max(pets, key=lambda pet: int(pet.get("base_income_per_hour", 0)))
-        image = str(best_pet.get("image_url", ""))
-        if image:
-            embed.set_thumbnail(url=image)
+        embed.description += "\n\n" + "\n".join(f"• {line}" for line in lines)
 
     return _finalize_embed(embed)
 
