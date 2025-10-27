@@ -1651,6 +1651,96 @@ class Database:
             user_pet_id,
         )
 
+    async def admin_transfer_user_pet(
+        self,
+        source_user_id: int,
+        target_user_id: int,
+        user_pet_id: int,
+    ) -> asyncpg.Record:
+        if source_user_id == target_user_id:
+            raise DatabaseError("L'utilisateur source et la cible doivent être différents.")
+
+        await self.ensure_user(source_user_id)
+        await self.ensure_user(target_user_id)
+
+        async with self.transaction() as connection:
+            pet_row = await connection.fetchrow(
+                """
+                SELECT
+                    up.id,
+                    up.user_id,
+                    up.is_active,
+                    up.is_huge,
+                    up.is_gold,
+                    up.is_rainbow,
+                    up.huge_level,
+                    up.huge_xp,
+                    up.acquired_at,
+                    p.pet_id,
+                    p.name,
+                    p.rarity,
+                    p.base_income_per_hour
+                FROM user_pets AS up
+                JOIN pets AS p ON p.pet_id = up.pet_id
+                WHERE up.id = $1
+                FOR UPDATE
+                """,
+                user_pet_id,
+            )
+            if pet_row is None:
+                raise DatabaseError("Ce pet est introuvable.")
+
+            if int(pet_row["user_id"]) != int(source_user_id):
+                raise DatabaseError("Ce pet n'appartient pas à l'utilisateur indiqué.")
+
+            conflict = await connection.fetchval(
+                """
+                SELECT 1
+                FROM trade_pets AS tp
+                JOIN trades AS t ON t.id = tp.trade_id
+                WHERE tp.user_pet_id = $1
+                  AND t.status = 'pending'
+                LIMIT 1
+                """,
+                user_pet_id,
+            )
+            if conflict:
+                raise DatabaseError("Ce pet participe actuellement à un échange en cours.")
+
+            await connection.execute(
+                "UPDATE user_pets SET user_id = $1, is_active = FALSE WHERE id = $2",
+                int(target_user_id),
+                user_pet_id,
+            )
+
+            updated = await connection.fetchrow(
+                """
+                SELECT
+                    up.id,
+                    up.user_id,
+                    up.is_active,
+                    up.is_huge,
+                    up.is_gold,
+                    up.is_rainbow,
+                    up.huge_level,
+                    up.huge_xp,
+                    up.acquired_at,
+                    p.pet_id,
+                    p.name,
+                    p.rarity,
+                    p.base_income_per_hour
+                FROM user_pets AS up
+                JOIN pets AS p ON p.pet_id = up.pet_id
+                WHERE up.id = $1
+                """,
+                user_pet_id,
+            )
+
+        if updated is None:
+            raise DatabaseError("Impossible de récupérer le pet transféré.")
+
+        return updated
+
     async def get_user_pet_by_name(
         self,
         user_id: int,

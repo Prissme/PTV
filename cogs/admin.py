@@ -117,6 +117,117 @@ class Admin(commands.Cog):
             },
         )
 
+    @commands.command(name="givepet", aliases=("transferpet",))
+    @commands.is_owner()
+    async def give_pet(
+        self,
+        ctx: commands.Context,
+        source: discord.User,
+        target: discord.User,
+        *,
+        pet: str,
+    ) -> None:
+        """Admin: Transférer un pet d'un utilisateur à un autre."""
+
+        if source.id == target.id:
+            await ctx.send(
+                embed=embeds.warning_embed("L'utilisateur source et la cible doivent être différents."),
+            )
+            return
+
+        pet_identifier = pet.strip()
+        if not pet_identifier:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Précise l'identifiant ou le nom du pet à transférer.",
+                    title="Pet introuvable",
+                )
+            )
+            return
+
+        await self.database.ensure_user(source.id)
+        await self.database.ensure_user(target.id)
+
+        transfer_result = None
+        last_error: str | None = None
+
+        if pet_identifier.isdigit():
+            try:
+                transfer_result = await self.database.admin_transfer_user_pet(
+                    source.id,
+                    target.id,
+                    int(pet_identifier),
+                )
+            except DatabaseError as exc:
+                last_error = str(exc)
+        else:
+            candidates = await self.database.get_user_pet_by_name(source.id, pet_identifier)
+            if not candidates:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        f"{source.mention} n'a aucun pet nommé '{pet_identifier}'.",
+                        title="Pet introuvable",
+                    )
+                )
+                return
+
+            ordered_candidates = sorted(
+                candidates,
+                key=lambda record: (bool(record["is_active"]), record["acquired_at"]),
+            )
+
+            for candidate in ordered_candidates:
+                try:
+                    transfer_result = await self.database.admin_transfer_user_pet(
+                        source.id,
+                        target.id,
+                        int(candidate["id"]),
+                    )
+                except DatabaseError as exc:
+                    last_error = str(exc)
+                    continue
+                else:
+                    last_error = None
+                    break
+
+        if transfer_result is None:
+            message = last_error or "Impossible de transférer ce pet pour le moment."
+            await ctx.send(embed=embeds.error_embed(message))
+            return
+
+        flags: list[str] = []
+        if transfer_result["is_huge"]:
+            flags.append("Huge")
+        if transfer_result["is_gold"]:
+            flags.append("Or")
+        if transfer_result["is_rainbow"]:
+            flags.append("Rainbow")
+
+        pet_description = f"**{transfer_result['name']}** ({transfer_result['rarity']})"
+        if flags:
+            pet_description += " – " + ", ".join(flags)
+
+        lines = [
+            f"Source : {source.mention} (`{source.id}`)",
+            f"Cible : {target.mention} (`{target.id}`)",
+            f"Pet transféré : {pet_description}",
+            f"ID inventaire : #{transfer_result['id']}",
+            f"Revenu de base : {embeds.format_currency(int(transfer_result['base_income_per_hour']))} PB/h",
+        ]
+
+        await ctx.send(embed=embeds.success_embed("\n".join(lines), title="Pet transféré"))
+
+        logger.info(
+            "Admin give_pet",
+            extra={
+                "admin_id": ctx.author.id,
+                "source_id": source.id,
+                "target_id": target.id,
+                "user_pet_id": int(transfer_result["id"]),
+                "pet_name": str(transfer_result["name"]),
+            },
+        )
+
     @commands.command(name="resetuser")
     @commands.is_owner()
     async def reset_user(self, ctx: commands.Context, user: discord.Member) -> None:
