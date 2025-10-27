@@ -62,10 +62,11 @@ SLOT_SPECIAL_COMBOS: dict[tuple[str, ...], tuple[int, str]] = {
     tuple(sorted(("⭐", "💎", "7️⃣"))): (10, "Combo premium ⭐ 💎 7️⃣ !"),
 }
 SLOT_MIN_BET = 50
-SLOT_MAX_BET = 5000
+SLOT_MAX_BET = 1_000_000
 CASINO_HUGE_MAX_CHANCE = 0.10
 CASINO_HUGE_CHANCE_PER_PB = CASINO_HUGE_MAX_CHANCE / SLOT_MAX_BET
-CASINO_TITANIC_RARITY_FACTOR = 10_000
+CASINO_TITANIC_MAX_CHANCE = 0.01
+CASINO_TITANIC_CHANCE_PER_PB = CASINO_TITANIC_MAX_CHANCE / SLOT_MAX_BET
 
 MASTERMIND_HUGE_MIN_CHANCE = 0.0005
 MASTERMIND_HUGE_MAX_CHANCE = 0.002
@@ -1082,7 +1083,10 @@ class Economy(commands.Cog):
         base_chance = min(
             CASINO_HUGE_MAX_CHANCE, max(0.0, bet * CASINO_HUGE_CHANCE_PER_PB)
         )
-        chance = base_chance / CASINO_TITANIC_RARITY_FACTOR
+        chance_by_bet = min(
+            CASINO_TITANIC_MAX_CHANCE, max(0.0, bet * CASINO_TITANIC_CHANCE_PER_PB)
+        )
+        chance = min(base_chance, chance_by_bet)
         if chance <= 0 or random.random() > chance:
             return False
 
