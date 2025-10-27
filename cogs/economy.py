@@ -20,7 +20,6 @@ from config import (
     DAILY_REWARD,
     GRADE_DEFINITIONS,
     HUGE_GALE_NAME,
-    HUGE_GRIFF_NAME,
     HUGE_KENJI_ONI_NAME,
     HUGE_MORTIS_NAME,
     HUGE_PET_MIN_INCOME,
@@ -29,6 +28,7 @@ from config import (
     PET_DEFINITIONS,
     PET_EMOJIS,
     PREFIX,
+    TITANIC_GRIFF_NAME,
     VIP_ROLE_ID,
     get_huge_level_multiplier,
 )
@@ -65,6 +65,7 @@ SLOT_MIN_BET = 50
 SLOT_MAX_BET = 5000
 CASINO_HUGE_MAX_CHANCE = 0.10
 CASINO_HUGE_CHANCE_PER_PB = CASINO_HUGE_MAX_CHANCE / SLOT_MAX_BET
+CASINO_TITANIC_RARITY_FACTOR = 10_000
 
 MASTERMIND_HUGE_MIN_CHANCE = 0.0005
 MASTERMIND_HUGE_MAX_CHANCE = 0.002
@@ -1077,27 +1078,30 @@ class Economy(commands.Cog):
         )
         return True
 
-    async def _maybe_award_casino_huge(self, ctx: commands.Context, bet: int) -> bool:
-        chance = min(CASINO_HUGE_MAX_CHANCE, max(0.0, bet * CASINO_HUGE_CHANCE_PER_PB))
+    async def _maybe_award_casino_titanic(self, ctx: commands.Context, bet: int) -> bool:
+        base_chance = min(
+            CASINO_HUGE_MAX_CHANCE, max(0.0, bet * CASINO_HUGE_CHANCE_PER_PB)
+        )
+        chance = base_chance / CASINO_TITANIC_RARITY_FACTOR
         if chance <= 0 or random.random() > chance:
             return False
 
-        pet_id = await self.database.get_pet_id_by_name(HUGE_GRIFF_NAME)
+        pet_id = await self.database.get_pet_id_by_name(TITANIC_GRIFF_NAME)
         if pet_id is None:
-            logger.warning("Pet %s introuvable pour le casino", HUGE_GRIFF_NAME)
+            logger.warning("Pet %s introuvable pour le casino", TITANIC_GRIFF_NAME)
             return False
 
         try:
             await self.database.add_user_pet(ctx.author.id, pet_id, is_huge=True)
         except DatabaseError:
-            logger.exception("Impossible d'ajouter %s depuis le casino", HUGE_GRIFF_NAME)
+            logger.exception("Impossible d'ajouter %s depuis le casino", TITANIC_GRIFF_NAME)
             return False
 
-        emoji = PET_EMOJIS.get(HUGE_GRIFF_NAME, PET_EMOJIS.get("default", "🐾"))
+        emoji = PET_EMOJIS.get(TITANIC_GRIFF_NAME, PET_EMOJIS.get("default", "🐾"))
         chance_pct = chance * 100
         lines = [
-            f"{ctx.author.mention} décroche {emoji} **{HUGE_GRIFF_NAME}** au casino !",
-            f"Mise : {embeds.format_currency(bet)} • Chance : {chance_pct:.2f}%",
+            f"{ctx.author.mention} décroche {emoji} **{TITANIC_GRIFF_NAME}** au casino !",
+            f"Mise : {embeds.format_currency(bet)} • Chance : {chance_pct:.6f}%",
         ]
         await ctx.send(
             embed=embeds.success_embed(
@@ -1106,7 +1110,7 @@ class Economy(commands.Cog):
         )
 
         logger.info(
-            "casino_huge_awarded",
+            "casino_titanic_awarded",
             extra={
                 "user_id": ctx.author.id,
                 "pet_id": pet_id,
@@ -1402,7 +1406,7 @@ class Economy(commands.Cog):
         )
         await ctx.send(embed=embed)
         await self._maybe_award_pet_booster(ctx, "slots")
-        await self._maybe_award_casino_huge(ctx, bet)
+        await self._maybe_award_casino_titanic(ctx, bet)
 
     @commands.cooldown(1, MASTERMIND_CONFIG.cooldown, commands.BucketType.user)
     @commands.command(name="mastermind", aliases=("mm", "code"))
