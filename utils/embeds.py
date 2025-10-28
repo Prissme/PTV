@@ -661,6 +661,7 @@ def pet_claim_embed(
     elapsed_seconds: float,
     booster: Mapping[str, float] | None = None,
     clan: Mapping[str, object] | None = None,
+    potion: Mapping[str, object] | None = None,
 ) -> discord.Embed:
     total_income = sum(int(pet.get("base_income_per_hour", 0)) for pet in pets)
     duration = _format_duration(elapsed_seconds)
@@ -678,6 +679,18 @@ def pet_claim_embed(
             if remaining > 0:
                 info += f" ({_format_duration(remaining)} restants)"
             extra_info.append(info)
+    if potion:
+        potion_multiplier = float(potion.get("multiplier", 1.0))
+        if potion_multiplier > 1.0:
+            potion_name = str(potion.get("name", "Potion"))
+            potion_line = f"{potion_name} x{potion_multiplier:.2f}"
+            potion_bonus = int(potion.get("bonus", 0))
+            if potion_bonus > 0:
+                potion_line += f" (+{format_currency(potion_bonus)})"
+            remaining = float(potion.get("remaining_seconds", 0.0))
+            if remaining > 0:
+                potion_line += f" ({_format_duration(remaining)} restants)"
+            extra_info.append(potion_line)
     if clan:
         clan_name = str(clan.get("name", "Clan"))
         clan_multiplier = float(clan.get("multiplier", 1.0))

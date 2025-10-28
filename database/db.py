@@ -23,6 +23,8 @@ from config import (
     HUGE_PET_MIN_INCOME,
     RAINBOW_PET_COMBINE_REQUIRED,
     RAINBOW_PET_MULTIPLIER,
+    POTION_DEFINITION_MAP,
+    PotionDefinition,
     get_huge_level_multiplier,
     huge_level_required_xp,
 )
@@ -129,6 +131,12 @@ class Database:
             )
             await connection.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS pet_booster_activated_at TIMESTAMPTZ"
+            )
+            await connection.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS active_potion_slug TEXT"
+            )
+            await connection.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS active_potion_expires_at TIMESTAMPTZ"
             )
             await connection.execute(
                 """
@@ -423,6 +431,141 @@ class Database:
             FROM user_potions
             WHERE user_id = $1 AND quantity > 0
             ORDER BY potion_slug
+            """,
+            user_id,
+        )
+
+    async def consume_user_potion(
+        self,
+        user_id: int,
+        potion_slug: str,
+        *,
+        quantity: int = 1,
+        connection: asyncpg.Connection | None = None,
+    ) -> bool:
+        if quantity <= 0:
+            raise ValueError("La quantité à consommer doit être positive")
+
+        if connection is None:
+            await self.ensure_user(user_id)
+            async with self.transaction() as txn_connection:
+                return await self.consume_user_potion(
+                    user_id,
+                    potion_slug,
+                    quantity=quantity,
+                    connection=txn_connection,
+                )
+
+        # Lorsque ``connection`` est fourni, on suppose que l'appelant a déjà
+        # vérifié l'existence de l'utilisateur.
+
+        row = await connection.fetchrow(
+            "SELECT quantity FROM user_potions WHERE user_id = $1 AND potion_slug = $2 FOR UPDATE",
+            user_id,
+            potion_slug,
+        )
+        if row is None:
+            return False
+
+        current_quantity = int(row.get("quantity") or 0)
+        if current_quantity < quantity:
+            return False
+
+        new_quantity = current_quantity - quantity
+        if new_quantity > 0:
+            await connection.execute(
+                "UPDATE user_potions SET quantity = $3 WHERE user_id = $1 AND potion_slug = $2",
+                user_id,
+                potion_slug,
+                new_quantity,
+            )
+        else:
+            await connection.execute(
+                "DELETE FROM user_potions WHERE user_id = $1 AND potion_slug = $2",
+                user_id,
+                potion_slug,
+            )
+
+        return True
+
+    async def get_active_potion(
+        self, user_id: int
+    ) -> Optional[tuple[PotionDefinition, datetime]]:
+        await self.ensure_user(user_id)
+        row = await self.pool.fetchrow(
+            "SELECT active_potion_slug, active_potion_expires_at FROM users WHERE user_id = $1",
+            user_id,
+        )
+        if row is None:
+            return None
+
+        slug = row.get("active_potion_slug")
+        if not slug:
+            return None
+
+        expires_at = row.get("active_potion_expires_at")
+        if not isinstance(expires_at, datetime):
+            await self.clear_active_potion(user_id)
+            return None
+
+        now = datetime.now(timezone.utc)
+        if expires_at <= now:
+            await self.clear_active_potion(user_id)
+            return None
+
+        definition = POTION_DEFINITION_MAP.get(str(slug))
+        if definition is None:
+            await self.clear_active_potion(user_id)
+            return None
+
+        return definition, expires_at
+
+    async def set_active_potion(
+        self,
+        user_id: int,
+        potion_slug: str,
+        expires_at: datetime,
+        *,
+        connection: asyncpg.Connection | None = None,
+    ) -> None:
+        await self.ensure_user(user_id)
+
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        else:
+            expires_at = expires_at.astimezone(timezone.utc)
+
+        executor = connection or self.pool
+        if executor is None:
+            raise DatabaseError("La base de données n'est pas connectée")
+
+        await executor.execute(
+            """
+            UPDATE users
+            SET active_potion_slug = $2,
+                active_potion_expires_at = $3
+            WHERE user_id = $1
+            """,
+            user_id,
+            potion_slug,
+            expires_at,
+        )
+
+    async def clear_active_potion(
+        self, user_id: int, *, connection: asyncpg.Connection | None = None
+    ) -> None:
+        await self.ensure_user(user_id)
+
+        executor = connection or self.pool
+        if executor is None:
+            raise DatabaseError("La base de données n'est pas connectée")
+
+        await executor.execute(
+            """
+            UPDATE users
+            SET active_potion_slug = NULL,
+                active_potion_expires_at = NULL
+            WHERE user_id = $1
             """,
             user_id,
         )
@@ -2163,6 +2306,8 @@ class Database:
                     u.pet_booster_multiplier,
                     u.pet_booster_expires_at,
                     u.pet_booster_activated_at,
+                    u.active_potion_slug,
+                    u.active_potion_expires_at,
                     cm.clan_id AS member_clan_id,
                     c.name AS clan_name,
                     c.pb_boost_multiplier,
@@ -2181,7 +2326,7 @@ class Database:
             )
 
             if not rows:
-                return 0, [], 0.0, {}, {}
+                return 0, [], 0.0, {}, {}, {}
 
             first_row = rows[0]
             now = datetime.now(timezone.utc)
@@ -2193,14 +2338,21 @@ class Database:
                     now,
                     user_id,
                 )
-                return 0, rows, 0.0, {}, {}
+                return 0, rows, 0.0, {}, {}, {}
 
             booster_multiplier = float(first_row.get("pet_booster_multiplier") or 1.0)
             booster_expires = first_row.get("pet_booster_expires_at")
             booster_activated = first_row.get("pet_booster_activated_at")
+            active_potion_slug = first_row.get("active_potion_slug")
+            active_potion_expires_at = first_row.get("active_potion_expires_at")
             booster_seconds = 0.0
             booster_remaining = 0.0
             booster_extra_amount = 0
+            potion_multiplier = 1.0
+            potion_bonus_amount = 0
+            potion_remaining = 0.0
+            potion_definition: PotionDefinition | None = None
+            potion_should_clear = False
 
             if isinstance(booster_expires, datetime):
                 booster_remaining = (booster_expires - now).total_seconds()
@@ -2217,6 +2369,20 @@ class Database:
                 overlap_end = min(interval_end, booster_expires)
                 if overlap_end > overlap_start:
                     booster_seconds = (overlap_end - overlap_start).total_seconds()
+
+            if active_potion_slug:
+                potion_definition = POTION_DEFINITION_MAP.get(str(active_potion_slug))
+                if isinstance(active_potion_expires_at, datetime) and potion_definition is not None:
+                    if active_potion_expires_at > now:
+                        potion_remaining = (
+                            active_potion_expires_at - now
+                        ).total_seconds()
+                        if potion_definition.effect_type == "pb_boost":
+                            potion_multiplier += float(potion_definition.effect_value)
+                    else:
+                        potion_should_clear = True
+                else:
+                    potion_should_clear = True
 
             best_non_huge_income = await self.get_best_non_huge_income(
                 user_id, connection=connection
@@ -2246,7 +2412,7 @@ class Database:
                     now,
                     user_id,
                 )
-                return 0, rows, elapsed_seconds, {}, {}
+                return 0, rows, elapsed_seconds, {}, {}, {}
 
             elapsed_hours = elapsed_seconds / 3600
             base_amount = hourly_income * elapsed_hours
@@ -2258,7 +2424,12 @@ class Database:
 
             raw_income = base_income_int + booster_extra_amount
             if raw_income <= 0:
-                return 0, rows, elapsed_seconds, {}, {}
+                return 0, rows, elapsed_seconds, {}, {}, {}
+
+            if potion_multiplier > 1.0:
+                boosted_by_potion = int(round(raw_income * potion_multiplier))
+                potion_bonus_amount = max(0, boosted_by_potion - raw_income)
+                raw_income = boosted_by_potion
 
             base_consumed_seconds = (
                 int((base_income_int / hourly_income) * 3600) if hourly_income else 0
@@ -2387,7 +2558,36 @@ class Database:
                 "remaining_seconds": float(max(0.0, booster_remaining)),
             }
 
-        return income, rows, elapsed_seconds, booster_info, clan_info, progress_updates
+        potion_info: dict[str, object] = {}
+        if potion_definition and potion_multiplier > 1.0:
+            potion_info = {
+                "name": potion_definition.name,
+                "slug": potion_definition.slug,
+                "multiplier": potion_multiplier,
+                "bonus": int(max(0, potion_bonus_amount)),
+                "remaining_seconds": float(max(0.0, potion_remaining)),
+            }
+
+        if potion_should_clear:
+            await connection.execute(
+                """
+                UPDATE users
+                SET active_potion_slug = NULL,
+                    active_potion_expires_at = NULL
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
+
+        return (
+            income,
+            rows,
+            elapsed_seconds,
+            booster_info,
+            clan_info,
+            progress_updates,
+            potion_info,
+        )
 
     async def record_pet_opening(self, user_id: int, pet_id: int) -> None:
         await self.ensure_user(user_id)
