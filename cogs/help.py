@@ -181,13 +181,16 @@ class Help(commands.Cog):
                 ),
             ),
             HelpSection(
-                key="trades",
-                label="🤝 Échanges",
-                description="Commandes liées aux échanges sécurisés.",
+                key="stands",
+                label="🏬 Plaza",
+                description="Installe ton stand et parcours la plaza.",
                 commands=(
-                    "**e!trade** @membre — Lance un échange sécurisé.",
-                    "**e!tradehistory** — Consulte ton historique d'échanges.",
-                    "**e!tradestats** — Statistiques globales des échanges.",
+                    "**e!stand** [@membre] — Affiche ton stand ou celui d'un joueur.",
+                    "**e!stand add <prix> <pet>** — Met un pet en vente sur ton stand.",
+                    "**e!stand remove <id>** — Retire une annonce active.",
+                    "**e!stand buy <id>** — Achète un pet depuis un stand.",
+                    "**e!stand history** — Historique de tes ventes et achats.",
+                    "**e!plaza** — Vue d'ensemble des stands actifs.",
                 ),
             ),
             HelpSection(

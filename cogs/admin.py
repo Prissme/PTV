@@ -280,7 +280,7 @@ class Admin(commands.Cog):
             f"Utilisateurs : **{int(stats['users_count'])}**\n"
             f"Transactions : **{int(stats['transactions_count'])}**\n"
             f"Pets détenus : **{int(stats['pets_count'])}**\n"
-            f"Trades terminés : **{int(stats['trades_completed'])}/{int(stats['trades_count'])}**\n"
+            f"Annonces actives : **{int(stats['listings_active'])}/{int(stats['listings_count'])}**\n"
             f"Richesse totale : **{embeds.format_currency(int(stats['total_balance']))}**"
         )
         embed = embeds.info_embed(description, title="Statistiques base de données")
