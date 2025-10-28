@@ -7,7 +7,7 @@ import logging
 import math
 import random
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
 import discord
@@ -30,6 +30,7 @@ from config import (
     HUGE_PET_NAME,
     HUGE_PET_MIN_INCOME,
     HUGE_PET_SOURCES,
+    PotionDefinition,
     get_huge_level_multiplier,
     get_huge_level_progress,
     huge_level_required_xp,
@@ -275,8 +276,22 @@ class Pets(commands.Cog):
     # ------------------------------------------------------------------
     # Utilitaires internes
     # ------------------------------------------------------------------
-    def _choose_pet(self, egg: PetEggDefinition) -> tuple[PetDefinition, int]:
+    def _choose_pet(
+        self, egg: PetEggDefinition, *, luck_bonus: float = 0.0
+    ) -> tuple[PetDefinition, int]:
         weights = [pet.drop_rate for pet in egg.pets]
+        if luck_bonus > 0 and egg.pets:
+            sorted_indices = sorted(
+                range(len(egg.pets)),
+                key=lambda idx: (
+                    egg.pets[idx].drop_rate,
+                    -egg.pets[idx].base_income_per_hour,
+                ),
+            )
+            rare_count = max(1, len(sorted_indices) // 3)
+            multiplier = 1.0 + float(luck_bonus)
+            for idx in sorted_indices[:rare_count]:
+                weights[idx] *= multiplier
         pet = random.choices(egg.pets, weights=weights, k=1)[0]
         pet_id = self._pet_ids[pet.name]
         return pet, pet_id
@@ -725,7 +740,13 @@ class Pets(commands.Cog):
         )
         await channel.send(hype_message)
 
-    async def _open_pet_egg(self, ctx: commands.Context, egg: PetEggDefinition) -> None:
+    async def _open_pet_egg(
+        self,
+        ctx: commands.Context,
+        egg: PetEggDefinition,
+        *,
+        active_potion: tuple[PotionDefinition, datetime] | None = None,
+    ) -> None:
         await self.database.ensure_user(ctx.author.id)
         balance = await self.database.fetch_balance(ctx.author.id)
         if balance < egg.price:
@@ -743,7 +764,15 @@ class Pets(commands.Cog):
             transaction_type="pet_purchase",
             description=f"Achat de {egg.name}",
         )
-        pet_definition, pet_id = self._choose_pet(egg)
+        luck_bonus = 0.0
+        if active_potion:
+            potion_definition, potion_expires_at = active_potion
+            if (
+                potion_definition.effect_type == "egg_luck"
+                and potion_expires_at > datetime.now(timezone.utc)
+            ):
+                luck_bonus = max(0.0, float(potion_definition.effect_value))
+        pet_definition, pet_id = self._choose_pet(egg, luck_bonus=luck_bonus)
         is_gold = False
         is_rainbow = False
         if not pet_definition.is_huge:
@@ -889,7 +918,12 @@ class Pets(commands.Cog):
         if not await self._ensure_zone_access(ctx, zone):
             return
 
-        await self._open_pet_egg(ctx, egg_definition)
+        active_potion = await self.database.get_active_potion(ctx.author.id)
+        await self._open_pet_egg(
+            ctx,
+            egg_definition,
+            active_potion=active_potion,
+        )
 
     @commands.command(name="eggs", aliases=("zones", "zone"))
     async def eggs(self, ctx: commands.Context) -> None:
@@ -1382,6 +1416,7 @@ class Pets(commands.Cog):
             booster_info,
             clan_info,
             progress_updates,
+            potion_info,
         ) = await self.database.claim_active_pet_income(ctx.author.id)
         if not rows:
             await ctx.send(embed=embeds.error_embed("Tu dois équiper un pet avant de pouvoir collecter ses revenus."))
@@ -1457,6 +1492,7 @@ class Pets(commands.Cog):
             elapsed_seconds=elapsed,
             booster=booster_info,
             clan=clan_info if clan_info else None,
+            potion=potion_info if potion_info else None,
         )
         await ctx.send(embed=embed)
 
