@@ -247,38 +247,34 @@ class Database:
             )
 
             await connection.execute(
+                "ALTER TABLE user_pets ADD COLUMN IF NOT EXISTS on_market BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            await connection.execute(
                 """
-                CREATE TABLE IF NOT EXISTS trades (
+                CREATE TABLE IF NOT EXISTS market_listings (
                     id SERIAL PRIMARY KEY,
-                    user_a_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                    user_b_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                    user_a_pb BIGINT NOT NULL DEFAULT 0 CHECK (user_a_pb >= 0),
-                    user_b_pb BIGINT NOT NULL DEFAULT 0 CHECK (user_b_pb >= 0),
-                    status VARCHAR(20) NOT NULL,
+                    seller_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    buyer_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
+                    user_pet_id INTEGER NOT NULL REFERENCES user_pets(id) ON DELETE CASCADE,
+                    price BIGINT NOT NULL CHECK (price >= 0),
+                    status VARCHAR(20) NOT NULL DEFAULT 'active',
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     completed_at TIMESTAMPTZ
                 )
                 """
             )
             await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_market_listings_status ON market_listings(status)"
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_market_listings_seller ON market_listings(seller_id)"
+            )
+            await connection.execute(
                 """
-                CREATE TABLE IF NOT EXISTS trade_pets (
-                    id SERIAL PRIMARY KEY,
-                    trade_id INTEGER NOT NULL REFERENCES trades(id) ON DELETE CASCADE,
-                    user_pet_id INTEGER NOT NULL REFERENCES user_pets(id) ON DELETE CASCADE,
-                    from_user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                    to_user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE
-                )
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_market_listings_pet_active
+                ON market_listings(user_pet_id)
+                WHERE status = 'active'
                 """
-            )
-            await connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_trades_users ON trades(user_a_id, user_b_id)"
-            )
-            await connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_trade_pets_trade ON trade_pets(trade_id)"
-            )
-            await connection.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_pet_unique ON trade_pets(trade_id, user_pet_id)"
             )
 
             await connection.execute(
@@ -1452,12 +1448,7 @@ class Database:
                   AND up.pet_id = $2
                   AND NOT up.is_gold
                   AND NOT up.is_active
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM trade_pets AS tp
-                    JOIN trades AS t ON t.id = tp.trade_id
-                    WHERE tp.user_pet_id = up.id AND t.status = 'pending'
-                  )
+                  AND NOT up.on_market
                 ORDER BY up.acquired_at
                 FOR UPDATE
                 """,
@@ -1469,7 +1460,10 @@ class Database:
             required = GOLD_PET_COMBINE_REQUIRED
             if len(available_ids) < required:
                 raise DatabaseError(
-                    f"Tu as besoin d'au moins {required} exemplaires non équipés et non échangés de ce pet pour créer une version or."
+                    (
+                        "Tu as besoin d'au moins {required} exemplaires non équipés et non listés sur ton stand "
+                        "pour créer une version or."
+                    ).format(required=required)
                 )
 
             consumed_ids = available_ids[:required]
@@ -1532,11 +1526,7 @@ class Database:
                   AND up.is_gold
                   AND NOT up.is_rainbow
                   AND NOT up.is_active
-                  AND NOT EXISTS (
-                    SELECT 1 FROM trade_pets AS tp
-                    JOIN trades AS t ON t.id = tp.trade_id
-                    WHERE tp.user_pet_id = up.id AND t.status = 'pending'
-                  )
+                  AND NOT up.on_market
                 ORDER BY up.acquired_at
                 FOR UPDATE
                 """,
@@ -1610,6 +1600,7 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+                up.on_market,
                 up.huge_level,
                 up.huge_xp,
                 up.acquired_at,
@@ -1636,6 +1627,7 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+                up.on_market,
                 up.huge_level,
                 up.huge_xp,
                 up.acquired_at,
@@ -1674,6 +1666,7 @@ class Database:
                     up.is_huge,
                     up.is_gold,
                     up.is_rainbow,
+                    up.on_market,
                     up.huge_level,
                     up.huge_xp,
                     up.acquired_at,
@@ -1694,22 +1687,23 @@ class Database:
             if int(pet_row["user_id"]) != int(source_user_id):
                 raise DatabaseError("Ce pet n'appartient pas à l'utilisateur indiqué.")
 
+            if bool(pet_row.get("on_market")):
+                raise DatabaseError("Ce pet est actuellement en vente sur un stand.")
+
             conflict = await connection.fetchval(
                 """
                 SELECT 1
-                FROM trade_pets AS tp
-                JOIN trades AS t ON t.id = tp.trade_id
-                WHERE tp.user_pet_id = $1
-                  AND t.status = 'pending'
+                FROM market_listings
+                WHERE user_pet_id = $1 AND status = 'active'
                 LIMIT 1
                 """,
                 user_pet_id,
             )
             if conflict:
-                raise DatabaseError("Ce pet participe actuellement à un échange en cours.")
+                raise DatabaseError("Ce pet est listé sur un stand actif.")
 
             await connection.execute(
-                "UPDATE user_pets SET user_id = $1, is_active = FALSE WHERE id = $2",
+                "UPDATE user_pets SET user_id = $1, is_active = FALSE, on_market = FALSE WHERE id = $2",
                 int(target_user_id),
                 user_pet_id,
             )
@@ -1751,6 +1745,7 @@ class Database:
         is_rainbow: bool | None = None,
         include_active: bool = True,
         include_inactive: bool = True,
+        include_on_market: bool = True,
     ) -> Sequence[asyncpg.Record]:
         if not include_active and not include_inactive:
             return []
@@ -1771,6 +1766,8 @@ class Database:
             where_clauses.append("NOT up.is_active")
         if not include_inactive:
             where_clauses.append("up.is_active")
+        if not include_on_market:
+            where_clauses.append("NOT up.on_market")
 
         where_sql = " AND ".join(where_clauses)
         query = f"""
@@ -1781,6 +1778,7 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+                up.on_market,
                 up.huge_level,
                 up.huge_xp,
                 up.acquired_at,
@@ -1863,7 +1861,7 @@ class Database:
         await self.ensure_user(user_id)
         async with self.transaction() as connection:
             pet_row = await connection.fetchrow(
-                "SELECT id, is_active FROM user_pets WHERE user_id = $1 AND id = $2 FOR UPDATE",
+                "SELECT id, is_active, on_market FROM user_pets WHERE user_id = $1 AND id = $2 FOR UPDATE",
                 user_id,
                 user_pet_id,
             )
@@ -1872,6 +1870,11 @@ class Database:
 
             if bool(pet_row["is_active"]):
                 raise DatabaseError("Ce pet est déjà équipé.")
+
+            if bool(pet_row.get("on_market")):
+                raise DatabaseError(
+                    "Ce pet est actuellement en vente sur ton stand. Retire-le avant de l'équiper."
+                )
 
             active_count = int(
                 await connection.fetchval(
@@ -1892,7 +1895,7 @@ class Database:
                 raise ActivePetLimitError(active_count, max_slots)
 
             await connection.execute(
-                "UPDATE user_pets SET is_active = TRUE WHERE id = $1",
+                "UPDATE user_pets SET is_active = TRUE, on_market = FALSE WHERE id = $1",
                 user_pet_id,
             )
             new_active_count = active_count + 1
@@ -1959,7 +1962,7 @@ class Database:
         await self.ensure_user(user_id)
         async with self.transaction() as connection:
             out_row = await connection.fetchrow(
-                "SELECT id, is_active FROM user_pets WHERE user_id = $1 AND id = $2 FOR UPDATE",
+                "SELECT id, is_active, on_market FROM user_pets WHERE user_id = $1 AND id = $2 FOR UPDATE",
                 user_id,
                 pet_out_id,
             )
@@ -1969,7 +1972,7 @@ class Database:
                 raise DatabaseError("Le pet à retirer n'est pas actuellement équipé.")
 
             in_row = await connection.fetchrow(
-                "SELECT id, is_active FROM user_pets WHERE user_id = $1 AND id = $2 FOR UPDATE",
+                "SELECT id, is_active, on_market FROM user_pets WHERE user_id = $1 AND id = $2 FOR UPDATE",
                 user_id,
                 pet_in_id,
             )
@@ -1977,6 +1980,10 @@ class Database:
                 raise DatabaseError("Le pet à équiper est introuvable.")
             if bool(in_row["is_active"]):
                 raise DatabaseError("Le pet à équiper est déjà actif.")
+            if bool(in_row.get("on_market")):
+                raise DatabaseError(
+                    "Le pet que tu veux équiper est actuellement en vente sur ton stand. Retire-le avant de l'équiper."
+                )
 
             active_count = int(
                 await connection.fetchval(
@@ -1998,7 +2005,7 @@ class Database:
                 pet_out_id,
             )
             await connection.execute(
-                "UPDATE user_pets SET is_active = TRUE WHERE id = $1",
+                "UPDATE user_pets SET is_active = TRUE, on_market = FALSE WHERE id = $1",
                 pet_in_id,
             )
             await connection.execute(
@@ -2026,7 +2033,7 @@ class Database:
         await self.ensure_user(user_id)
         async with self.transaction() as connection:
             pet_row = await connection.fetchrow(
-                "SELECT id, is_active FROM user_pets WHERE user_id = $1 AND id = $2 FOR UPDATE",
+                "SELECT id, is_active, on_market FROM user_pets WHERE user_id = $1 AND id = $2 FOR UPDATE",
                 user_id,
                 user_pet_id,
             )
@@ -2034,6 +2041,10 @@ class Database:
                 return None, False, 0
 
             currently_active = bool(pet_row["is_active"])
+            if not currently_active and bool(pet_row.get("on_market")):
+                raise DatabaseError(
+                    "Ce pet est actuellement en vente sur ton stand. Retire-le avant de l'équiper."
+                )
             active_count = int(
                 await connection.fetchval(
                     "SELECT COUNT(*) FROM user_pets WHERE user_id = $1 AND is_active",
@@ -2058,10 +2069,11 @@ class Database:
             else:
                 if active_count >= max_slots:
                     raise DatabaseError(
-                        f"Tu ne peux pas équiper plus de {max_slots} pets simultanément. Monte en grade pour augmenter ta limite !"
+                        "Tu ne peux pas équiper plus de {max_slots} pets simultanément. Monte en grade pour augmenter ta limite !"
+                        .format(max_slots=max_slots)
                     )
                 await connection.execute(
-                    "UPDATE user_pets SET is_active = TRUE WHERE id = $1",
+                    "UPDATE user_pets SET is_active = TRUE, on_market = FALSE WHERE id = $1",
                     user_pet_id,
                 )
                 new_active_count = active_count + 1
@@ -2360,97 +2372,29 @@ class Database:
         return int(value or 0)
 
     async def get_pet_market_values(self) -> Dict[int, int]:
-        """Calcule le prix moyen des pets selon les échanges terminés."""
+        """Calcule le prix moyen des pets vendus via les stands."""
 
         rows = await self.pool.fetch(
             """
-            SELECT
-                t.id,
-                t.user_a_id,
-                t.user_b_id,
-                t.user_a_pb,
-                t.user_b_pb,
-                tp.user_pet_id,
-                tp.from_user_id,
-                tp.to_user_id,
-                up.pet_id
-            FROM trades AS t
-            LEFT JOIN trade_pets AS tp ON tp.trade_id = t.id
-            LEFT JOIN user_pets AS up ON up.id = tp.user_pet_id
-            WHERE t.status = 'completed'
-            ORDER BY t.id
-            """
+            SELECT ml.price, up.pet_id
+            FROM market_listings AS ml
+            JOIN user_pets AS up ON up.id = ml.user_pet_id
+            WHERE ml.status = 'sold'
+        """
         )
 
-        trade_map: Dict[int, Dict[str, object]] = {}
+        totals: Dict[int, tuple[int, int]] = {}
         for row in rows:
-            trade_id = int(row["id"])
-            trade = trade_map.setdefault(
-                trade_id,
-                {
-                    "user_a_id": int(row["user_a_id"]),
-                    "user_b_id": int(row["user_b_id"]),
-                    "user_a_pb": int(row["user_a_pb"]),
-                    "user_b_pb": int(row["user_b_pb"]),
-                    "pets": [],
-                },
-            )
+            pet_id = int(row["pet_id"])
+            price = int(row["price"])
+            total, count = totals.get(pet_id, (0, 0))
+            totals[pet_id] = (total + price, count + 1)
 
-            user_pet_id = row["user_pet_id"]
-            pet_id = row["pet_id"]
-            if user_pet_id is None or pet_id is None:
-                continue
-
-            pets: list[dict[str, int]] = trade.setdefault("pets", [])  # type: ignore[assignment]
-            pets.append(
-                {
-                    "pet_id": int(pet_id),
-                    "from_user_id": int(row["from_user_id"]),
-                    "to_user_id": int(row["to_user_id"]),
-                }
-            )
-
-        totals: Dict[int, tuple[float, int]] = {}
-
-        for trade in trade_map.values():
-            pets: list[dict[str, int]] = trade["pets"]  # type: ignore[assignment]
-            if not pets:
-                continue
-
-            user_a_id = int(trade["user_a_id"])
-            user_b_id = int(trade["user_b_id"])
-            user_a_pb = int(trade["user_a_pb"])
-            user_b_pb = int(trade["user_b_pb"])
-
-            pets_from_a = [pet for pet in pets if pet["from_user_id"] == user_a_id]
-            pets_from_b = [pet for pet in pets if pet["from_user_id"] == user_b_id]
-
-            if (
-                user_a_pb > 0
-                and user_b_pb == 0
-                and pets_from_b
-                and not pets_from_a
-            ):
-                price_per_pet = user_a_pb / len(pets_from_b)
-                targets = pets_from_b
-            elif (
-                user_b_pb > 0
-                and user_a_pb == 0
-                and pets_from_a
-                and not pets_from_b
-            ):
-                price_per_pet = user_b_pb / len(pets_from_a)
-                targets = pets_from_a
-            else:
-                continue
-
-            for pet in targets:
-                pet_id = pet["pet_id"]
-                total, count = totals.get(pet_id, (0.0, 0))
-                totals[pet_id] = (total + price_per_pet, count + 1)
-
-        return {pet_id: int(round(total / count)) for pet_id, (total, count) in totals.items() if count}
-
+        averages: Dict[int, int] = {}
+        for pet_id, (total, count) in totals.items():
+            if count:
+                averages[pet_id] = int(round(total / count))
+        return averages
     # ------------------------------------------------------------------
     # Historique financier
     # ------------------------------------------------------------------
@@ -2474,484 +2418,285 @@ class Database:
         return await self.pool.fetch(query, user_id, limit)
 
     # ------------------------------------------------------------------
-    # Gestion des échanges (trades)
+    # Stand de la plaza (listings)
     # ------------------------------------------------------------------
-    async def create_trade(self, user_a_id: int, user_b_id: int) -> asyncpg.Record:
-        if user_a_id == user_b_id:
-            raise DatabaseError("Impossible de créer un échange avec soi-même")
-
-        await self.ensure_user(user_a_id)
-        await self.ensure_user(user_b_id)
-
-        async with self.transaction() as connection:
-            row = await connection.fetchrow(
-                """
-                INSERT INTO trades (user_a_id, user_b_id, status)
-                VALUES ($1, $2, 'pending')
-                RETURNING id, user_a_id, user_b_id, user_a_pb, user_b_pb, status, created_at, completed_at
-                """,
-                user_a_id,
-                user_b_id,
-            )
-
-        if row is None:
-            raise DatabaseError("Impossible de créer l'échange")
-        return row
-
-    async def update_trade_pb(self, trade_id: int, user_id: int, amount: int) -> asyncpg.Record:
-        if amount < 0:
-            raise DatabaseError("Le montant proposé doit être positif")
-
-        async with self.transaction() as connection:
-            trade = await connection.fetchrow("SELECT * FROM trades WHERE id = $1 FOR UPDATE", trade_id)
-            if trade is None:
-                raise DatabaseError("Échange introuvable")
-            if trade["status"] != "pending":
-                raise DatabaseError("Impossible de modifier un échange finalisé")
-
-            user_a_id = int(trade["user_a_id"])
-            user_b_id = int(trade["user_b_id"])
-            if user_id not in (user_a_id, user_b_id):
-                raise DatabaseError("Seuls les participants peuvent modifier l'échange")
-
-            column = "user_a_pb" if user_id == user_a_id else "user_b_pb"
-            await connection.execute(f"UPDATE trades SET {column} = $1 WHERE id = $2", amount, trade_id)
-            updated = await connection.fetchrow("SELECT * FROM trades WHERE id = $1", trade_id)
-
-        if updated is None:
-            raise DatabaseError("Échange introuvable après mise à jour")
-        return updated
-
-    async def add_trade_pet(
-        self,
-        trade_id: int,
-        user_pet_id: int,
-        from_user_id: int,
-        to_user_id: int,
+    async def create_market_listing(
+        self, seller_id: int, user_pet_id: int, price: int
     ) -> asyncpg.Record:
+        if price < 0:
+            raise DatabaseError("Le prix doit être positif")
+
+        await self.ensure_user(seller_id)
+
         async with self.transaction() as connection:
-            trade = await connection.fetchrow("SELECT * FROM trades WHERE id = $1 FOR UPDATE", trade_id)
-            if trade is None:
-                raise DatabaseError("Échange introuvable")
-            if trade["status"] != "pending":
-                raise DatabaseError("Impossible de modifier un échange finalisé")
-
-            user_a_id = int(trade["user_a_id"])
-            user_b_id = int(trade["user_b_id"])
-            if from_user_id not in (user_a_id, user_b_id) or to_user_id not in (user_a_id, user_b_id):
-                raise DatabaseError("Participants invalides pour cet échange")
-            if from_user_id == to_user_id:
-                raise DatabaseError("Impossible d'envoyer un pet à soi-même dans un échange")
-
             pet_row = await connection.fetchrow(
-                "SELECT id, user_id, is_active FROM user_pets WHERE id = $1 FOR UPDATE",
+                """
+                SELECT id, user_id, is_active, on_market
+                FROM user_pets
+                WHERE id = $1
+                FOR UPDATE
+                """,
                 user_pet_id,
             )
             if pet_row is None:
-                raise DatabaseError("Le pet demandé est introuvable")
-            if int(pet_row["user_id"]) != from_user_id:
-                raise DatabaseError("Ce pet n'appartient plus à cet utilisateur")
+                raise DatabaseError("Ce pet est introuvable.")
+            if int(pet_row["user_id"]) != seller_id:
+                raise DatabaseError("Ce pet ne t'appartient pas.")
             if bool(pet_row["is_active"]):
-                raise DatabaseError("Le pet doit être déséquipé avant d'être échangé")
+                raise DatabaseError("Ce pet est actuellement équipé.")
+            if bool(pet_row["on_market"]):
+                raise DatabaseError("Ce pet est déjà en vente sur ton stand.")
 
-            conflict = await connection.fetchval(
+            await connection.execute(
+                "UPDATE user_pets SET on_market = TRUE WHERE id = $1",
+                user_pet_id,
+            )
+            listing = await connection.fetchrow(
                 """
-                SELECT 1
-                FROM trade_pets AS tp
-                JOIN trades AS t ON t.id = tp.trade_id
-                WHERE tp.user_pet_id = $1
-                  AND tp.trade_id != $2
-                  AND t.status = 'pending'
-                LIMIT 1
+                INSERT INTO market_listings (seller_id, user_pet_id, price)
+                VALUES ($1, $2, $3)
+                RETURNING *
                 """,
+                seller_id,
                 user_pet_id,
-                trade_id,
-            )
-            if conflict:
-                raise DatabaseError("Ce pet est déjà proposé dans un autre échange en cours")
-
-            exists = await connection.fetchval(
-                "SELECT 1 FROM trade_pets WHERE trade_id = $1 AND user_pet_id = $2",
-                trade_id,
-                user_pet_id,
-            )
-            if exists:
-                raise DatabaseError("Ce pet est déjà proposé dans l'échange")
-
-            row = await connection.fetchrow(
-                """
-                INSERT INTO trade_pets (trade_id, user_pet_id, from_user_id, to_user_id)
-                VALUES ($1, $2, $3, $4)
-                RETURNING id, trade_id, user_pet_id, from_user_id, to_user_id
-                """,
-                trade_id,
-                user_pet_id,
-                from_user_id,
-                to_user_id,
+                price,
             )
 
-        if row is None:
-            raise DatabaseError("Impossible d'ajouter ce pet à l'échange")
-        return row
+        if listing is None:
+            raise DatabaseError("Impossible de créer la mise en vente.")
+        return listing
 
-    async def remove_trade_pet(self, trade_id: int, user_pet_id: int, user_id: int) -> bool:
+    async def cancel_market_listing(self, listing_id: int, seller_id: int) -> asyncpg.Record:
         async with self.transaction() as connection:
-            trade = await connection.fetchrow("SELECT status FROM trades WHERE id = $1 FOR UPDATE", trade_id)
-            if trade is None:
-                raise DatabaseError("Échange introuvable")
-            if trade["status"] != "pending":
-                raise DatabaseError("Impossible de modifier un échange finalisé")
+            listing = await connection.fetchrow(
+                "SELECT * FROM market_listings WHERE id = $1 FOR UPDATE",
+                listing_id,
+            )
+            if listing is None:
+                raise DatabaseError("Annonce introuvable.")
+            if listing["status"] != "active":
+                raise DatabaseError("Cette annonce n'est plus active.")
+            if int(listing["seller_id"]) != seller_id:
+                raise DatabaseError("Tu ne peux annuler que tes propres annonces.")
 
-            result = await connection.execute(
+            await connection.execute(
+                "UPDATE user_pets SET on_market = FALSE WHERE id = $1",
+                int(listing["user_pet_id"]),
+            )
+            cancelled = await connection.fetchrow(
                 """
-                DELETE FROM trade_pets
-                WHERE trade_id = $1 AND user_pet_id = $2 AND from_user_id = $3
+                UPDATE market_listings
+                SET status = 'cancelled', completed_at = NOW()
+                WHERE id = $1
+                RETURNING *
                 """,
-                trade_id,
-                user_pet_id,
-                user_id,
+                listing_id,
             )
 
-        return result.endswith("1")
+        if cancelled is None:
+            raise DatabaseError("Impossible d'annuler l'annonce.")
+        return cancelled
 
-    async def get_trade_state(self, trade_id: int) -> Optional[Dict[str, Any]]:
-        trade = await self.pool.fetchrow("SELECT * FROM trades WHERE id = $1", trade_id)
-        if trade is None:
-            return None
+    async def purchase_market_listing(
+        self, listing_id: int, buyer_id: int
+    ) -> Dict[str, Any]:
+        await self.ensure_user(buyer_id)
 
-        pets = await self.pool.fetch(
-            """
+        async with self.transaction() as connection:
+            listing = await connection.fetchrow(
+                """
+                SELECT *
+                FROM market_listings
+                WHERE id = $1
+                FOR UPDATE
+                """,
+                listing_id,
+            )
+            if listing is None:
+                raise DatabaseError("Cette annonce n'existe pas.")
+            if listing["status"] != "active":
+                raise DatabaseError("Cette annonce n'est plus disponible.")
+
+            seller_id = int(listing["seller_id"])
+            if seller_id == buyer_id:
+                raise DatabaseError("Tu ne peux pas acheter ta propre annonce.")
+
+            user_pet_id = int(listing["user_pet_id"])
+            pet_row = await connection.fetchrow(
+                """
+                SELECT id, user_id, is_active, on_market
+                FROM user_pets
+                WHERE id = $1
+                FOR UPDATE
+                """,
+                user_pet_id,
+            )
+            if pet_row is None:
+                raise DatabaseError("Le pet mis en vente est introuvable.")
+            if int(pet_row["user_id"]) != seller_id:
+                raise DatabaseError("Le vendeur ne possède plus ce pet.")
+            if bool(pet_row["is_active"]):
+                raise DatabaseError("Le pet mis en vente est actuellement équipé.")
+            if not bool(pet_row["on_market"]):
+                raise DatabaseError("Le pet n'est plus disponible à la vente.")
+
+            price = int(listing["price"])
+            seller_balance = await connection.fetchrow(
+                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                seller_id,
+            )
+            buyer_balance = await connection.fetchrow(
+                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                buyer_id,
+            )
+            if seller_balance is None or buyer_balance is None:
+                raise DatabaseError("Impossible de récupérer les soldes.")
+
+            seller_before = int(seller_balance["balance"])
+            buyer_before = int(buyer_balance["balance"])
+            if buyer_before < price:
+                raise InsufficientBalanceError("Solde insuffisant pour cet achat.")
+
+            seller_after = seller_before + price
+            buyer_after = buyer_before - price
+
+            await connection.execute(
+                "UPDATE users SET balance = $1 WHERE user_id = $2",
+                buyer_after,
+                buyer_id,
+            )
+            await connection.execute(
+                "UPDATE users SET balance = $1 WHERE user_id = $2",
+                seller_after,
+                seller_id,
+            )
+
+            await connection.execute(
+                """
+                UPDATE user_pets
+                SET user_id = $1, is_active = FALSE, on_market = FALSE
+                WHERE id = $2
+                """,
+                buyer_id,
+                user_pet_id,
+            )
+
+            completed = await connection.fetchrow(
+                """
+                UPDATE market_listings
+                SET status = 'sold', buyer_id = $1, completed_at = NOW()
+                WHERE id = $2
+                RETURNING *
+                """,
+                buyer_id,
+                listing_id,
+            )
+
+            await self.record_transaction(
+                connection=connection,
+                user_id=buyer_id,
+                transaction_type="stand_purchase",
+                amount=-price,
+                balance_before=buyer_before,
+                balance_after=buyer_after,
+                description=f"Achat annonce #{listing_id}",
+                related_user_id=seller_id,
+            )
+            await self.record_transaction(
+                connection=connection,
+                user_id=seller_id,
+                transaction_type="stand_sale",
+                amount=price,
+                balance_before=seller_before,
+                balance_after=seller_after,
+                description=f"Vente annonce #{listing_id}",
+                related_user_id=buyer_id,
+            )
+
+        if completed is None:
+            raise DatabaseError("Impossible de finaliser l'achat.")
+        return {"listing": completed, "seller_before": seller_before, "buyer_before": buyer_before}
+
+    async def get_market_listing(self, listing_id: int) -> Optional[asyncpg.Record]:
+        query = """
             SELECT
-                tp.id,
-                tp.trade_id,
-                tp.user_pet_id,
-                tp.from_user_id,
-                tp.to_user_id,
-                up.user_id,
+                ml.*,
+                up.is_active,
+                up.is_huge,
+                up.is_gold,
+                up.is_rainbow,
+                up.on_market,
+                p.name,
+                p.rarity,
+                p.base_income_per_hour
+            FROM market_listings AS ml
+            JOIN user_pets AS up ON up.id = ml.user_pet_id
+            JOIN pets AS p ON p.pet_id = up.pet_id
+            WHERE ml.id = $1
+        """
+        return await self.pool.fetchrow(query, listing_id)
+
+    async def list_active_market_listings(
+        self, *, limit: int = 25, seller_id: int | None = None
+    ) -> Sequence[asyncpg.Record]:
+        limit = max(1, limit)
+        query = """
+            SELECT
+                ml.id,
+                ml.seller_id,
+                ml.user_pet_id,
+                ml.price,
+                ml.created_at,
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
                 p.name,
                 p.rarity,
-                p.image_url
-            FROM trade_pets AS tp
-            JOIN user_pets AS up ON up.id = tp.user_pet_id
+                p.base_income_per_hour
+            FROM market_listings AS ml
+            JOIN user_pets AS up ON up.id = ml.user_pet_id
             JOIN pets AS p ON p.pet_id = up.pet_id
-            WHERE tp.trade_id = $1
-            ORDER BY tp.id
-            """,
-            trade_id,
-        )
-
-        return {"trade": trade, "pets": pets}
-
-    async def finalize_trade(self, trade_id: int) -> Dict[str, Any]:
-        async with self.transaction() as connection:
-            trade = await connection.fetchrow("SELECT * FROM trades WHERE id = $1 FOR UPDATE", trade_id)
-            if trade is None:
-                raise DatabaseError("Échange introuvable")
-            if trade["status"] != "pending":
-                raise DatabaseError("Cet échange a déjà été finalisé ou annulé")
-
-            user_a_id = int(trade["user_a_id"])
-            user_b_id = int(trade["user_b_id"])
-            user_a_pb = int(trade["user_a_pb"])
-            user_b_pb = int(trade["user_b_pb"])
-
-            def _compute_tax(amount: int) -> int:
-                if amount <= 0:
-                    return 0
-                return max(1, math.ceil(amount * 0.01))
-
-            user_a_row = await connection.fetchrow(
-                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
-                user_a_id,
-            )
-            user_b_row = await connection.fetchrow(
-                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
-                user_b_id,
-            )
-            if user_a_row is None or user_b_row is None:
-                raise DatabaseError("Impossible de récupérer le solde des participants")
-
-            balance_a_before = int(user_a_row["balance"])
-            balance_b_before = int(user_b_row["balance"])
-            if balance_a_before < user_a_pb:
-                raise DatabaseError("Le solde du premier utilisateur est insuffisant")
-            if balance_b_before < user_b_pb:
-                raise DatabaseError("Le solde du second utilisateur est insuffisant")
-
-            pet_rows = await connection.fetch(
-                """
-                SELECT
-                    tp.id,
-                    tp.user_pet_id,
-                    tp.from_user_id,
-                    tp.to_user_id,
-                    up.user_id,
-                    up.is_active,
-                    up.is_huge,
-                    up.is_gold,
-                    up.is_rainbow,
-                    p.name,
-                    p.rarity
-                FROM trade_pets AS tp
-                JOIN user_pets AS up ON up.id = tp.user_pet_id
-                JOIN pets AS p ON p.pet_id = up.pet_id
-                WHERE tp.trade_id = $1
-                FOR UPDATE
-                """,
-                trade_id,
-            )
-
-            transfers: list[dict[str, Any]] = []
-            taxes = defaultdict(int)
-            for pet in pet_rows:
-                current_owner = int(pet["user_id"])
-                if current_owner != int(pet["from_user_id"]):
-                    raise DatabaseError("Un des pets ne se trouve plus dans l'inventaire de l'offreur")
-                if bool(pet["is_active"]):
-                    raise DatabaseError("Un des pets est encore équipé. Déséquipe-le avant de finaliser")
-
-                await connection.execute(
-                    "UPDATE user_pets SET user_id = $1, is_active = FALSE WHERE id = $2",
-                    int(pet["to_user_id"]),
-                    int(pet["user_pet_id"]),
-                )
-                transfers.append(
-                    {
-                        "user_pet_id": int(pet["user_pet_id"]),
-                        "from_user_id": int(pet["from_user_id"]),
-                        "to_user_id": int(pet["to_user_id"]),
-                        "name": str(pet["name"]),
-                        "rarity": str(pet["rarity"]),
-                        "is_huge": bool(pet["is_huge"]),
-                        "is_gold": bool(pet["is_gold"]),
-                        "is_rainbow": bool(pet["is_rainbow"]),
-                    }
-                )
-
-            balance_a_after = balance_a_before
-            balance_b_after = balance_b_before
-
-            if user_a_pb > 0:
-                balance_a_after -= user_a_pb
-                await connection.execute(
-                    "UPDATE users SET balance = $1 WHERE user_id = $2",
-                    balance_a_after,
-                    user_a_id,
-                )
-                await self.record_transaction(
-                    connection=connection,
-                    user_id=user_a_id,
-                    transaction_type="trade_send",
-                    amount=-user_a_pb,
-                    balance_before=balance_a_before,
-                    balance_after=balance_a_after,
-                    description=f"Trade #{trade_id}",
-                    related_user_id=user_b_id,
-                )
-                balance_a_before = balance_a_after
-
-            if user_b_pb > 0:
-                balance_b_after -= user_b_pb
-                await connection.execute(
-                    "UPDATE users SET balance = $1 WHERE user_id = $2",
-                    balance_b_after,
-                    user_b_id,
-                )
-                await self.record_transaction(
-                    connection=connection,
-                    user_id=user_b_id,
-                    transaction_type="trade_send",
-                    amount=-user_b_pb,
-                    balance_before=balance_b_before,
-                    balance_after=balance_b_after,
-                    description=f"Trade #{trade_id}",
-                    related_user_id=user_a_id,
-                )
-                balance_b_before = balance_b_after
-
-            if user_b_pb > 0:
-                tax_for_a = _compute_tax(user_b_pb)
-                gross_balance = balance_a_after + user_b_pb
-                net_balance = gross_balance - tax_for_a
-                await connection.execute(
-                    "UPDATE users SET balance = $1 WHERE user_id = $2",
-                    net_balance,
-                    user_a_id,
-                )
-                await self.record_transaction(
-                    connection=connection,
-                    user_id=user_a_id,
-                    transaction_type="trade_receive",
-                    amount=user_b_pb,
-                    balance_before=balance_a_after,
-                    balance_after=gross_balance,
-                    description=(
-                        f"Trade #{trade_id}" + (f" (taxe 1% : {tax_for_a} PB)" if tax_for_a else "")
-                    ),
-                    related_user_id=user_b_id,
-                )
-                if tax_for_a:
-                    await self.record_transaction(
-                        connection=connection,
-                        user_id=user_a_id,
-                        transaction_type="trade_tax",
-                        amount=-tax_for_a,
-                        balance_before=gross_balance,
-                        balance_after=net_balance,
-                        description=f"Taxe trade #{trade_id}",
-                        related_user_id=None,
-                    )
-                    taxes[user_a_id] += tax_for_a
-                balance_a_after = net_balance
-
-            if user_a_pb > 0:
-                tax_for_b = _compute_tax(user_a_pb)
-                gross_balance = balance_b_after + user_a_pb
-                net_balance = gross_balance - tax_for_b
-                await connection.execute(
-                    "UPDATE users SET balance = $1 WHERE user_id = $2",
-                    net_balance,
-                    user_b_id,
-                )
-                await self.record_transaction(
-                    connection=connection,
-                    user_id=user_b_id,
-                    transaction_type="trade_receive",
-                    amount=user_a_pb,
-                    balance_before=balance_b_after,
-                    balance_after=gross_balance,
-                    description=(
-                        f"Trade #{trade_id}" + (f" (taxe 1% : {tax_for_b} PB)" if tax_for_b else "")
-                    ),
-                    related_user_id=user_a_id,
-                )
-                if tax_for_b:
-                    await self.record_transaction(
-                        connection=connection,
-                        user_id=user_b_id,
-                        transaction_type="trade_tax",
-                        amount=-tax_for_b,
-                        balance_before=gross_balance,
-                        balance_after=net_balance,
-                        description=f"Taxe trade #{trade_id}",
-                        related_user_id=None,
-                    )
-                    taxes[user_b_id] += tax_for_b
-                balance_b_after = net_balance
-
-            final_trade = await connection.fetchrow(
-                "UPDATE trades SET status = 'completed', completed_at = NOW() WHERE id = $1 RETURNING *",
-                trade_id,
-            )
-
-        if final_trade is None:
-            raise DatabaseError("Impossible de finaliser l'échange")
-
-        return {
-            "trade": final_trade,
-            "transfers": transfers,
-            "balances": {
-                int(final_trade["user_a_id"]): {
-                    "after": balance_a_after,
-                },
-                int(final_trade["user_b_id"]): {
-                    "after": balance_b_after,
-                },
-            },
-            "taxes": {int(user_id): int(amount) for user_id, amount in taxes.items()},
-        }
-
-    async def list_pending_trades(
-        self, *, limit: int = 10, user_id: int | None = None
-    ) -> Sequence[Dict[str, Any]]:
-        limit = max(1, limit)
-        query = """
-            SELECT id
-            FROM trades
-            WHERE status = 'pending'
-              AND ($2::BIGINT IS NULL OR user_a_id = $2 OR user_b_id = $2)
-            ORDER BY created_at DESC
+            WHERE ml.status = 'active'
+              AND ($2::BIGINT IS NULL OR ml.seller_id = $2)
+            ORDER BY ml.created_at ASC
             LIMIT $1
         """
-        rows = await self.pool.fetch(query, limit, user_id)
-        states: List[Dict[str, Any]] = []
-        for row in rows:
-            trade_state = await self.get_trade_state(int(row["id"]))
-            if trade_state is not None:
-                states.append(trade_state)
-        return states
+        return await self.pool.fetch(query, limit, seller_id)
 
-    async def cancel_trade(self, trade_id: int) -> asyncpg.Record:
-        async with self.transaction() as connection:
-            trade = await connection.fetchrow("SELECT * FROM trades WHERE id = $1 FOR UPDATE", trade_id)
-            if trade is None:
-                raise DatabaseError("Échange introuvable")
-            if trade["status"] != "pending":
-                return trade
-
-            cancelled = await connection.fetchrow(
-                "UPDATE trades SET status = 'cancelled', completed_at = NOW() WHERE id = $1 RETURNING *",
-                trade_id,
-            )
-
-        if cancelled is None:
-            raise DatabaseError("Impossible d'annuler l'échange")
-        return cancelled
-
-    async def get_trade_history(self, user_id: int, limit: int = 20) -> Sequence[asyncpg.Record]:
+    async def get_market_activity(
+        self, user_id: int, limit: int = 20
+    ) -> Sequence[asyncpg.Record]:
         await self.ensure_user(user_id)
         query = """
             SELECT
-                t.id,
-                t.status,
-                t.created_at,
-                t.completed_at,
-                CASE WHEN t.user_a_id = $1 THEN t.user_b_id ELSE t.user_a_id END AS partner_id,
-                CASE WHEN t.user_a_id = $1 THEN t.user_a_pb ELSE t.user_b_pb END AS pb_sent,
-                CASE WHEN t.user_a_id = $1 THEN t.user_b_pb ELSE t.user_a_pb END AS pb_received,
-                COALESCE(SUM(CASE WHEN tp.from_user_id = $1 THEN 1 ELSE 0 END), 0) AS pets_sent,
-                COALESCE(SUM(CASE WHEN tp.to_user_id = $1 THEN 1 ELSE 0 END), 0) AS pets_received
-            FROM trades AS t
-            LEFT JOIN trade_pets AS tp ON tp.trade_id = t.id
-            WHERE t.user_a_id = $1 OR t.user_b_id = $1
-            GROUP BY t.id
-            ORDER BY t.created_at DESC
+                ml.id,
+                ml.seller_id,
+                ml.buyer_id,
+                ml.price,
+                ml.status,
+                ml.created_at,
+                ml.completed_at,
+                up.is_huge,
+                up.is_gold,
+                up.is_rainbow,
+                p.name,
+                p.rarity
+            FROM market_listings AS ml
+            JOIN user_pets AS up ON up.id = ml.user_pet_id
+            JOIN pets AS p ON p.pet_id = up.pet_id
+            WHERE ml.seller_id = $1 OR ml.buyer_id = $1
+            ORDER BY ml.created_at DESC
             LIMIT $2
         """
         return await self.pool.fetch(query, user_id, limit)
-
-    async def get_trade_stats(self) -> asyncpg.Record:
-        query = """
-            SELECT
-                COUNT(*) AS total_trades,
-                COUNT(*) FILTER (WHERE status = 'completed') AS completed_trades,
-                COUNT(*) FILTER (WHERE status = 'pending') AS pending_trades,
-                COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled_trades,
-                COALESCE(SUM(CASE WHEN status = 'completed' THEN user_a_pb + user_b_pb ELSE 0 END), 0) AS total_pb,
-                (
-                    SELECT COUNT(*)
-                    FROM trade_pets tp
-                    JOIN trades t ON t.id = tp.trade_id
-                    WHERE t.status = 'completed'
-                ) AS total_pets_exchanged
-            FROM trades
-        """
-        row = await self.pool.fetchrow(query)
-        if row is None:
-            raise DatabaseError("Impossible de récupérer les statistiques des échanges")
-        return row
-
     async def get_database_stats(self) -> asyncpg.Record:
         query = """
             SELECT
                 (SELECT COUNT(*) FROM users) AS users_count,
                 (SELECT COUNT(*) FROM user_pets) AS pets_count,
                 (SELECT COUNT(*) FROM transactions) AS transactions_count,
-                (SELECT COUNT(*) FROM trades) AS trades_count,
-                (SELECT COUNT(*) FROM trades WHERE status = 'completed') AS trades_completed,
+                (SELECT COUNT(*) FROM market_listings) AS listings_count,
+                (SELECT COUNT(*) FROM market_listings WHERE status = 'active') AS listings_active,
                 (SELECT COALESCE(SUM(balance), 0) FROM users) AS total_balance
         """
         row = await self.pool.fetchrow(query)

@@ -112,7 +112,7 @@ class EcoBot(commands.Bot):
             "pets",
             "clans",
             "help",
-            "trade",
+            "plaza",
             "admin",
             "stats",
         )
