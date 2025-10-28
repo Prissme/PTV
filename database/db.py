@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -2657,6 +2658,11 @@ class Database:
             user_a_pb = int(trade["user_a_pb"])
             user_b_pb = int(trade["user_b_pb"])
 
+            def _compute_tax(amount: int) -> int:
+                if amount <= 0:
+                    return 0
+                return max(1, math.ceil(amount * 0.01))
+
             user_a_row = await connection.fetchrow(
                 "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
                 user_a_id,
@@ -2699,6 +2705,7 @@ class Database:
             )
 
             transfers: list[dict[str, Any]] = []
+            taxes = defaultdict(int)
             for pet in pet_rows:
                 current_owner = int(pet["user_id"])
                 if current_owner != int(pet["from_user_id"]):
@@ -2766,10 +2773,12 @@ class Database:
                 balance_b_before = balance_b_after
 
             if user_b_pb > 0:
-                new_balance_a = balance_a_after + user_b_pb
+                tax_for_a = _compute_tax(user_b_pb)
+                gross_balance = balance_a_after + user_b_pb
+                net_balance = gross_balance - tax_for_a
                 await connection.execute(
                     "UPDATE users SET balance = $1 WHERE user_id = $2",
-                    new_balance_a,
+                    net_balance,
                     user_a_id,
                 )
                 await self.record_transaction(
@@ -2778,17 +2787,33 @@ class Database:
                     transaction_type="trade_receive",
                     amount=user_b_pb,
                     balance_before=balance_a_after,
-                    balance_after=new_balance_a,
-                    description=f"Trade #{trade_id}",
+                    balance_after=gross_balance,
+                    description=(
+                        f"Trade #{trade_id}" + (f" (taxe 1% : {tax_for_a} PB)" if tax_for_a else "")
+                    ),
                     related_user_id=user_b_id,
                 )
-                balance_a_after = new_balance_a
+                if tax_for_a:
+                    await self.record_transaction(
+                        connection=connection,
+                        user_id=user_a_id,
+                        transaction_type="trade_tax",
+                        amount=-tax_for_a,
+                        balance_before=gross_balance,
+                        balance_after=net_balance,
+                        description=f"Taxe trade #{trade_id}",
+                        related_user_id=None,
+                    )
+                    taxes[user_a_id] += tax_for_a
+                balance_a_after = net_balance
 
             if user_a_pb > 0:
-                new_balance_b = balance_b_after + user_a_pb
+                tax_for_b = _compute_tax(user_a_pb)
+                gross_balance = balance_b_after + user_a_pb
+                net_balance = gross_balance - tax_for_b
                 await connection.execute(
                     "UPDATE users SET balance = $1 WHERE user_id = $2",
-                    new_balance_b,
+                    net_balance,
                     user_b_id,
                 )
                 await self.record_transaction(
@@ -2797,11 +2822,25 @@ class Database:
                     transaction_type="trade_receive",
                     amount=user_a_pb,
                     balance_before=balance_b_after,
-                    balance_after=new_balance_b,
-                    description=f"Trade #{trade_id}",
+                    balance_after=gross_balance,
+                    description=(
+                        f"Trade #{trade_id}" + (f" (taxe 1% : {tax_for_b} PB)" if tax_for_b else "")
+                    ),
                     related_user_id=user_a_id,
                 )
-                balance_b_after = new_balance_b
+                if tax_for_b:
+                    await self.record_transaction(
+                        connection=connection,
+                        user_id=user_b_id,
+                        transaction_type="trade_tax",
+                        amount=-tax_for_b,
+                        balance_before=gross_balance,
+                        balance_after=net_balance,
+                        description=f"Taxe trade #{trade_id}",
+                        related_user_id=None,
+                    )
+                    taxes[user_b_id] += tax_for_b
+                balance_b_after = net_balance
 
             final_trade = await connection.fetchrow(
                 "UPDATE trades SET status = 'completed', completed_at = NOW() WHERE id = $1 RETURNING *",
@@ -2822,7 +2861,28 @@ class Database:
                     "after": balance_b_after,
                 },
             },
+            "taxes": {int(user_id): int(amount) for user_id, amount in taxes.items()},
         }
+
+    async def list_pending_trades(
+        self, *, limit: int = 10, user_id: int | None = None
+    ) -> Sequence[Dict[str, Any]]:
+        limit = max(1, limit)
+        query = """
+            SELECT id
+            FROM trades
+            WHERE status = 'pending'
+              AND ($2::BIGINT IS NULL OR user_a_id = $2 OR user_b_id = $2)
+            ORDER BY created_at DESC
+            LIMIT $1
+        """
+        rows = await self.pool.fetch(query, limit, user_id)
+        states: List[Dict[str, Any]] = []
+        for row in rows:
+            trade_state = await self.get_trade_state(int(row["id"]))
+            if trade_state is not None:
+                states.append(trade_state)
+        return states
 
     async def cancel_trade(self, trade_id: int) -> asyncpg.Record:
         async with self.transaction() as connection:

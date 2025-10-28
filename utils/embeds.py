@@ -914,6 +914,7 @@ def trade_completed_embed(
     sent_b: Mapping[str, object],
     received_a: Mapping[str, object],
     received_b: Mapping[str, object],
+    taxes: Mapping[int, int] | None = None,
 ) -> discord.Embed:
     embed = _base_embed("✅ Échange finalisé", f"Trade #{trade_id}", color=Colors.SUCCESS)
     embed.add_field(
@@ -936,7 +937,25 @@ def trade_completed_embed(
         value=_trade_offer_lines(received_b),
         inline=False,
     )
-    embed.set_footer(text="Merci d'avoir utilisé EcoBot pour vos échanges !")
+    tax_lines: list[str] = []
+    if taxes:
+        tax_a = int(taxes.get(int(user_a.id), 0))
+        tax_b = int(taxes.get(int(user_b.id), 0))
+        if tax_a:
+            tax_lines.append(f"{user_a.display_name} : {format_currency(tax_a)}")
+        if tax_b:
+            tax_lines.append(f"{user_b.display_name} : {format_currency(tax_b)}")
+    if tax_lines:
+        embed.add_field(
+            name="Taxe de transaction (1%)",
+            value="\n".join(tax_lines),
+            inline=False,
+        )
+        footer_text = "Merci d'avoir utilisé EcoBot pour vos échanges !"
+        footer_text += " Une taxe de 1% a été retenue sur les montants reçus."
+    else:
+        footer_text = "Merci d'avoir utilisé EcoBot pour vos échanges !"
+    embed.set_footer(text=footer_text)
     return _finalize_embed(embed)
 
 
