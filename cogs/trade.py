@@ -748,6 +748,26 @@ class Trade(commands.Cog):
             markers += " 🥇"
         return f"{name}{markers}"
 
+    def _format_plaza_offer_lines(
+        self, pb_amount: int, pets: Sequence[Mapping[str, Any]]
+    ) -> str:
+        lines: List[str] = []
+        if pb_amount:
+            lines.append(f"• {embeds.format_currency(pb_amount)}")
+        for pet in pets:
+            name = str(pet.get("name", "Pet"))
+            markers = ""
+            if bool(pet.get("is_huge")):
+                markers += " ✨"
+            if bool(pet.get("is_rainbow")):
+                markers += " 🌈"
+            elif bool(pet.get("is_gold")):
+                markers += " 🥇"
+            lines.append(f"• {name}{markers}")
+        if not lines:
+            lines.append("• Rien pour le moment")
+        return "\n".join(lines)
+
     def _parse_pet_query(self, raw: str) -> tuple[str, Optional[int], Optional[str]]:
         tokens = [token for token in raw.replace(",", " " ).split() if token]
         if not tokens:
@@ -991,6 +1011,7 @@ class Trade(commands.Cog):
 
         trade_record = result["trade"]
         transfers = result.get("transfers", [])
+        taxes: Mapping[int, int] = result.get("taxes", {})
 
         def _build_offer(user_id: int, *, sent: bool) -> Mapping[str, object]:
             if sent:
@@ -1033,6 +1054,10 @@ class Trade(commands.Cog):
             sent_b=_build_offer(user_b_id, sent=True),
             received_a=_build_offer(user_a_id, sent=False),
             received_b=_build_offer(user_b_id, sent=False),
+            taxes={
+                user_a_id: int(taxes.get(user_a_id, 0)),
+                user_b_id: int(taxes.get(user_b_id, 0)),
+            },
         )
 
         view.disable()
@@ -1041,6 +1066,21 @@ class Trade(commands.Cog):
             await view.message.channel.send(
                 f"✅ Trade #{trade_record['id']} complété entre {view.session.user_a.mention} et {view.session.user_b.mention}!"
             )
+            tax_lines: List[str] = []
+            tax_a = int(taxes.get(user_a_id, 0))
+            tax_b = int(taxes.get(user_b_id, 0))
+            if tax_a:
+                tax_lines.append(
+                    f"• {view.session.user_a.display_name} : {embeds.format_currency(tax_a)} de taxe"
+                )
+            if tax_b:
+                tax_lines.append(
+                    f"• {view.session.user_b.display_name} : {embeds.format_currency(tax_b)} de taxe"
+                )
+            if tax_lines:
+                await view.message.channel.send(
+                    "💰 Taxe de 1% appliquée :\n" + "\n".join(tax_lines)
+                )
         view.stop()
         self._unregister_view(view)
 
@@ -1164,6 +1204,80 @@ class Trade(commands.Cog):
             f"Pets échangés : **{int(stats['total_pets_exchanged'])}**"
         )
         embed = embeds.info_embed(description, title="Statistiques des échanges")
+        await ctx.send(embed=embed)
+
+    @commands.command(name="plaza")
+    async def trading_plaza(
+        self, ctx: commands.Context, member: Optional[discord.Member] = None
+    ) -> None:
+        focus_id = member.id if member else None
+        try:
+            states = await self.database.list_pending_trades(limit=10, user_id=focus_id)
+        except DatabaseError as exc:
+            await ctx.send(embed=embeds.error_embed(str(exc)))
+            return
+
+        if not states:
+            if member:
+                message = f"Aucune offre en cours pour {member.display_name}."
+            else:
+                message = "Aucune offre active dans la trading plaza pour le moment."
+            await ctx.send(embed=embeds.info_embed(message, title="🏬 Trading Plaza"))
+            return
+
+        user_ids: set[int] = set()
+        for state in states:
+            trade = state["trade"]
+            user_ids.add(int(trade["user_a_id"]))
+            user_ids.add(int(trade["user_b_id"]))
+
+        user_cache: Dict[int, discord.abc.User] = {}
+        for user_id in user_ids:
+            target = ctx.guild.get_member(user_id) if ctx.guild else None
+            if target is None:
+                target = self.bot.get_user(user_id)
+            if target is None:
+                with contextlib.suppress(discord.NotFound):
+                    target = await self.bot.fetch_user(user_id)
+            if target is not None:
+                user_cache[user_id] = target
+
+        description = "Une taxe de 1% est appliquée sur chaque transaction."
+        if member is not None:
+            description = f"Offres impliquant {member.display_name}. {description}"
+        embed = embeds.info_embed(description, title="🏬 Trading Plaza")
+        embed.description = description
+
+        for state in states:
+            trade = state["trade"]
+            trade_id = int(trade["id"])
+            user_a_id = int(trade["user_a_id"])
+            user_b_id = int(trade["user_b_id"])
+            user_a = user_cache.get(user_a_id)
+            user_b = user_cache.get(user_b_id)
+            user_a_name = user_a.display_name if user_a else f"Utilisateur {user_a_id}"
+            user_b_name = user_b.display_name if user_b else f"Utilisateur {user_b_id}"
+
+            pets: Sequence[Mapping[str, Any]] = state.get("pets", [])
+            pets_data = [dict(pet) for pet in pets]
+            offer_a_pets = [pet for pet in pets_data if int(pet.get("from_user_id", 0)) == user_a_id]
+            offer_b_pets = [pet for pet in pets_data if int(pet.get("from_user_id", 0)) == user_b_id]
+
+            offer_a = self._format_plaza_offer_lines(int(trade["user_a_pb"]), offer_a_pets)
+            offer_b = self._format_plaza_offer_lines(int(trade["user_b_pb"]), offer_b_pets)
+
+            created_at = trade.get("created_at")
+            timestamp_line = ""
+            if isinstance(created_at, datetime):
+                timestamp_line = f"\nCréé {discord.utils.format_dt(created_at, style='R')}"
+
+            value = (
+                f"**{user_a_name} propose :**\n{offer_a}\n\n"
+                f"**{user_b_name} propose :**\n{offer_b}"
+                f"{timestamp_line}"
+            )
+            embed.add_field(name=f"Trade #{trade_id}", value=value, inline=False)
+
         await ctx.send(embed=embed)
 
 async def setup(bot: commands.Bot) -> None:
