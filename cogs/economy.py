@@ -27,6 +27,8 @@ from config import (
     MESSAGE_REWARD,
     PET_DEFINITIONS,
     PET_EMOJIS,
+    POTION_DEFINITION_MAP,
+    POTION_DEFINITIONS,
     PREFIX,
     TITANIC_GRIFF_NAME,
     VIP_ROLE_ID,
@@ -71,28 +73,13 @@ CASINO_TITANIC_CHANCE_PER_PB = CASINO_TITANIC_MAX_CHANCE / SLOT_MAX_BET
 MASTERMIND_HUGE_MIN_CHANCE = 0.0005
 MASTERMIND_HUGE_MAX_CHANCE = 0.002
 
-PET_BOOSTER_MULTIPLIERS: tuple[float, ...] = (1.5, 2, 3, 5, 10, 100)
-PET_BOOSTER_DURATIONS_MINUTES: tuple[int, ...] = (1, 5, 10, 15, 30, 60, 180)
-
-
-def _build_booster_pool() -> tuple[tuple[float, int, int], ...]:
-    pool: list[tuple[float, int, int]] = []
-    for multiplier in PET_BOOSTER_MULTIPLIERS:
-        for minutes in PET_BOOSTER_DURATIONS_MINUTES:
-            weight = max(1, int(1_000_000 / (multiplier * minutes)))
-            pool.append((multiplier, minutes, weight))
-    return tuple(pool)
-
-
-_PET_BOOSTER_POOL = _build_booster_pool()
-PET_BOOSTER_CHOICES: tuple[tuple[float, int], ...] = tuple(
-    (multiplier, minutes) for multiplier, minutes, _ in _PET_BOOSTER_POOL
-)
-PET_BOOSTER_WEIGHTS: tuple[int, ...] = tuple(weight for _, _, weight in _PET_BOOSTER_POOL)
-PET_BOOSTER_DROP_RATES: dict[str, float] = {
+POTION_DROP_RATES: dict[str, float] = {
     "slots": 0.05,
     "mastermind": 0.05,
 }
+
+POTION_SLUGS: tuple[str, ...] = tuple(potion.slug for potion in POTION_DEFINITIONS)
+
 
 
 @dataclass(frozen=True)
@@ -101,7 +88,7 @@ class MillionaireRaceStage:
     success_rate: float
     prissbucks: int
     pet_choices: tuple[str, ...]
-    booster: tuple[float, int] | None = None
+    potion_slugs: tuple[str, ...] = ()
 
 
 MILLIONAIRE_RACE_COOLDOWN: int = 1_800
@@ -109,51 +96,37 @@ MILLIONAIRE_RACE_COOLDOWN: int = 1_800
 # Mode Hardcore : 20 étapes avec une difficulté décroissant par paliers jusqu'à Huge Gale
 MILLIONAIRE_RACE_STAGES: tuple[MillionaireRaceStage, ...] = (
     # Étapes 1-5 : 95% → 75%
-    MillionaireRaceStage("Sprint Émeraude", 0.95, 1_000, (), None),
-    MillionaireRaceStage("Relais Rubis", 0.90, 0, ("Shelly",), None),
-    MillionaireRaceStage("Virage Saphir", 0.85, 0, (), (1.5, 600)),
-    MillionaireRaceStage("Montée Jade", 0.80, 1_500, (), None),
-    MillionaireRaceStage("Ascension Ambrée", 0.75, 0, ("Colt",), None),
+    MillionaireRaceStage("Sprint Émeraude", 0.95, 1_000, ()),
+    MillionaireRaceStage("Relais Rubis", 0.90, 0, ("Shelly",)),
+    MillionaireRaceStage("Virage Saphir", 0.85, 0, (), ("fortune_i",)),
+    MillionaireRaceStage("Montée Jade", 0.80, 1_500, ()),
+    MillionaireRaceStage("Ascension Ambrée", 0.75, 0, ("Colt",)),
 
     # Étapes 6-10 : 70% → 50%
-    MillionaireRaceStage("Échappée Turquoise", 0.70, 0, (), (1.8, 900)),
-    MillionaireRaceStage("Secteur Améthyste", 0.65, 2_000, (), None),
-    MillionaireRaceStage("Piste Onyx", 0.60, 0, ("Barley",), None),
-    MillionaireRaceStage("Canyon Rubis", 0.55, 0, (), (2.0, 1_200)),
-    MillionaireRaceStage("Vallée Cristal", 0.50, 3_000, (), None),
+    MillionaireRaceStage("Échappée Turquoise", 0.70, 0, (), ("luck_i",)),
+    MillionaireRaceStage("Secteur Améthyste", 0.65, 2_000, ()),
+    MillionaireRaceStage("Piste Onyx", 0.60, 0, ("Barley",)),
+    MillionaireRaceStage("Canyon Rubis", 0.55, 0, (), ("fortune_ii",)),
+    MillionaireRaceStage("Vallée Cristal", 0.50, 3_000, ()),
 
     # Étapes 11-15 : 45% → 25%
-    MillionaireRaceStage("Ciel Prisme", 0.45, 0, ("Poco",), None),
-    MillionaireRaceStage("Spirale Stellaire", 0.40, 0, (), (2.4, 1_500)),
-    MillionaireRaceStage("Portail Titan", 0.35, 4_000, (), None),
-    MillionaireRaceStage("Faille Temporelle", 0.30, 0, ("Rosa",), None),
-    MillionaireRaceStage("Nexus Éternel", 0.25, 0, (), (2.8, 1_800)),
+    MillionaireRaceStage("Ciel Prisme", 0.45, 0, ("Poco",)),
+    MillionaireRaceStage("Spirale Stellaire", 0.40, 0, (), ("luck_ii",)),
+    MillionaireRaceStage("Portail Titan", 0.35, 4_000, ()),
+    MillionaireRaceStage("Faille Temporelle", 0.30, 0, ("Rosa",)),
+    MillionaireRaceStage("Nexus Éternel", 0.25, 0, (), ("fortune_iii",)),
 
     # Étapes 16-19 : 20% → 5%
-    MillionaireRaceStage("Abîme Infini", 0.20, 6_000, (), None),
-    MillionaireRaceStage("Dimension Chaos", 0.15, 0, ("Angelo",), None),
-    MillionaireRaceStage("Royaume Perdu", 0.10, 0, (), (3.2, 2_100)),
-    MillionaireRaceStage("Faille Légendaire", 0.05, 10_000, (), None),
+    MillionaireRaceStage("Abîme Infini", 0.20, 6_000, ()),
+    MillionaireRaceStage("Dimension Chaos", 0.15, 0, ("Angelo",)),
+    MillionaireRaceStage("Royaume Perdu", 0.10, 0, (), ("luck_iii",)),
+    MillionaireRaceStage("Faille Légendaire", 0.05, 10_000, (), ("fortune_iv",)),
 
     # Étape 20 : FINALE - Huge Gale à 5%
-    MillionaireRaceStage("Couronne Millionnaire", 0.05, 0, (HUGE_GALE_NAME,), None),
+    MillionaireRaceStage("Couronne Millionnaire", 0.05, 0, (HUGE_GALE_NAME,), ("fortune_v",)),
 )
 
 PET_DEFINITION_MAP: dict[str, object] = {pet.name: pet for pet in PET_DEFINITIONS}
-
-
-def _format_seconds(seconds: float) -> str:
-    seconds_int = max(0, int(round(seconds)))
-    minutes, sec = divmod(seconds_int, 60)
-    hours, minutes = divmod(minutes, 60)
-    parts: list[str] = []
-    if hours:
-        parts.append(f"{hours}h")
-    if minutes:
-        parts.append(f"{minutes}m")
-    if sec or not parts:
-        parts.append(f"{sec}s")
-    return " ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -252,7 +225,7 @@ class MastermindSession:
         ctx: commands.Context,
         helper: MastermindHelper,
         database: Database,
-        booster_callback: Callable[[commands.Context, str], Awaitable[bool]] | None = None,
+        potion_callback: Callable[[commands.Context, str], Awaitable[bool]] | None = None,
     ) -> None:
         self.ctx = ctx
         self.bot: commands.Bot = ctx.bot
@@ -263,8 +236,8 @@ class MastermindSession:
         self.finished = False
         self.view: MastermindView | None = None
         self.message: discord.Message | None = None
-        self.booster_callback = booster_callback
-        self.booster_awarded = False
+        self.potion_callback = potion_callback
+        self.potion_awarded = False
         self.attempt_history: list[tuple[int, str, int, int]] = []
         self.status_lines: list[str] = []
         self.embed_color = Colors.INFO
@@ -310,11 +283,11 @@ class MastermindSession:
         self.attempt_history.append((self.attempts, guess_display, exact, misplaced))
 
         if (
-            self.booster_callback is not None
-            and not self.booster_awarded
-            and await self.booster_callback(self.ctx, "mastermind")
+            self.potion_callback is not None
+            and not self.potion_awarded
+            and await self.potion_callback(self.ctx, "mastermind")
         ):
-            self.booster_awarded = True
+            self.potion_awarded = True
 
         if exact == self.helper.config.code_length:
             await self._handle_victory(attempts_left)
@@ -660,7 +633,7 @@ class MillionaireRaceSession:
         self.stage_index = 0
         self.total_pb = 0
         self.pets_awarded: list[str] = []
-        self.boosters_awarded: list[str] = []
+        self.potions_awarded: list[str] = []
         self.finished = False
         self.failed = False
         self.last_feedback: list[str] = []
@@ -729,7 +702,7 @@ class MillionaireRaceSession:
 
             self.total_pb = 0
             self.pets_awarded = []
-            self.boosters_awarded = []
+            self.potions_awarded = []
             return False
 
         feedback = [f"✅ **{stage.label}** franchie !"]
@@ -758,26 +731,30 @@ class MillionaireRaceSession:
                 feedback.append(f"🐾 Tu obtiens {self._format_pet_name(pet_name)} !")
             else:
                 feedback.append("Le pet n'a pas pu être ajouté.")
-        elif stage.booster:
-            multiplier, duration_seconds = stage.booster
-            try:
-                applied, _, extended, previous = await self.database.grant_pet_booster(
-                    self.ctx.author.id,
-                    multiplier=multiplier,
-                    duration_seconds=duration_seconds,
-                )
-                label = self._format_booster_label(applied, duration_seconds)
-                self.boosters_awarded.append(label)
-                if extended and previous >= applied:
-                    feedback.append(f"⚡ Booster prolongé : {label}")
-                else:
-                    feedback.append(f"⚡ Booster reçu : {label}")
-            except Exception:
-                logger.exception(
-                    "Erreur d'attribution du booster Millionaire Race pour %s",
-                    self.ctx.author.id,
-                )
-                feedback.append("Le booster n'a pas pu être activé.")
+        elif stage.potion_slugs:
+            awarded_displays: list[str] = []
+            for slug in stage.potion_slugs:
+                definition = POTION_DEFINITION_MAP.get(slug)
+                if definition is None:
+                    logger.warning("Potion %s introuvable pour la Millionaire Race", slug)
+                    continue
+                try:
+                    await self.database.add_user_potion(self.ctx.author.id, slug)
+                except Exception:
+                    logger.exception(
+                        "Erreur d'attribution de la potion %s pour %s",
+                        slug,
+                        self.ctx.author.id,
+                    )
+                    continue
+                display = f"🧪 {definition.name}"
+                awarded_displays.append(display)
+            if awarded_displays:
+                for display in awarded_displays:
+                    feedback.append(f"Potion obtenue : **{display}**")
+                self.potions_awarded.extend(awarded_displays)
+            else:
+                feedback.append("La potion n'a pas pu être ajoutée.")
 
         self.stage_index += 1
 
@@ -813,9 +790,11 @@ class MillionaireRaceSession:
         return f"{emoji} {pet_name}"
 
     @staticmethod
-    def _format_booster_label(multiplier: float, duration_seconds: int) -> str:
-        minutes = max(1, int(round(duration_seconds / 60)))
-        return f"x{multiplier:g} • {minutes} min"
+    def _format_potion_display(slug: str) -> str:
+        definition = POTION_DEFINITION_MAP.get(slug)
+        if definition is None:
+            return slug
+        return f"🧪 {definition.name}"
 
     def build_embed(self) -> discord.Embed:
         total_stages = len(MILLIONAIRE_RACE_STAGES)
@@ -848,10 +827,11 @@ class MillionaireRaceSession:
             if stage.pet_choices:
                 pets_text = ", ".join(self._format_pet_name(name) for name in stage.pet_choices)
                 reward_lines.append(f"Pet(s) garanti(s) : {pets_text}")
-            if stage.booster:
-                reward_lines.append(
-                    f"Booster : {self._format_booster_label(stage.booster[0], stage.booster[1])}"
+            if stage.potion_slugs:
+                potions_text = ", ".join(
+                    self._format_potion_display(slug) for slug in stage.potion_slugs
                 )
+                reward_lines.append(f"Potion(s) : {potions_text}")
             embed.description = "\n".join(reward_lines)
         elif self.finished and not self.failed:
             embed.description = "Tu as conquis la Millionaire Race !"
@@ -866,10 +846,10 @@ class MillionaireRaceSession:
             )
         else:
             summary_lines.append("Pets obtenus : aucun pour le moment")
-        if self.boosters_awarded:
-            summary_lines.append("Boosters : " + ", ".join(self.boosters_awarded))
+        if self.potions_awarded:
+            summary_lines.append("Potions : " + ", ".join(self.potions_awarded))
         else:
-            summary_lines.append("Boosters : aucun")
+            summary_lines.append("Potions : aucune")
         embed.add_field(name="Progrès", value="\n".join(summary_lines), inline=False)
 
         if self.last_feedback:
@@ -973,8 +953,6 @@ class Economy(commands.Cog):
         self.message_cooldown = CooldownManager(MESSAGE_COOLDOWN)
         self._cleanup_task: asyncio.Task[None] | None = None
         self.mastermind_helper = MASTERMIND_HELPER
-        self._booster_choices = PET_BOOSTER_CHOICES
-        self._booster_weights = PET_BOOSTER_WEIGHTS
         self._active_race_players: set[int] = set()
 
     async def cog_load(self) -> None:
@@ -1014,67 +992,42 @@ class Economy(commands.Cog):
 
         return 0, default_message
 
-    async def _maybe_award_pet_booster(self, ctx: commands.Context, source: str) -> bool:
-        drop_rate = PET_BOOSTER_DROP_RATES.get(source, 0.0)
+    async def _maybe_award_potion(self, ctx: commands.Context, source: str) -> bool:
+        drop_rate = POTION_DROP_RATES.get(source, 0.0)
         if drop_rate <= 0 or random.random() > drop_rate:
             return False
 
-        try:
-            multiplier, minutes = random.choices(
-                self._booster_choices, weights=self._booster_weights, k=1
-            )[0]
-        except IndexError:
+        if not POTION_SLUGS:
             return False
 
-        duration_seconds = minutes * 60
-        try:
-            (
-                new_multiplier,
-                expires_at,
-                extended,
-                previous_multiplier,
-            ) = await self.database.grant_pet_booster(
-                ctx.author.id,
-                multiplier=multiplier,
-                duration_seconds=duration_seconds,
-            )
-        except DatabaseError:
-            logger.exception("Impossible d'attribuer un booster de pets")
+        slug = random.choice(POTION_SLUGS)
+        definition = POTION_DEFINITION_MAP.get(slug)
+        if definition is None:
+            logger.warning("Potion %s introuvable lors de l'attribution aléatoire", slug)
             return False
 
-        remaining_seconds = max(0.0, (expires_at - datetime.now(timezone.utc)).total_seconds())
-        remaining_display = _format_seconds(remaining_seconds)
+        try:
+            await self.database.add_user_potion(ctx.author.id, slug)
+        except Exception:
+            logger.exception("Impossible d'ajouter la potion %s", slug)
+            return False
+
         source_label = "Machine à sous" if source == "slots" else "Mastermind"
-
-        lines: list[str] = []
-        if extended and new_multiplier == previous_multiplier:
-            lines.append(
-                f"{ctx.author.mention}, ton booster x{new_multiplier:g} gagne **{minutes} minute(s)** supplémentaires !"
-            )
-        else:
-            lines.append(
-                f"{ctx.author.mention} décroche un booster x{new_multiplier:g} pendant **{minutes} minute(s)** grâce à {source_label} !"
-            )
-            if previous_multiplier > 1 and new_multiplier > previous_multiplier:
-                lines.append(
-                    f"Ton booster passe de x{previous_multiplier:g} à x{new_multiplier:g} !"
-                )
-        lines.append(f"Expiration dans {remaining_display}.")
+        lines = [
+            f"{ctx.author.mention} obtient **{definition.name}** grâce à {source_label} !",
+            definition.description,
+        ]
 
         await ctx.send(
-            embed=embeds.success_embed(
-                "\n".join(lines), title="🎁 Booster de pets obtenu"
-            )
+            embed=embeds.success_embed("\n".join(lines), title="🧪 Potion trouvée")
         )
 
         logger.debug(
-            "pet_booster_awarded",
+            "potion_awarded",
             extra={
                 "user_id": ctx.author.id,
                 "source": source,
-                "multiplier": new_multiplier,
-                "minutes": minutes,
-                "extended": extended,
+                "potion": slug,
             },
         )
         return True
@@ -1409,7 +1362,7 @@ class Economy(commands.Cog):
             result_text=message,
         )
         await ctx.send(embed=embed)
-        await self._maybe_award_pet_booster(ctx, "slots")
+        await self._maybe_award_potion(ctx, "slots")
         await self._maybe_award_casino_titanic(ctx, bet)
 
     @commands.cooldown(1, MASTERMIND_CONFIG.cooldown, commands.BucketType.user)
@@ -1433,7 +1386,7 @@ class Economy(commands.Cog):
             ctx,
             self.mastermind_helper,
             self.database,
-            booster_callback=self._maybe_award_pet_booster,
+            potion_callback=self._maybe_award_potion,
         )
         try:
             await session.start()

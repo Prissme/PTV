@@ -170,6 +170,84 @@ class Emojis:
 
 
 # ---------------------------------------------------------------------------
+# Potions
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PotionDefinition:
+    slug: str
+    name: str
+    effect_type: str
+    effect_value: float
+    description: str
+
+
+POTION_DEFINITIONS: Tuple[PotionDefinition, ...] = (
+    PotionDefinition(
+        "luck_i",
+        "Potion de chance I",
+        "egg_luck",
+        0.25,
+        "Augmente la chance d'œufs de 25% pendant une courte durée.",
+    ),
+    PotionDefinition(
+        "luck_ii",
+        "Potion de chance II",
+        "egg_luck",
+        0.50,
+        "Augmente la chance d'œufs de 50% pendant une courte durée.",
+    ),
+    PotionDefinition(
+        "luck_iii",
+        "Potion de chance III",
+        "egg_luck",
+        1.0,
+        "Augmente la chance d'œufs de 100% pendant une courte durée.",
+    ),
+    PotionDefinition(
+        "fortune_i",
+        "Potion de fortune I",
+        "pb_boost",
+        0.15,
+        "Augmente les gains de PB de 15% pendant une courte durée.",
+    ),
+    PotionDefinition(
+        "fortune_ii",
+        "Potion de fortune II",
+        "pb_boost",
+        0.30,
+        "Augmente les gains de PB de 30% pendant une courte durée.",
+    ),
+    PotionDefinition(
+        "fortune_iii",
+        "Potion de fortune III",
+        "pb_boost",
+        0.50,
+        "Augmente les gains de PB de 50% pendant une courte durée.",
+    ),
+    PotionDefinition(
+        "fortune_iv",
+        "Potion de fortune IV",
+        "pb_boost",
+        0.75,
+        "Augmente les gains de PB de 75% pendant une courte durée.",
+    ),
+    PotionDefinition(
+        "fortune_v",
+        "Potion de fortune V",
+        "pb_boost",
+        1.0,
+        "Augmente les gains de PB de 100% pendant une courte durée.",
+    ),
+)
+
+POTION_DEFINITION_MAP: Dict[str, PotionDefinition] = {
+    potion.slug: potion for potion in POTION_DEFINITIONS
+}
+
+
+# ---------------------------------------------------------------------------
 # Animaux (Pets)
 # ---------------------------------------------------------------------------
 

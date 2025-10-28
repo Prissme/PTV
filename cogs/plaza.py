@@ -130,9 +130,16 @@ class Plaza(commands.Cog):
             label = definition.name if variant is None else f"{definition.name} ({variant})"
             return None, None, f"Tu n'as aucun {label} disponible."
 
-        index = ordinal - 1 if ordinal else 0
-        if index < 0 or index >= len(rows):
-            return None, None, f"Impossible de trouver ce pet numéro {ordinal}."
+        if ordinal:
+            index = ordinal - 1
+            if index < 0 or index >= len(rows):
+                return None, None, f"Impossible de trouver ce pet numéro {ordinal}."
+        else:
+            index = 0
+            for idx, candidate in enumerate(rows):
+                if not bool(candidate.get("is_active")):
+                    index = idx
+                    break
 
         record = rows[index]
         display = self._format_pet_record(record)
