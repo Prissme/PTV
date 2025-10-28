@@ -364,6 +364,17 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_user_activity_last_message ON user_activity(guild_id, last_message_at DESC)"
             )
 
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_potions (
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    potion_slug TEXT NOT NULL,
+                    quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+                    PRIMARY KEY (user_id, potion_slug)
+                )
+                """
+            )
+
     # ------------------------------------------------------------------
     # Utilitaires généraux
     # ------------------------------------------------------------------
@@ -381,6 +392,37 @@ class Database:
             INSERT INTO user_grades (user_id)
             VALUES ($1)
             ON CONFLICT (user_id) DO NOTHING
+            """,
+            user_id,
+        )
+
+    async def add_user_potion(
+        self, user_id: int, potion_slug: str, *, quantity: int = 1
+    ) -> None:
+        if quantity <= 0:
+            raise ValueError("La quantité de potions doit être positive")
+
+        await self.ensure_user(user_id)
+        await self.pool.execute(
+            """
+            INSERT INTO user_potions (user_id, potion_slug, quantity)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (user_id, potion_slug)
+            DO UPDATE SET quantity = user_potions.quantity + EXCLUDED.quantity
+            """,
+            user_id,
+            potion_slug,
+            quantity,
+        )
+
+    async def get_user_potions(self, user_id: int) -> Sequence[asyncpg.Record]:
+        await self.ensure_user(user_id)
+        return await self.pool.fetch(
+            """
+            SELECT potion_slug, quantity
+            FROM user_potions
+            WHERE user_id = $1 AND quantity > 0
+            ORDER BY potion_slug
             """,
             user_id,
         )
