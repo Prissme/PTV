@@ -88,7 +88,6 @@ __all__ = [
     "pet_equip_embed",
     "pet_claim_embed",
     "clan_overview_embed",
-    "pet_stats_embed",
 ]
 
 
@@ -549,6 +548,8 @@ def pet_index_embed(
     pet_definitions: Sequence[PetDefinition],
     owned_names: Collection[str],
     huge_descriptions: Mapping[str, str] | None = None,
+    pet_counts: Mapping[str, int] | None = None,
+    market_values: Mapping[str, int] | None = None,
 ) -> discord.Embed:
     embed = _base_embed("Index des pets", "", color=Colors.INFO)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
@@ -556,6 +557,16 @@ def pet_index_embed(
     huge_info = dict(huge_descriptions or {})
     total_pets = len(pet_definitions)
     owned_lookup = {name.casefold() for name in owned_names if name}
+    counts_lookup = {
+        key.casefold(): int(value)
+        for key, value in (pet_counts or {}).items()
+        if key
+    }
+    market_lookup = {
+        key.casefold(): int(value)
+        for key, value in (market_values or {}).items()
+        if key
+    }
     unlocked_count = sum(
         1 for definition in pet_definitions if (definition.name or "").casefold() in owned_lookup
     )
@@ -578,7 +589,17 @@ def pet_index_embed(
         is_huge = definition.is_huge
         emoji = _pet_emoji(name)
         status = "✅" if name.casefold() in owned_lookup else "🔒"
-        line = f"{status} {emoji} **{name}** — Rareté : {rarity}"
+        count = counts_lookup.get(name.casefold())
+        market_value = market_lookup.get(name.casefold(), 0)
+        details = [f"Rareté : {rarity}"]
+        if count is not None:
+            plural = "s" if count != 1 else ""
+            details.append(f"{count} existant{plural}")
+        if market_value > 0 and not is_huge:
+            details.append(f"Valeur marché : {format_currency(market_value)}")
+        detail_text = " • ".join(details)
+        emoji_part = f"{emoji} " if emoji else ""
+        line = f"{status} {emoji_part}**{name}** — {detail_text}"
         if is_huge:
             description = huge_info.get(name)
             if description:
@@ -839,21 +860,3 @@ def clan_overview_embed(
     )
     return _finalize_embed(embed)
 
-
-def pet_stats_embed(
-    *,
-    total_openings: int,
-    stats: Iterable[tuple[str, int, float, float]],
-    huge_count: int,
-    gold_count: int,
-) -> discord.Embed:
-    description_lines = [f"Œufs ouverts : **{total_openings}**"]
-    for name, count, actual_rate, theoretical_rate in stats:
-        actual_text = f"{actual_rate:.2f}%" if total_openings else "-"
-        description_lines.append(
-            f"**{name}** — {count} obtentions • Réel : {actual_text} • Théorique : {theoretical_rate:.2f}%"
-        )
-    description_lines.append(f"Énormes Shellys en circulation : **{huge_count}**")
-    description_lines.append(f"Pets dorés en circulation : **{gold_count}**")
-    embed = _base_embed("Statistiques des pets", "\n".join(description_lines), color=Colors.INFO)
-    return _finalize_embed(embed)

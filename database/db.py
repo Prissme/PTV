@@ -2614,6 +2614,14 @@ class Database:
         value = await self.pool.fetchval("SELECT COUNT(*) FROM user_pets WHERE is_gold")
         return int(value or 0)
 
+    async def get_pet_counts(self) -> Dict[int, int]:
+        """Retourne le nombre total d'exemplaires pour chaque pet."""
+
+        rows = await self.pool.fetch(
+            "SELECT pet_id, COUNT(*) AS total FROM user_pets GROUP BY pet_id"
+        )
+        return {int(row["pet_id"]): int(row["total"]) for row in rows}
+
     async def get_pet_market_values(self) -> Dict[int, int]:
         """Calcule le prix moyen des pets vendus via les stands."""
 

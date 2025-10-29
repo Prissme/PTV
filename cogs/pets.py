@@ -990,13 +990,32 @@ class Pets(commands.Cog):
 
     @commands.command(name="index", aliases=("petindex", "dex"))
     async def pet_index_command(self, ctx: commands.Context) -> None:
-        records = await self.database.get_user_pets(ctx.author.id)
+        (
+            records,
+            pet_counts_by_id,
+            market_values_by_id,
+        ) = await asyncio.gather(
+            self.database.get_user_pets(ctx.author.id),
+            self.database.get_pet_counts(),
+            self.database.get_pet_market_values(),
+        )
         owned_names = self._owned_pet_names(records)
+        count_lookup: Dict[str, int] = {}
+        market_lookup: Dict[str, int] = {}
+        for definition in self._definitions:
+            pet_id = self._pet_ids.get(definition.name)
+            if pet_id is None:
+                continue
+            key = definition.name.casefold()
+            count_lookup[key] = int(pet_counts_by_id.get(pet_id, 0))
+            market_lookup[key] = int(market_values_by_id.get(pet_id, 0))
         embed = embeds.pet_index_embed(
             member=ctx.author,
             pet_definitions=self._definitions,
             owned_names=owned_names,
             huge_descriptions=HUGE_PET_SOURCES,
+            pet_counts=count_lookup,
+            market_values=market_lookup,
         )
         await ctx.send(embed=embed)
 
@@ -1525,27 +1544,6 @@ class Pets(commands.Cog):
 
         if level_up_lines:
             await ctx.send("\n".join(level_up_lines))
-
-    @commands.command(name="petstats", aliases=("petsstats",))
-    async def pets_stats(self, ctx: commands.Context) -> None:
-        total_openings, counts = await self.database.get_pet_opening_counts()
-        counts = {int(key): int(value) for key, value in counts.items()}
-        huge_count = await self.database.count_huge_pets()
-        gold_count = await self.database.count_gold_pets()
-        stats = []
-        for pet in self._definitions:
-            pet_id = self._pet_ids.get(pet.name, 0)
-            obtained = counts.get(pet_id, 0)
-            actual_rate = (obtained / total_openings * 100) if total_openings else 0.0
-            stats.append((pet.name, obtained, actual_rate, pet.drop_rate * 100))
-        embed = embeds.pet_stats_embed(
-            total_openings=total_openings,
-            stats=stats,
-            huge_count=huge_count,
-            gold_count=gold_count,
-        )
-        await ctx.send(embed=embed)
-
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Pets(bot))
