@@ -7,7 +7,37 @@ from typing import Callable, Optional, Sequence, cast
 import discord
 from discord.ext import commands
 
+from config import PREFIX
 from utils import embeds
+
+
+@dataclass(frozen=True)
+class HelpCommand:
+    """Représente une commande individuelle affichée dans le menu d'aide."""
+
+    command: str
+    description: str
+    aliases: tuple[str, ...] = ()
+    icon: str = "•"
+    note: Optional[str] = None
+
+    def format_line(self) -> str:
+        """Retourne une ligne mise en forme pour un embed Discord."""
+
+        alias_text = ""
+        if self.aliases:
+            formatted_aliases = ", ".join(
+                f"`{alias}`" if alias.startswith(PREFIX) else f"`{PREFIX}{alias}`"
+                for alias in self.aliases
+            )
+            alias_text = f" · {formatted_aliases}"
+
+        header = f"{self.icon} **{self.command}**{alias_text}"
+        body_lines = [f"> {self.description}"]
+        if self.note:
+            body_lines.append(f"> {self.note}")
+
+        return "\n".join([header, *body_lines])
 
 
 @dataclass(frozen=True)
@@ -17,7 +47,7 @@ class HelpSection:
     key: str
     label: str
     description: str
-    commands: tuple[str, ...]
+    commands: tuple[HelpCommand, ...]
 
 
 class HelpMenuSelect(discord.ui.Select):
@@ -42,7 +72,7 @@ class HelpMenuSelect(discord.ui.Select):
             )
 
         super().__init__(
-            placeholder="Choisis une catégorie de commandes…",
+            placeholder="🌟 Choisis la catégorie qui t'intéresse…",
             min_values=1,
             max_values=1,
             options=options,
@@ -124,10 +154,27 @@ class Help(commands.Cog):
                 label="🚀 Bien démarrer",
                 description="Les étapes essentielles pour lancer ton économie.",
                 commands=(
-                    "1️⃣ Commence par **e!daily** pour récupérer ta récompense et lancer ton épargne.",
-                    "2️⃣ Ouvre un premier œuf avec **e!openbox** pour obtenir un pet compagnon.",
-                    "3️⃣ Équipe ton meilleur pet via **e!equip [id]** puis collecte tes gains avec **e!claim**.",
-                    "4️⃣ Suis ta progression et les pets manquants avec **e!index**.",
+                    HelpCommand(
+                        f"{PREFIX}daily",
+                        "Commence chaque journée en récupérant ta récompense pour lancer ton épargne.",
+                        icon="1️⃣",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}openbox [œuf]",
+                        "Ouvre ton premier œuf et débloque un compagnon générateur de PB.",
+                        icon="2️⃣",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}equip [id]",
+                        "Équipe ton meilleur pet puis récupère tes gains avec la commande claim.",
+                        icon="3️⃣",
+                        note=f"Pense à utiliser `{PREFIX}claim` pour ramasser tes profits.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}index",
+                        "Suis l'avancement de ta collection et repère les pets manquants.",
+                        icon="4️⃣",
+                    ),
                 ),
             ),
             HelpSection(
@@ -135,13 +182,36 @@ class Help(commands.Cog):
                 label="💰 Économie",
                 description="Toutes les commandes liées aux PB et mini-jeux.",
                 commands=(
-                    "**e!balance** (bal) — Consulte ton solde actuel.",
-                    "**e!daily** — Collecte ta récompense quotidienne.",
-                    "**e!give** @membre montant — Offre des PrissBucks à quelqu'un.",
-                    "**e!give mortis** — (Owner) Offre Huge Mortis à tous les VIP.",
-                    "**e!slots** mise — Tente ta chance à la machine à sous.",
-                    "**e!mastermind** — Résous le code secret pour gagner des PB.",
-                    "**e!millionairerace** — Prends part à la course millionnaire.",
+                    HelpCommand(
+                        f"{PREFIX}balance",
+                        "Consulte ton solde actuel en un clin d'œil.",
+                        aliases=("bal",),
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}daily",
+                        "Collecte ta récompense quotidienne et maintiens ta série.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}give @membre montant",
+                        "Offre des PrissBucks à un joueur pour soutenir sa progression.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}give mortis",
+                        "Distribue un Huge Mortis à tous les VIP.",
+                        note="Commande réservée au propriétaire du bot.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}slots mise",
+                        "Tente ta chance à la machine à sous et décroche un jackpot.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}mastermind",
+                        "Résous le code secret pour remporter des PB bonus.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}millionairerace",
+                        "Prends part à la course millionnaire et fais exploser ta fortune.",
+                    ),
                 ),
             ),
             HelpSection(
@@ -149,11 +219,26 @@ class Help(commands.Cog):
                 label="⚔️ Clans",
                 description="Gestion des clans et des boosts communautaires.",
                 commands=(
-                    "**e!clan** — Tableau de bord de ton clan et des boosts actifs.",
-                    "**e!clan create <nom>** — Fonde un clan (25 000 PB) et lance ta guerre.",
-                    "**e!clan join <nom>** — Rejoins un clan existant et profite des boosts.",
-                    "**e!clan slots** — Augmente la capacité du clan contre des PB.",
-                    "**e!clan boost** — Achète un turbo PB permanent pour tous les membres.",
+                    HelpCommand(
+                        f"{PREFIX}clan",
+                        "Affiche le tableau de bord de ton clan et ses boosts actifs.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}clan create <nom>",
+                        "Fonde un clan (25 000 PB) pour lancer ta propre alliance.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}clan join <nom>",
+                        "Rejoins un clan existant et profite de ses avantages.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}clan slots",
+                        "Augmente la capacité maximale de ton clan contre des PB.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}clan boost",
+                        "Achète un turbo PB permanent bénéfique à tous les membres.",
+                    ),
                 ),
             ),
             HelpSection(
@@ -161,8 +246,15 @@ class Help(commands.Cog):
                 label="🎖️ Grades",
                 description="Progression et classements de grades.",
                 commands=(
-                    "**e!grade** — Affiche ton profil de grade.",
-                    "**e!gradeleaderboard** (gradelb) — Classement des grades.",
+                    HelpCommand(
+                        f"{PREFIX}grade",
+                        "Affiche ton profil de grade et tes objectifs en cours.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}gradeleaderboard",
+                        "Consulte le classement des grades pour mesurer ton avancée.",
+                        aliases=("gradelb",),
+                    ),
                 ),
             ),
             HelpSection(
@@ -170,14 +262,42 @@ class Help(commands.Cog):
                 label="🐾 Pets",
                 description="Tout pour gérer ton armée de pets.",
                 commands=(
-                    "**e!openbox** [œuf] — Ouvre un œuf pour obtenir un pet.",
-                    "**e!eggs** (zones) — Consulte les zones et œufs disponibles.",
-                    "**e!pets** (inventory) — Visualise ton inventaire actuel.",
-                    "**e!index** (petindex, dex) — Parcours l'index complet et les pets manquants.",
-                    "**e!equip** [id] — Équipe un pet pour augmenter tes gains.",
-                    "**e!goldify** (gold, fusion) — Fusionne tes pets en version or.",
-                    "**e!claim** — Récupère les PB générés par tes pets.",
-                    "**e!petstats** — Analyse détaillée de ta collection.",
+                    HelpCommand(
+                        f"{PREFIX}openbox [œuf]",
+                        "Ouvre un œuf pour obtenir un nouveau pet.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}eggs",
+                        "Consulte les zones et œufs disponibles.",
+                        aliases=("zones",),
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}pets",
+                        "Visualise ton inventaire actuel.",
+                        aliases=("inventory",),
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}index",
+                        "Parcours l'index complet et repère les pets manquants.",
+                        aliases=("petindex", "dex"),
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}equip [id]",
+                        "Équipe un pet pour augmenter tes gains.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}goldify",
+                        "Fusionne tes pets en version or pour booster leur puissance.",
+                        aliases=("gold", "fusion"),
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}claim",
+                        "Récupère les PB générés par tes pets.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}petstats",
+                        "Analyse détaillée de ta collection et de tes meilleurs pets.",
+                    ),
                 ),
             ),
             HelpSection(
@@ -185,12 +305,30 @@ class Help(commands.Cog):
                 label="🏬 Plaza",
                 description="Installe ton stand et parcours la plaza.",
                 commands=(
-                    "**e!stand** [@membre] — Affiche ton stand ou celui d'un joueur.",
-                    "**e!stand add <prix> <pet>** — Met un pet en vente sur ton stand.",
-                    "**e!stand remove <id>** — Retire une annonce active.",
-                    "**e!stand buy <id>** — Achète un pet depuis un stand.",
-                    "**e!stand history** — Historique de tes ventes et achats.",
-                    "**e!plaza** — Vue d'ensemble des stands actifs.",
+                    HelpCommand(
+                        f"{PREFIX}stand [@membre]",
+                        "Affiche ton stand ou celui d'un autre joueur.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}stand add <prix> <pet>",
+                        "Met un pet en vente sur ton stand.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}stand remove <id>",
+                        "Retire une annonce active.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}stand buy <id>",
+                        "Achète un pet depuis un stand.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}stand history",
+                        "Consulte l'historique de tes ventes et achats.",
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}plaza",
+                        "Vue d'ensemble des stands actifs.",
+                    ),
                 ),
             ),
             HelpSection(
@@ -198,9 +336,21 @@ class Help(commands.Cog):
                 label="📊 Classements",
                 description="Accède aux différents classements économiques.",
                 commands=(
-                    "**e!leaderboard** (lb) — Classement des fortunes.",
-                    "**e!rapleaderboard** (raplb, rap) — Classement RAP des pets.",
-                    "**e!revenusleaderboard** (revenuslb, incomelb, hourlylb) — Classement des revenus horaires.",
+                    HelpCommand(
+                        f"{PREFIX}leaderboard",
+                        "Classement général des fortunes.",
+                        aliases=("lb",),
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}rapleaderboard",
+                        "Classement RAP des pets.",
+                        aliases=("raplb", "rap"),
+                    ),
+                    HelpCommand(
+                        f"{PREFIX}revenusleaderboard",
+                        "Classement des revenus horaires.",
+                        aliases=("revenuslb", "incomelb", "hourlylb"),
+                    ),
                 ),
             ),
         )
@@ -222,22 +372,34 @@ class Help(commands.Cog):
     def _build_all_embed(self) -> discord.Embed:
         embed = embeds.info_embed(
             "Sélectionne une catégorie pour filtrer les commandes ou parcoure la liste complète ci-dessous.",
-            title="EcoBot — Aide",
+            title="EcoBot — Centre d'aide",
         )
+
+        bot_user = self.bot.user
+        if bot_user is not None:
+            avatar_url = bot_user.display_avatar.url
+            embed.set_author(name="EcoBot", icon_url=avatar_url)
+            embed.set_thumbnail(url=avatar_url)
+
         for section in self._sections:
-            embed.add_field(
-                name=section.label,
-                value="\n".join(section.commands),
-                inline=False,
-            )
+            formatted_commands = "\n\n".join(command.format_line() for command in section.commands)
+            embed.add_field(name=section.label, value=formatted_commands, inline=False)
+
         embed.set_footer(text=self.FOOTER_TEXT)
         return embed
 
     def _build_section_embed(self, section: HelpSection) -> discord.Embed:
         embed = embeds.info_embed(
-            "\n".join(section.commands),
+            "\n\n".join(command.format_line() for command in section.commands),
             title=f"{section.label} — Commandes",
         )
+
+        bot_user = self.bot.user
+        if bot_user is not None:
+            avatar_url = bot_user.display_avatar.url
+            embed.set_author(name=f"EcoBot · {section.label}", icon_url=avatar_url)
+            embed.set_thumbnail(url=avatar_url)
+
         embed.set_footer(text=self.FOOTER_TEXT)
         return embed
 
