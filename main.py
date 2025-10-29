@@ -4,12 +4,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import signal
 import sys
+import time
 from contextlib import suppress
-from typing import Optional
+from typing import Dict, Optional
 
-import sys, os
 sys.path.append(os.path.expanduser("~/.local/lib/python3.12/site-packages"))
 
 import discord
@@ -120,6 +121,13 @@ class EcoBot(commands.Bot):
             "admin",
             "stats",
         )
+        self._market_tip_cooldowns: Dict[int, float] = {}
+        self._dm_tip_cooldowns: Dict[int, float] = {}
+        self._market_followup_tips: tuple[str, ...] = (
+            "Essaye en MP, tu verras comme c’est plus fluide 💬",
+            "Le spam ici devient fort 😅, en MP c’est plus tranquille.",
+            "Pssst... les vrais traders utilisent la voie privée 💼",
+        )
 
     async def setup_hook(self) -> None:  # pragma: no cover - cycle de vie discord.py
         await super().setup_hook()
@@ -155,6 +163,67 @@ class EcoBot(commands.Bot):
 
     async def on_command_error(self, context: commands.Context, exception: Exception) -> None:
         await ErrorHandler.handle_command_error(context, exception)
+
+    async def on_command_completion(self, ctx: commands.Context) -> None:
+        await super().on_command_completion(ctx)
+        await self._maybe_notify_private_usage(ctx)
+
+    async def _maybe_notify_private_usage(self, ctx: commands.Context) -> None:
+        author = ctx.author
+        channel = ctx.channel
+
+        if author.bot:
+            return
+
+        try:
+            now = time.monotonic()
+        except Exception:
+            now = time.time()
+
+        allowed_mentions = discord.AllowedMentions.none()
+
+        if isinstance(channel, discord.DMChannel):
+            last_notice = self._dm_tip_cooldowns.get(author.id, 0.0)
+            if now - last_notice < 1800:
+                return
+
+            message = (
+                "✅ Tu utilises le bot en privé, parfait ! Ici tu peux tout gérer sans déranger personne 🔒."
+            )
+            with suppress(discord.HTTPException, discord.Forbidden):
+                await ctx.send(message, allowed_mentions=allowed_mentions)
+                self._dm_tip_cooldowns[author.id] = now
+            return
+
+        base_channel = None
+        if isinstance(channel, discord.TextChannel):
+            base_channel = channel
+        elif isinstance(channel, discord.Thread):
+            base_channel = channel.parent
+
+        if base_channel is None:
+            return
+
+        channel_name = base_channel.name.lower()
+        if "marche" not in channel_name and "marché" not in channel_name:
+            return
+
+        last_tip = self._market_tip_cooldowns.get(author.id, 0.0)
+        if now - last_tip < 3600:
+            return
+
+        intro_message = (
+            "💡 Astuce : tu peux aussi utiliser cette commande **en message privé** avec moi 😉\n"
+            "C’est plus rapide, plus calme, et tu auras exactement les mêmes résultats."
+        )
+
+        with suppress(discord.HTTPException, discord.Forbidden):
+            await ctx.send(intro_message, delete_after=20, allowed_mentions=allowed_mentions)
+            self._market_tip_cooldowns[author.id] = now
+
+            if random.random() < 0.25:
+                followup = random.choice(self._market_followup_tips)
+                await ctx.send(followup, delete_after=20, allowed_mentions=allowed_mentions)
 
 
 class ErrorHandler:
