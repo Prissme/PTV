@@ -294,10 +294,6 @@ class Help(commands.Cog):
                         f"{PREFIX}claim",
                         "Récupère les PB générés par tes pets.",
                     ),
-                    HelpCommand(
-                        f"{PREFIX}petstats",
-                        "Analyse détaillée de ta collection et de tes meilleurs pets.",
-                    ),
                 ),
             ),
             HelpSection(
