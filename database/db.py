@@ -257,6 +257,10 @@ class Database:
             await connection.execute(
                 "ALTER TABLE user_pets ADD COLUMN IF NOT EXISTS on_market BOOLEAN NOT NULL DEFAULT FALSE"
             )
+            # FIX: Speed up market lookups by indexing the on_market flag.
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_pets_on_market ON user_pets(on_market)"
+            )
             await connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS market_listings (
@@ -446,6 +450,7 @@ class Database:
         if quantity <= 0:
             raise ValueError("La quantité à consommer doit être positive")
 
+        # FIX: Skip redundant ensure_user calls when a transaction connection is provided.
         if connection is None:
             await self.ensure_user(user_id)
             async with self.transaction() as txn_connection:
@@ -554,7 +559,8 @@ class Database:
     async def clear_active_potion(
         self, user_id: int, *, connection: asyncpg.Connection | None = None
     ) -> None:
-        await self.ensure_user(user_id)
+        if connection is None:
+            await self.ensure_user(user_id)
 
         executor = connection or self.pool
         if executor is None:
@@ -1625,6 +1631,7 @@ class Database:
     ) -> tuple[asyncpg.Record, int]:
         await self.ensure_user(user_id)
         async with self.transaction() as connection:
+            # FIX: Prevent rainbow pets from being consumed and guarantee deterministic ordering.
             rows = await connection.fetch(
                 """
                 SELECT up.id
@@ -1632,9 +1639,10 @@ class Database:
                 WHERE up.user_id = $1
                   AND up.pet_id = $2
                   AND NOT up.is_gold
+                  AND NOT up.is_rainbow
                   AND NOT up.is_active
                   AND NOT up.on_market
-                ORDER BY up.acquired_at
+                ORDER BY up.acquired_at, up.id
                 FOR UPDATE
                 """,
                 user_id,
@@ -1702,6 +1710,7 @@ class Database:
     ) -> tuple[asyncpg.Record, int]:
         await self.ensure_user(user_id)
         async with self.transaction() as connection:
+            # FIX: Ensure deterministic rainbow fusion selection order.
             rows = await connection.fetch(
                 """
                 SELECT up.id
@@ -1712,7 +1721,7 @@ class Database:
                   AND NOT up.is_rainbow
                   AND NOT up.is_active
                   AND NOT up.on_market
-                ORDER BY up.acquired_at
+                ORDER BY up.acquired_at, up.id
                 FOR UPDATE
                 """,
                 user_id,
@@ -1955,6 +1964,7 @@ class Database:
             where_clauses.append("NOT up.on_market")
 
         where_sql = " AND ".join(where_clauses)
+        # FIX: Ensure deterministic ordering when listing user pets.
         query = f"""
             SELECT
                 up.id,
@@ -1975,7 +1985,7 @@ class Database:
             FROM user_pets AS up
             JOIN pets AS p ON p.pet_id = up.pet_id
             WHERE {where_sql}
-            ORDER BY up.acquired_at
+            ORDER BY up.acquired_at, up.id
         """
 
         return await self.pool.fetch(query, *params)
@@ -2253,9 +2263,9 @@ class Database:
                 new_active_count = max(0, active_count - 1)
             else:
                 if active_count >= max_slots:
+                    # FIX: Provide a clearer, modern formatted error when slots are full.
                     raise DatabaseError(
-                        "Tu ne peux pas équiper plus de {max_slots} pets simultanément. Monte en grade pour augmenter ta limite !"
-                        .format(max_slots=max_slots)
+                        f"Tu ne peux pas équiper plus de {max_slots} pets simultanément. Monte en grade pour augmenter ta limite !"
                     )
                 await connection.execute(
                     "UPDATE user_pets SET is_active = TRUE, on_market = FALSE WHERE id = $1",
@@ -2282,6 +2292,8 @@ class Database:
         Dict[int, tuple[int, int]],
     ]:
         await self.ensure_user(user_id)
+        # FIX: Fetch best non-huge income outside of the critical transaction to limit lock duration.
+        best_non_huge_income = await self.get_best_non_huge_income(user_id)
         progress_updates: Dict[int, tuple[int, int]] = {}
         async with self.transaction() as connection:
             rows = await connection.fetch(
@@ -2384,9 +2396,6 @@ class Database:
                 else:
                     potion_should_clear = True
 
-            best_non_huge_income = await self.get_best_non_huge_income(
-                user_id, connection=connection
-            )
             effective_incomes: list[int] = []
             for row in rows:
                 base_income = int(row["base_income_per_hour"])
@@ -2518,13 +2527,12 @@ class Database:
                     shares[index] = share_amount
 
             for share_amount, row in zip(shares, rows):
-                if share_amount <= 0:
-                    continue
                 if not bool(row.get("is_huge")):
                     continue
+                # FIX: Grant a minimum XP point even when the huge pet's share rounds to zero.
                 xp_gain = share_amount // 1_000
                 if xp_gain <= 0:
-                    continue
+                    xp_gain = 1
                 level = max(1, int(row.get("huge_level") or 1))
                 current_xp = max(0, int(row.get("huge_xp") or 0))
                 new_level = level
@@ -2569,15 +2577,8 @@ class Database:
             }
 
         if potion_should_clear:
-            await connection.execute(
-                """
-                UPDATE users
-                SET active_potion_slug = NULL,
-                    active_potion_expires_at = NULL
-                WHERE user_id = $1
-                """,
-                user_id,
-            )
+            # FIX: Clear expired potions within the active transaction for consistency.
+            await self.clear_active_potion(user_id, connection=connection)
 
         return (
             income,
@@ -2853,10 +2854,20 @@ class Database:
                 balance_after=seller_after,
                 description=f"Vente annonce #{listing_id}",
                 related_user_id=buyer_id,
-            )
+        )
 
         if completed is None:
             raise DatabaseError("Impossible de finaliser l'achat.")
+        # FIX: Log successful market transfers for auditability.
+        logger.info(
+            "Market listing sold",
+            extra={
+                "listing_id": listing_id,
+                "seller_id": seller_id,
+                "buyer_id": buyer_id,
+                "price": price,
+            },
+        )
         return {"listing": completed, "seller_before": seller_before, "buyer_before": buyer_before}
 
     async def get_market_listing(self, listing_id: int) -> Optional[asyncpg.Record]:

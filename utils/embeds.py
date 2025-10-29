@@ -711,18 +711,26 @@ def pet_claim_embed(
 
     shares: list[int] = []
     remaining = amount
-    for index, pet in enumerate(pets):
-        income = int(pet.get("base_income_per_hour", 0))
-        if amount > 0 and total_income > 0:
-            if index == len(pets) - 1:
-                share = remaining
+    # FIX: Avoid dividing by zero when pets have no recorded income by splitting rewards fairly.
+    if amount > 0 and total_income <= 0 and pets:
+        base_share, remainder = divmod(amount, len(pets))
+        for index in range(len(pets)):
+            share = base_share + (1 if index < remainder else 0)
+            shares.append(share)
+        remaining = 0
+    else:
+        for index, pet in enumerate(pets):
+            income = int(pet.get("base_income_per_hour", 0))
+            if amount > 0 and total_income > 0:
+                if index == len(pets) - 1:
+                    share = remaining
+                else:
+                    share = int(round(amount * (income / total_income)))
+                    share = max(0, min(remaining, share))
+                    remaining -= share
             else:
-                share = int(round(amount * (income / total_income)))
-                share = max(0, min(remaining, share))
-                remaining -= share
-        else:
-            share = 0
-        shares.append(max(0, share))
+                share = 0
+            shares.append(max(0, share))
 
     if amount > 0 and shares:
         diff = amount - sum(shares)
@@ -738,6 +746,11 @@ def pet_claim_embed(
         is_gold = bool(pet.get("is_gold", False))
         is_rainbow = bool(pet.get("is_rainbow", False))
         level = int(pet.get("huge_level", 1)) if is_huge else 0
+        acquired_at = pet.get("acquired_at")
+        acquired_text = ""
+        if isinstance(acquired_at, datetime):
+            # FIX: Surface the acquisition date in the claim embed when available.
+            acquired_text = acquired_at.strftime("%d/%m/%Y")
         tags: list[str] = []
         if is_active:
             tags.append("Actif")
@@ -756,6 +769,8 @@ def pet_claim_embed(
         ]
         if tags:
             line_parts.append(" ".join(tags))
+        if acquired_text:
+            line_parts.append(f"Obtenu le {acquired_text}")
         lines.append(" ".join(part for part in line_parts if part).replace("  ", " "))
 
     if lines:

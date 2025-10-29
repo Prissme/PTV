@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, Final, Tuple
 
 from dotenv import load_dotenv
@@ -254,6 +254,10 @@ POTION_DEFINITION_MAP: Dict[str, PotionDefinition] = {
 # ---------------------------------------------------------------------------
 
 
+# FIX: Cap pet income values to avoid overflow issues and sanitize drop rates.
+MAX_PET_INCOME: Final[int] = 9_223_372_036_854_775_807
+
+
 @dataclass(frozen=True)
 class PetDefinition:
     name: str
@@ -262,6 +266,12 @@ class PetDefinition:
     base_income_per_hour: int
     drop_rate: float
     is_huge: bool = False
+
+    def __post_init__(self) -> None:
+        # FIX: Ensure the stored income stays within signed 64-bit bounds and drop rates are non-negative.
+        clamped_income = max(0, min(int(self.base_income_per_hour), MAX_PET_INCOME))
+        object.__setattr__(self, "base_income_per_hour", clamped_income)
+        object.__setattr__(self, "drop_rate", max(0.0, float(self.drop_rate)))
 
 
 @dataclass(frozen=True)
@@ -370,7 +380,14 @@ def get_huge_level_multiplier(name: str, level: int) -> float:
             min_multiplier = max(1.0, float(multiplier))
             break
 
+    # FIX: Avoid aberrant progression for Titanic Griff by constraining the minimum multiplier.
+    if normalized == TITANIC_GRIFF_NAME.lower():
+        min_multiplier = min(min_multiplier, float(TITANIC_GRIFF_MULTIPLIER) - 1.0)
+
     final_multiplier = max(min_multiplier, float(max(1, get_huge_multiplier(name))))
+    if final_multiplier <= min_multiplier:
+        # FIX: Guarantee growth over levels even if custom multipliers are misconfigured.
+        final_multiplier = min_multiplier + 1.0
     if level <= 1:
         return min_multiplier
 
@@ -507,35 +524,16 @@ _SPECTRAL_EGG_PETS: Tuple[PetDefinition, ...] = (
     ),
 )
 
+# FIX: Clone spectral pets to avoid shared references when reusing definitions.
+def _clone_pet_definition(source: PetDefinition, **overrides: object) -> PetDefinition:
+    return replace(source, **overrides)
+
+
 _CURSED_EGG_PETS: Tuple[PetDefinition, ...] = (
-    PetDefinition(
-        name="Gus",
-        rarity="Commun",
-        image_url="https://cdn.discordapp.com/emojis/1431422788266364999.png",
-        base_income_per_hour=450,
-        drop_rate=0.40,
-    ),
-    PetDefinition(
-        name="Ghost Squeak",
-        rarity="Atypique",
-        image_url="https://cdn.discordapp.com/emojis/1431422784537628722.png",
-        base_income_per_hour=950,
-        drop_rate=0.35,
-    ),
-    PetDefinition(
-        name="Ghost Leon",
-        rarity="Rare",
-        image_url="https://cdn.discordapp.com/emojis/1431422781110882495.png",
-        base_income_per_hour=1_800,
-        drop_rate=0.20,
-    ),
-    PetDefinition(
-        name="Inspectrice Colette",
-        rarity="Épique",
-        image_url="https://cdn.discordapp.com/emojis/1431422778170408960.png",
-        base_income_per_hour=4_500,
-        drop_rate=0.045,
-    ),
+    _clone_pet_definition(_SPECTRAL_EGG_PETS[0], drop_rate=0.40),
+    _clone_pet_definition(_SPECTRAL_EGG_PETS[1], drop_rate=0.35),
+    _clone_pet_definition(_SPECTRAL_EGG_PETS[2], drop_rate=0.20),
+    _clone_pet_definition(_SPECTRAL_EGG_PETS[3], drop_rate=0.045),
     PetDefinition(
         name=HUGE_SHADE_NAME,
         rarity="Secret",
@@ -682,7 +680,8 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Inspectrice Colette": os.getenv("PET_EMOJI_INSPECTRICE_COLETTE", "<:InspectriceColette:1431422778170408960>"),
     HUGE_SHADE_NAME: os.getenv("PET_EMOJI_HUGE_SHADE", "<:HugeShade:1431422771094753310>"),
     HUGE_MORTIS_NAME: os.getenv("PET_EMOJI_HUGE_MORTIS", "<:HugeMortis:1431435110590189638>"),
-    "default": os.getenv("PET_EMOJI_DEFAULT", "🐾"),
+    # FIX: Ensure default emoji falls back when the environment variable is empty.
+    "default": os.getenv("PET_EMOJI_DEFAULT") or "🐾",
 }
 
 HUGE_MORTIS_ROLE_ID: Final[int] = 1431428621959954623
