@@ -233,14 +233,20 @@ class Pets(commands.Cog):
         self._definitions: List[PetDefinition] = list(PET_DEFINITIONS)
         self._definition_by_name: Dict[str, PetDefinition] = {pet.name: pet for pet in self._definitions}
         self._definition_by_slug: Dict[str, PetDefinition] = {}
+        # FIX: Track hashed slugs to avoid collisions between similarly named pets.
+        self._slug_aliases: Dict[str, List[str]] = {}
+        slug_counters: Dict[str, int] = {}
         for pet in self._definitions:
-            keys = {
-                pet.name.lower(),
-                self._normalize_pet_key(pet.name),
-            }
-            for key in keys:
-                if key:
-                    self._definition_by_slug[key] = pet
+            base_slug = self._normalize_pet_key(pet.name)
+            if base_slug:
+                count = slug_counters.get(base_slug, 0) + 1
+                slug_counters[base_slug] = count
+                hashed_slug = f"{base_slug}#{count}"
+                self._definition_by_slug[hashed_slug] = pet
+                self._slug_aliases.setdefault(base_slug, []).append(hashed_slug)
+                if count == 1:
+                    self._definition_by_slug[base_slug] = pet
+            self._definition_by_slug[pet.name.lower()] = pet
         self._definition_by_id: Dict[int, PetDefinition] = {}
         self._pet_ids: Dict[str, int] = {}
         self._eggs: Dict[str, PetEggDefinition] = {
@@ -429,6 +435,7 @@ class Pets(commands.Cog):
         variant: Optional[str] = None
         ordinal: Optional[int] = None
         name_parts: List[str] = []
+        slug_suffix: Optional[str] = None
 
         gold_aliases = {"gold", "doré", "doree", "or"}
         rainbow_aliases = {"rainbow", "rb", "arcenciel", "arc-en-ciel"}
@@ -439,6 +446,16 @@ class Pets(commands.Cog):
             if lowered.isdigit():
                 ordinal = int(lowered)
                 continue
+            if lowered.startswith("#") and lowered[1:].isdigit():
+                slug_suffix = lowered
+                continue
+            if "#" in lowered:
+                base_part, suffix_part = lowered.split("#", 1)
+                if suffix_part.isdigit():
+                    slug_suffix = f"#{suffix_part}"
+                    if base_part:
+                        name_parts.append(base_part)
+                    continue
             if lowered in gold_aliases:
                 variant = "gold"
                 continue
@@ -454,6 +471,12 @@ class Pets(commands.Cog):
             name_parts = tokens
 
         normalized = self._normalize_pet_key(" ".join(name_parts))
+        if slug_suffix:
+            normalized = f"{normalized}{slug_suffix}"
+        else:
+            aliases = self._slug_aliases.get(normalized)
+            if aliases:
+                normalized = aliases[0]
         return normalized, ordinal, variant
 
     async def _resolve_user_pet_candidates(
@@ -738,7 +761,11 @@ class Pets(commands.Cog):
             "🔥🔥 FLAMMES, CRIS, HYPE ABSOLUE 🔥🔥\n"
             f"{ctx.author.mention} rejoint le club des légendes, spammez les GGs et sortez les confettis !!!"
         )
-        await channel.send(hype_message)
+        try:
+            # FIX: Guard against unexpected HTTP errors when broadcasting the alert.
+            await channel.send(hype_message)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error("Impossible d'envoyer l'alerte Huge Shelly", exc_info=exc)
 
     async def _open_pet_egg(
         self,

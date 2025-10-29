@@ -18,6 +18,9 @@ from aiohttp import web
 from discord.ext import commands
 
 from config import DATABASE_URL, LOG_LEVEL, OWNER_ID, PREFIX, TOKEN, PET_DEFINITIONS
+
+# FIX: Allow tuning of the health check server operations timeout via environment.
+HEALTH_CHECK_TIMEOUT = int(os.getenv("HEALTH_TIMEOUT", "10"))
 from database.db import Database, DatabaseError
 
 logger = logging.getLogger(__name__)
@@ -141,7 +144,10 @@ class EcoBot(commands.Bot):
 
         if self.health_server is not None:
             try:
-                await self.health_server.start()
+                # FIX: Bound the health server startup to avoid hangs during boot.
+                await asyncio.wait_for(
+                    self.health_server.start(), timeout=HEALTH_CHECK_TIMEOUT
+                )
             except Exception:
                 logger.exception(
                     "Le serveur de health check n'a pas pu démarrer. Poursuite en mode dégradé."
@@ -150,7 +156,10 @@ class EcoBot(commands.Bot):
     async def close(self) -> None:  # pragma: no cover - cycle de vie discord.py
         if self.health_server is not None:
             try:
-                await self.health_server.stop()
+                # FIX: Bound the health server shutdown to avoid indefinite waits.
+                await asyncio.wait_for(
+                    self.health_server.stop(), timeout=HEALTH_CHECK_TIMEOUT
+                )
             except Exception:
                 logger.exception("Impossible d'arrêter proprement le serveur de health check")
 

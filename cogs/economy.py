@@ -72,6 +72,8 @@ CASINO_TITANIC_CHANCE_PER_PB = CASINO_TITANIC_MAX_CHANCE / SLOT_MAX_BET
 
 MASTERMIND_HUGE_MIN_CHANCE = 0.0005
 MASTERMIND_HUGE_MAX_CHANCE = 0.002
+# FIX: Allow high-grade players to bypass Mastermind cooldown restrictions.
+MASTERMIND_COOLDOWN_GRADE_THRESHOLD = 10
 
 POTION_DROP_RATES: dict[str, float] = {
     "slots": 0.05,
@@ -608,6 +610,8 @@ class CooldownManager:
     def __init__(self, duration: int) -> None:
         self.duration = duration
         self._cooldowns: dict[int, float] = {}
+        # FIX: Guard cooldown reads and writes to make listener access thread-safe.
+        self._lock = asyncio.Lock()
 
     def remaining(self, user_id: int) -> float:
         expires_at = self._cooldowns.get(user_id, 0.0)
@@ -622,6 +626,15 @@ class CooldownManager:
         expired = [user_id for user_id, expiry in self._cooldowns.items() if expiry <= now]
         for user_id in expired:
             self._cooldowns.pop(user_id, None)
+
+    async def check_and_trigger(self, user_id: int) -> float:
+        # FIX: Ensure remaining and trigger happen atomically to avoid race conditions.
+        async with self._lock:
+            remaining = self.remaining(user_id)
+            if remaining <= 0:
+                self.trigger(user_id)
+                return 0.0
+            return remaining
 
 
 class MillionaireRaceSession:
@@ -954,6 +967,11 @@ class Economy(commands.Cog):
         self._cleanup_task: asyncio.Task[None] | None = None
         self.mastermind_helper = MASTERMIND_HELPER
         self._active_race_players: set[int] = set()
+        # FIX: Manage Mastermind cooldown manually to support grade-based bypass.
+        self._mastermind_cooldown = commands.CooldownMapping.from_cooldown(
+            1, MASTERMIND_CONFIG.cooldown, commands.BucketType.user
+        )
+        self._mastermind_cooldown_lock = asyncio.Lock()
 
     async def cog_load(self) -> None:
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
@@ -1087,11 +1105,10 @@ class Economy(commands.Cog):
         if not message.content.strip():
             return
 
-        remaining = self.message_cooldown.remaining(message.author.id)
+        # FIX: Atomically verify and apply the cooldown to avoid double rewards.
+        remaining = await self.message_cooldown.check_and_trigger(message.author.id)
         if remaining > 0:
             return
-
-        self.message_cooldown.trigger(message.author.id)
         await self.database.ensure_user(message.author.id)
         await self.database.increment_balance(
             message.author.id,
@@ -1295,8 +1312,18 @@ class Economy(commands.Cog):
 
     @commands.cooldown(1, 6, commands.BucketType.user)
     @commands.command(name="slots", aliases=("slot", "machine"))
-    async def slots(self, ctx: commands.Context, bet: int = 100) -> None:
+    async def slots(self, ctx: commands.Context, bet: float = 100) -> None:
         """Jeu de machine à sous simple pour miser ses PB."""
+        # FIX: Reject non-integer wagers explicitly to avoid implicit truncation.
+        if isinstance(bet, float):
+            if not bet.is_integer():
+                await ctx.send(
+                    embed=embeds.error_embed("Montant invalide, entiers uniquement."),
+                )
+                return
+            bet = int(bet)
+        else:
+            bet = int(bet)
         if bet <= 0:
             await ctx.send(embed=embeds.error_embed("La mise doit être un nombre positif."))
             return
@@ -1365,7 +1392,6 @@ class Economy(commands.Cog):
         await self._maybe_award_potion(ctx, "slots")
         await self._maybe_award_casino_titanic(ctx, bet)
 
-    @commands.cooldown(1, MASTERMIND_CONFIG.cooldown, commands.BucketType.user)
     @commands.command(name="mastermind", aliases=("mm", "code"))
     async def mastermind(self, ctx: commands.Context) -> None:
         """Mini-jeu de Mastermind pour gagner quelques PB."""
@@ -1381,6 +1407,19 @@ class Economy(commands.Cog):
                 )
             )
             return
+
+        bypass_cooldown = grade_level >= MASTERMIND_COOLDOWN_GRADE_THRESHOLD
+        if not bypass_cooldown:
+            async with self._mastermind_cooldown_lock:
+                bucket = self._mastermind_cooldown.get_bucket(ctx.message)
+                current = time.monotonic()
+                retry_after = bucket.get_retry_after(current)
+                if retry_after:
+                    await ctx.send(
+                        embed=embeds.cooldown_embed(f"{PREFIX}mastermind", retry_after)
+                    )
+                    return
+                bucket.update_rate_limit(current)
 
         session = MastermindSession(
             ctx,
