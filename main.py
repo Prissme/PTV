@@ -9,6 +9,9 @@ import sys
 from contextlib import suppress
 from typing import Optional
 
+import sys, os
+sys.path.append(os.path.expanduser("~/.local/lib/python3.12/site-packages"))
+
 import discord
 from aiohttp import web
 from discord.ext import commands
