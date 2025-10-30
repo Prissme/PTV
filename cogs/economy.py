@@ -9,7 +9,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Awaitable, Callable, Optional, Sequence
+from typing import Awaitable, Callable, Mapping, Optional, Sequence
 
 import discord
 from discord.ext import commands
@@ -25,6 +25,7 @@ from config import (
     HUGE_PET_MIN_INCOME,
     MESSAGE_COOLDOWN,
     MESSAGE_REWARD,
+    MASTERMIND_MASTERY_ROLE_ID,
     PET_DEFINITIONS,
     PET_EMOJIS,
     POTION_DEFINITION_MAP,
@@ -35,6 +36,7 @@ from config import (
     get_huge_level_multiplier,
 )
 from utils import embeds
+from utils.mastery import MASTERMIND_MASTERY
 from database.db import Database, DatabaseError, InsufficientBalanceError
 
 logger = logging.getLogger(__name__)
@@ -81,6 +83,47 @@ POTION_DROP_RATES: dict[str, float] = {
 }
 
 POTION_SLUGS: tuple[str, ...] = tuple(potion.slug for potion in POTION_DEFINITIONS)
+
+
+
+@dataclass(frozen=True)
+class MastermindMasteryPerks:
+    reward_multiplier: float = 1.0
+    loot_luck_multiplier: float = 1.0
+    huge_chance_multiplier: float = 1.0
+    color_reduction: int = 0
+
+
+def _compute_mastermind_mastery_perks(level: int) -> MastermindMasteryPerks:
+    level = max(1, level)
+    reward_multiplier = 1.0
+    loot_luck_multiplier = 1.0
+    huge_chance_multiplier = 1.0
+    color_reduction = 0
+
+    if level >= 5:
+        reward_multiplier = 2.0
+    if level >= 10:
+        reward_multiplier = 8.0
+        loot_luck_multiplier = 2.0
+    if level >= 20:
+        reward_multiplier = 16.0
+        color_reduction = 1
+    if level >= 30:
+        huge_chance_multiplier = 2.0
+    if level >= 40:
+        reward_multiplier = 64.0
+    if level >= 50:
+        reward_multiplier = 256.0
+    if level >= 64:
+        color_reduction = max(color_reduction, 2)
+
+    return MastermindMasteryPerks(
+        reward_multiplier=reward_multiplier,
+        loot_luck_multiplier=loot_luck_multiplier,
+        huge_chance_multiplier=huge_chance_multiplier,
+        color_reduction=color_reduction,
+    )
 
 
 
@@ -227,7 +270,8 @@ class MastermindSession:
         ctx: commands.Context,
         helper: MastermindHelper,
         database: Database,
-        potion_callback: Callable[[commands.Context, str], Awaitable[bool]] | None = None,
+        potion_callback: Callable[[commands.Context, str, float], Awaitable[bool]] | None = None,
+        mastery_perks: MastermindMasteryPerks | None = None,
     ) -> None:
         self.ctx = ctx
         self.bot: commands.Bot = ctx.bot
@@ -244,6 +288,8 @@ class MastermindSession:
         self.status_lines: list[str] = []
         self.embed_color = Colors.INFO
         self._logger = logger.getChild("MastermindSession")
+        self.mastery_perks = mastery_perks
+        self.mastery_xp = 0
 
     async def start(self) -> None:
         await self.database.ensure_user(self.ctx.author.id)
@@ -278,6 +324,7 @@ class MastermindSession:
 
     async def process_guess(self, guess: Sequence[str]) -> None:
         self.attempts += 1
+        self.mastery_xp += 1
         exact, misplaced = self.helper.evaluate_guess(self.secret, guess)
         attempts_left = self.helper.config.max_attempts - self.attempts
 
@@ -287,7 +334,13 @@ class MastermindSession:
         if (
             self.potion_callback is not None
             and not self.potion_awarded
-            and await self.potion_callback(self.ctx, "mastermind")
+            and await self.potion_callback(
+                self.ctx,
+                "mastermind",
+                max(0.0, float(self.mastery_perks.loot_luck_multiplier))
+                if self.mastery_perks is not None
+                else 1.0,
+            )
         ):
             self.potion_awarded = True
 
@@ -317,7 +370,12 @@ class MastermindSession:
 
     async def _handle_victory(self, attempts_left: int) -> None:
         base_reward = random.randint(*self.helper.config.base_reward)
-        reward = base_reward + attempts_left * self.helper.config.attempt_bonus
+        reward_base = base_reward + attempts_left * self.helper.config.attempt_bonus
+        reward_multiplier = 1.0
+        if self.mastery_perks is not None:
+            reward_multiplier = max(1.0, float(self.mastery_perks.reward_multiplier))
+        reward = int(round(reward_base * reward_multiplier))
+        reward = max(reward, reward_base)
         _, balance_after = await self.database.increment_balance(
             self.ctx.author.id,
             reward,
@@ -340,6 +398,8 @@ class MastermindSession:
                 "attempts": self.attempts,
                 "reward": reward,
                 "base_reward": base_reward,
+                "reward_base": reward_base,
+                "reward_multiplier": reward_multiplier,
                 "attempts_left": attempts_left,
             },
         )
@@ -401,7 +461,13 @@ class MastermindSession:
         if span <= 0:
             return max(MASTERMIND_HUGE_MIN_CHANCE, MASTERMIND_HUGE_MAX_CHANCE)
         factor = (attempts_used - 1) / (max_attempts - 1)
-        return MASTERMIND_HUGE_MAX_CHANCE - factor * span
+        chance = MASTERMIND_HUGE_MAX_CHANCE - factor * span
+        chance = max(MASTERMIND_HUGE_MIN_CHANCE, chance)
+        if self.mastery_perks is not None:
+            multiplier = max(0.0, float(self.mastery_perks.huge_chance_multiplier))
+            if multiplier > 0:
+                chance = min(1.0, chance * multiplier)
+        return chance
 
     async def _maybe_award_mastermind_huge(self) -> bool:
         chance = self._mastermind_huge_chance()
@@ -988,6 +1054,129 @@ class Economy(commands.Cog):
             await asyncio.sleep(300)
             self.message_cooldown.cleanup()
 
+    def _build_mastermind_helper(
+        self, perks: MastermindMasteryPerks | None
+    ) -> MastermindHelper:
+        base_config = self.mastermind_helper.config
+        colors = list(base_config.colors)
+        reduction = 0
+        if perks is not None:
+            reduction = max(0, int(perks.color_reduction))
+        while reduction > 0 and len(colors) > base_config.code_length:
+            colors.pop()
+            reduction -= 1
+        config = MastermindConfig(
+            colors=tuple(colors),
+            code_length=base_config.code_length,
+            max_attempts=base_config.max_attempts,
+            response_timeout=base_config.response_timeout,
+            base_reward=base_config.base_reward,
+            attempt_bonus=base_config.attempt_bonus,
+            cancel_words=base_config.cancel_words,
+            cooldown=base_config.cooldown,
+        )
+        return MastermindHelper(config)
+
+    async def _grant_mastery_role(self, ctx: commands.Context, role_id: int) -> None:
+        if role_id <= 0 or ctx.guild is None:
+            return
+        role = ctx.guild.get_role(role_id)
+        if role is None:
+            return
+        member = ctx.guild.get_member(ctx.author.id)
+        if member is None or role in member.roles:
+            return
+        try:
+            await member.add_roles(role, reason="Maîtrise Mastermind maximale atteinte")
+        except discord.Forbidden:
+            logger.debug("Impossible d'ajouter le rôle %s à %s", role_id, ctx.author.id)
+        except discord.HTTPException:
+            logger.warning("Échec de l'ajout du rôle Mastermind", exc_info=True)
+
+    async def _handle_mastermind_mastery_notifications(
+        self, ctx: commands.Context, update: Mapping[str, object]
+    ) -> None:
+        levels_gained = int(update.get("levels_gained", 0) or 0)
+        if levels_gained <= 0:
+            return
+
+        level = int(update.get("level", 1) or 1)
+        previous_level = int(update.get("previous_level", level) or level)
+        xp_to_next = int(update.get("xp_to_next_level", 0) or 0)
+        current_progress = int(update.get("experience", 0) or 0)
+
+        lines = [f"Tu passes niveau **{level}** de {MASTERMIND_MASTERY.display_name} !"]
+        if xp_to_next > 0:
+            remaining = max(0, xp_to_next - current_progress)
+            lines.append(f"Encore {remaining:,} XP pour le prochain niveau.".replace(",", " "))
+        else:
+            lines.append("Tu as atteint le niveau maximal de maîtrise, félicitations !")
+
+        if previous_level < 5 <= level:
+            lines.append("Tes récompenses Mastermind sont désormais **doublées** !")
+        if previous_level < 10 <= level:
+            lines.append(
+                "Tes gains montent à **x8** et tu trouves des potions Mastermind 2× plus souvent."
+            )
+        if previous_level < 20 <= level:
+            lines.append(
+                "Les récompenses passent à **x16** et la palette perd **1 couleur** pour faciliter tes parties."
+            )
+        if previous_level < 30 <= level:
+            lines.append("La chance de drop de **Huge Kenji Oni** est **doublée** !")
+        if previous_level < 40 <= level:
+            lines.append("Les récompenses Mastermind grimpent à **x64** !")
+        if previous_level < 50 <= level:
+            lines.append("Tu atteins des gains colossaux : **x256** sur chaque victoire !")
+        if previous_level < 64 <= level:
+            lines.append(
+                "Tu obtiens le rôle ultime et joues désormais avec **2 couleurs en moins** en permanence !"
+            )
+            await self._grant_mastery_role(ctx, MASTERMIND_MASTERY_ROLE_ID)
+
+        dm_content = "🧠 " + "\n".join(lines)
+        try:
+            await ctx.author.send(dm_content)
+        except discord.Forbidden:
+            logger.debug("Impossible d'envoyer le MP Mastermind à %s", ctx.author.id)
+        except discord.HTTPException:
+            logger.warning("Échec de l'envoi du MP Mastermind", exc_info=True)
+
+        new_levels = [int(level) for level in update.get("new_levels", [])]
+        milestone_levels = [lvl for lvl in new_levels if lvl in MASTERMIND_MASTERY.broadcast_levels]
+        if not milestone_levels or ctx.guild is None:
+            return
+
+        highest_milestone = max(milestone_levels)
+        channel = ctx.channel
+        if not hasattr(channel, "permissions_for"):
+            return
+        me = ctx.guild.me
+        if me is None or not channel.permissions_for(me).send_messages:
+            return
+
+        announcement = [
+            f"🧠 **{ctx.author.display_name}** atteint le niveau {highest_milestone} de {MASTERMIND_MASTERY.display_name} !"
+        ]
+        if highest_milestone >= 64:
+            announcement.append(
+                "Ils décrochent le rôle suprême et affrontent le Mastermind avec 2 couleurs de moins !"
+            )
+        elif highest_milestone >= 50:
+            announcement.append(
+                "Leurs victoires valent désormais un incroyable multiplicateur **x256** !"
+            )
+        elif highest_milestone >= 30:
+            announcement.append(
+                "La chance d'obtenir **Huge Kenji Oni** est désormais doublée pour eux !"
+            )
+        elif highest_milestone >= 10:
+            announcement.append(
+                "Ils empochent des récompenses x8 et doublent la chance de potion Mastermind !"
+            )
+
+        await channel.send("\n".join(announcement))
+
     def _evaluate_slots(self, reels: Sequence[str]) -> tuple[int, str]:
         """Calcule le multiplicateur et le texte de résultat pour une combinaison."""
         default_message = "Pas de combinaison gagnante cette fois-ci."
@@ -1010,8 +1199,13 @@ class Economy(commands.Cog):
 
         return 0, default_message
 
-    async def _maybe_award_potion(self, ctx: commands.Context, source: str) -> bool:
+    async def _maybe_award_potion(
+        self, ctx: commands.Context, source: str, luck_multiplier: float = 1.0
+    ) -> bool:
         drop_rate = POTION_DROP_RATES.get(source, 0.0)
+        if luck_multiplier > 0:
+            drop_rate *= max(0.0, luck_multiplier)
+        drop_rate = min(1.0, drop_rate)
         if drop_rate <= 0 or random.random() > drop_rate:
             return False
 
@@ -1421,11 +1615,19 @@ class Economy(commands.Cog):
                     return
                 bucket.update_rate_limit(current)
 
+        mastery_progress = await self.database.get_mastery_progress(
+            ctx.author.id, MASTERMIND_MASTERY.slug
+        )
+        mastery_level = int(mastery_progress.get("level", 1))
+        mastery_perks = _compute_mastermind_mastery_perks(mastery_level)
+        helper = self._build_mastermind_helper(mastery_perks)
+
         session = MastermindSession(
             ctx,
-            self.mastermind_helper,
+            helper,
             self.database,
             potion_callback=self._maybe_award_potion,
+            mastery_perks=mastery_perks,
         )
         try:
             await session.start()
@@ -1434,6 +1636,16 @@ class Economy(commands.Cog):
             await ctx.send(
                 embed=embeds.error_embed("Une erreur est survenue. Réessaie dans quelques instants.")
             )
+            return
+
+        await session.finalize()
+
+        xp_gain = max(0, int(session.mastery_xp))
+        if xp_gain > 0:
+            mastery_update = await self.database.add_mastery_experience(
+                ctx.author.id, MASTERMIND_MASTERY.slug, xp_gain
+            )
+            await self._handle_mastermind_mastery_notifications(ctx, mastery_update)
 
     @commands.cooldown(1, MILLIONAIRE_RACE_COOLDOWN, commands.BucketType.user)
     @commands.command(name="millionairerace", aliases=("millionaire", "race"))

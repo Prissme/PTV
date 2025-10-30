@@ -158,6 +158,7 @@ class Colors:
     GOLD = 0xF7B731
     NEUTRAL = 0x99AAB5
     ACCENT = 0xF47FFF
+    MAGENTA = 0xFF77FF
 
 
 class Emojis:
@@ -292,6 +293,8 @@ class PetZoneDefinition:
     grade_required: int
     entry_cost: int
     eggs: Tuple[PetEggDefinition, ...]
+    egg_mastery_required: int = 0
+    pet_mastery_required: int = 0
 
 
 PET_EGG_PRICE: Final[int] = 500
@@ -299,6 +302,7 @@ DEFAULT_PET_EGG_SLUG: Final[str] = "basique"
 STARTER_ZONE_SLUG: Final[str] = "starter"
 FORET_ZONE_SLUG: Final[str] = "foret"
 MANOIR_ZONE_SLUG: Final[str] = "manoir_hante"
+ROBOT_ZONE_SLUG: Final[str] = "robotique"
 GOLD_PET_MULTIPLIER: Final[int] = 3
 GOLD_PET_CHANCE: Final[float] = _get_float_env("PET_GOLD_CHANCE", 0.05)
 GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
@@ -307,6 +311,7 @@ GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
 RAINBOW_PET_MULTIPLIER: Final[int] = 10
 RAINBOW_PET_COMBINE_REQUIRED: Final[int] = 10
 RAINBOW_PET_CHANCE: Final[float] = 0.01
+SHINY_PET_MULTIPLIER: Final[int] = 5
 HUGE_PET_NAME: Final[str] = "Huge Shelly"
 HUGE_PET_MULTIPLIER: Final[int] = 6
 HUGE_PET_MIN_INCOME: Final[int] = 600
@@ -318,13 +323,17 @@ HUGE_GRIFF_NAME: Final[str] = "Huge Griff"
 TITANIC_GRIFF_NAME: Final[str] = "Titanic Griff"
 HUGE_KENJI_ONI_NAME: Final[str] = "Huge Kenji Oni"
 HUGE_GRIFF_MULTIPLIER: Final[int] = 4
-TITANIC_GRIFF_MULTIPLIER: Final[int] = 400
+TITANIC_GRIFF_MULTIPLIER: Final[int] = 200
 HUGE_GALE_MULTIPLIER: Final[int] = 80
 HUGE_KENJI_ONI_MULTIPLIER: Final[int] = 9
 HUGE_SHADE_NAME: Final[str] = "Huge Shade"
 HUGE_SHADE_MULTIPLIER: Final[int] = 6
 HUGE_MORTIS_NAME: Final[str] = "Huge Mortis"
 HUGE_MORTIS_MULTIPLIER: Final[int] = 9
+HUGE_SURGE_NAME: Final[str] = "Huge Surge"
+HUGE_SURGE_MULTIPLIER: Final[int] = 37
+TITANIC_MEEPLE_NAME: Final[str] = "Titanic Meeple"
+TITANIC_MEEPLE_MULTIPLIER: Final[int] = 640
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, int]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
     HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
@@ -332,6 +341,8 @@ HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, int]] = {
     HUGE_SHADE_NAME: HUGE_SHADE_MULTIPLIER,
     HUGE_MORTIS_NAME: HUGE_MORTIS_MULTIPLIER,
     TITANIC_GRIFF_NAME: TITANIC_GRIFF_MULTIPLIER,
+    HUGE_SURGE_NAME: HUGE_SURGE_MULTIPLIER,
+    TITANIC_MEEPLE_NAME: TITANIC_MEEPLE_MULTIPLIER,
 }
 
 HUGE_PET_MIN_LEVEL_MULTIPLIERS: Final[Dict[str, float]] = {
@@ -407,6 +418,8 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     HUGE_KENJI_ONI_NAME: "Récompense rarissime du Mastermind pour les esprits les plus vifs.",
     HUGE_SHADE_NAME: "Extrêmement rare dans l'Œuf Maudit (0.5%) - Zone Manoir Hanté.",
     HUGE_MORTIS_NAME: "Récompense exclusive pour les membres VIP du serveur.",
+    HUGE_SURGE_NAME: "Apparaît dans l'Œuf métallique pour les stratèges les plus assidus.",
+    TITANIC_MEEPLE_NAME: "Récompense quasi mythique de l'Œuf métallique, au-delà du légendaire.",
 }
 
 _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
@@ -588,6 +601,53 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
     ),
 )
 
+_ROBOT_EGG_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="Darryl",
+        rarity="Commun",
+        image_url="https://cdn.discordapp.com/emojis/1433376220980187177.png",
+        base_income_per_hour=10_000,
+        drop_rate=0.85,
+    ),
+    PetDefinition(
+        name="Rico",
+        rarity="Rare",
+        image_url="https://cdn.discordapp.com/emojis/1433376959127228436.png",
+        base_income_per_hour=22_500,
+        drop_rate=0.10,
+    ),
+    PetDefinition(
+        name="Nani",
+        rarity="Épique",
+        image_url="https://cdn.discordapp.com/emojis/1433377774122303582.png",
+        base_income_per_hour=40_000,
+        drop_rate=0.04,
+    ),
+    PetDefinition(
+        name="RT",
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1433378374650429522.png",
+        base_income_per_hour=65_000,
+        drop_rate=0.0098999,
+    ),
+    PetDefinition(
+        name=HUGE_SURGE_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1433379423133892608.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0001,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=TITANIC_MEEPLE_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1433380006557646878.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0000001,
+        is_huge=True,
+    ),
+)
+
 PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
     PetEggDefinition(
         name="Œuf basique",
@@ -621,6 +681,20 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
         zone_slug=MANOIR_ZONE_SLUG,
         aliases=("oeuf maudit", "maudit", "cursed"),
     ),
+    PetEggDefinition(
+        name="Œuf métallique",
+        slug="metallique",
+        price=150_000,
+        pets=_ROBOT_EGG_PETS,
+        zone_slug=ROBOT_ZONE_SLUG,
+        aliases=(
+            "oeuf metallique",
+            "metallique",
+            "metal",
+            "metallic",
+            "robot",
+        ),
+    ),
 )
 
 
@@ -649,6 +723,15 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         grade_required=8,
         entry_cost=50_000,
         eggs=_eggs_for_zone(MANOIR_ZONE_SLUG),
+    ),
+    PetZoneDefinition(
+        name="Zone Robotique",
+        slug="robotique",
+        grade_required=15,
+        entry_cost=10_000_000,
+        eggs=_eggs_for_zone(ROBOT_ZONE_SLUG),
+        egg_mastery_required=10,
+        pet_mastery_required=10,
     ),
 )
 
@@ -681,11 +764,20 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Inspectrice Colette": os.getenv("PET_EMOJI_INSPECTRICE_COLETTE", "<:InspectriceColette:1431422778170408960>"),
     HUGE_SHADE_NAME: os.getenv("PET_EMOJI_HUGE_SHADE", "<:HugeShade:1431422771094753310>"),
     HUGE_MORTIS_NAME: os.getenv("PET_EMOJI_HUGE_MORTIS", "<:HugeMortis:1431435110590189638>"),
+    HUGE_SURGE_NAME: os.getenv("PET_EMOJI_HUGE_SURGE", "<:HugeSurge:1433379423133892608>"),
+    TITANIC_MEEPLE_NAME: os.getenv("PET_EMOJI_TITANIC_MEEPLE", "<:TITANICMEEPLE:1433380006557646878>"),
+    "Darryl": os.getenv("PET_EMOJI_DARRYL", "<:Darryl:1433376220980187177>"),
+    "Rico": os.getenv("PET_EMOJI_RICO", "<:Rico:1433376959127228436>"),
+    "Nani": os.getenv("PET_EMOJI_NANI", "<:Nani:1433377774122303582>"),
+    "RT": os.getenv("PET_EMOJI_RT", "<:RT:1433378374650429522>"),
     # FIX: Ensure default emoji falls back when the environment variable is empty.
     "default": os.getenv("PET_EMOJI_DEFAULT") or "🐾",
 }
 
 HUGE_MORTIS_ROLE_ID: Final[int] = 1431428621959954623
+EGG_MASTERY_ROLE_ID: Final[int] = 1433423014065602600
+PET_MASTERY_ROLE_ID: Final[int] = 1433425659182448720
+MASTERMIND_MASTERY_ROLE_ID: Final[int] = 1433426656361447646
 
 PET_RARITY_COLORS: Final[dict[str, int]] = {
     "Commun": 0x95A5A6,

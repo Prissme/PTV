@@ -417,10 +417,12 @@ def _pet_title(
     is_gold: bool,
     *,
     is_rainbow: bool = False,
+    is_shiny: bool = False,
 ) -> str:
     rainbow_marker = " 🌈" if is_rainbow else ""
     gold_marker = " 🥇" if is_gold and not is_rainbow else ""
-    display_name = f"{_pet_emoji(name)} {name}{rainbow_marker}{gold_marker}".strip()
+    shiny_marker = " ✨" if is_shiny else ""
+    display_name = f"{_pet_emoji(name)} {name}{rainbow_marker}{gold_marker}{shiny_marker}".strip()
     if is_rainbow:
         rarity_label = f"{rarity} Rainbow"
     elif is_gold:
@@ -442,9 +444,14 @@ def pet_reveal_embed(
     is_huge: bool,
     is_gold: bool,
     is_rainbow: bool = False,
+    is_shiny: bool = False,
     market_value: int = 0,
 ) -> discord.Embed:
-    base_color = Colors.GOLD if is_gold or is_rainbow else PET_RARITY_COLORS.get(rarity, Colors.INFO)
+    base_color = (
+        Colors.GOLD
+        if is_gold or is_rainbow
+        else (Colors.MAGENTA if is_shiny else PET_RARITY_COLORS.get(rarity, Colors.INFO))
+    )
     description = f"Revenus passifs : **{income_per_hour:,} PB/h**".replace(",", " ")
     if is_huge:
         description += f"\n🎉 Incroyable ! Tu as obtenu **{name}** ! 🎉"
@@ -452,10 +459,19 @@ def pet_reveal_embed(
         description += f"\n🌈 Variante rainbow ! Puissance x{RAINBOW_PET_MULTIPLIER}."
     elif is_gold:
         description += f"\n🥇 Variante or ! Puissance x{GOLD_PET_MULTIPLIER}."
+    if is_shiny:
+        description += "\n✨ Shiny trouvé ! Puissance x5 cumulable."
     if market_value > 0 and not is_huge:
         description += f"\nValeur marché : **{format_currency(market_value)}**"
     embed = _base_embed(
-        _pet_title(name, rarity, is_huge, is_gold, is_rainbow=is_rainbow),
+        _pet_title(
+            name,
+            rarity,
+            is_huge,
+            is_gold,
+            is_rainbow=is_rainbow,
+            is_shiny=is_shiny,
+        ),
         description,
         color=base_color,
     )
@@ -490,6 +506,7 @@ def pet_collection_embed(
         is_huge = bool(pet.get("is_huge"))
         is_gold = bool(pet.get("is_gold"))
         is_rainbow = bool(pet.get("is_rainbow"))
+        is_shiny = bool(pet.get("is_shiny"))
         income = int(pet.get("income", pet.get("base_income_per_hour", 0)))
         tags: list[str] = []
         if is_huge:
@@ -499,6 +516,8 @@ def pet_collection_embed(
             tags.append("Rainbow")
         elif is_gold:
             tags.append("Gold")
+        if is_shiny:
+            tags.append("Shiny")
         line_parts = [
             "⭐" if is_active else "",
             _pet_emoji(name),
@@ -640,10 +659,11 @@ def pet_equip_embed(
     is_huge = bool(pet.get("is_huge", False))
     is_gold = bool(pet.get("is_gold", False))
     is_rainbow = bool(pet.get("is_rainbow", False))
+    is_shiny = bool(pet.get("is_shiny", False))
     market_value = int(pet.get("market_value", 0))
 
     status_symbol = "✅" if activated else "🛌"
-    title = f"{status_symbol} {_pet_title(name, rarity, is_huge, is_gold, is_rainbow=is_rainbow)}"
+    title = f"{status_symbol} {_pet_title(name, rarity, is_huge, is_gold, is_rainbow=is_rainbow, is_shiny=is_shiny)}"
     color = Colors.SUCCESS if activated else Colors.INFO
     lines = [
         "Ce pet génère désormais des revenus passifs !" if activated else "Ce pet se repose pour le moment.",
