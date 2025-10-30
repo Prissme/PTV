@@ -397,8 +397,13 @@ def grade_completed_embed(
     return _finalize_embed(embed)
 
 
-def pet_animation_embed(*, title: str, description: str) -> discord.Embed:
-    return _base_embed(title, description, color=Colors.INFO)
+def pet_animation_embed(
+    *, title: str, description: str, image_url: str | None = None
+) -> discord.Embed:
+    embed = _base_embed(title, description, color=Colors.INFO)
+    if image_url:
+        embed.set_image(url=image_url)
+    return embed
 
 
 def _pet_emoji(name: str) -> str:

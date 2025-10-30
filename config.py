@@ -282,6 +282,7 @@ class PetEggDefinition:
     pets: Tuple[PetDefinition, ...]
     zone_slug: str
     aliases: Tuple[str, ...] = ()
+    image_url: str | None = None
 
 
 @dataclass(frozen=True)

@@ -176,6 +176,7 @@ class EcoBot(commands.Bot):
     async def on_command_completion(self, ctx: commands.Context) -> None:
         await super().on_command_completion(ctx)
         await self._maybe_notify_private_usage(ctx)
+        await self._maybe_send_first_command_help(ctx)
 
     async def _maybe_notify_private_usage(self, ctx: commands.Context) -> None:
         author = ctx.author
@@ -234,6 +235,52 @@ class EcoBot(commands.Bot):
             if random.random() < 0.25:
                 followup = random.choice(self._market_followup_tips)
                 await ctx.send(followup, delete_after=20, allowed_mentions=allowed_mentions)
+
+    async def _maybe_send_first_command_help(self, ctx: commands.Context) -> None:
+        author = ctx.author
+        if getattr(author, "bot", False):
+            return
+
+        try:
+            should_send = await self.database.should_send_help_dm(author.id)
+        except DatabaseError:
+            logger.exception(
+                "Impossible de vérifier l'état d'envoi du help automatique pour %s", author.id
+            )
+            return
+
+        if not should_send:
+            return
+
+        help_cog = self.get_cog("Help")
+        embed: discord.Embed | None = None
+        build_all_embed = getattr(help_cog, "_build_all_embed", None)
+        if callable(build_all_embed):
+            try:
+                embed = build_all_embed()
+            except Exception:
+                logger.exception("Échec de la génération du menu d'aide pour l'envoi automatique")
+
+        if embed is None:
+            embed = discord.Embed(
+                title="EcoBot — Centre d'aide",
+                description=f"Utilise {PREFIX}help pour découvrir toutes les commandes du bot.",
+                color=discord.Color.blurple(),
+            )
+
+        try:
+            await author.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.debug(
+                "Impossible d'envoyer le help automatique à %s: %s", author.id, exc
+            )
+        finally:
+            try:
+                await self.database.mark_help_dm_sent(author.id)
+            except DatabaseError:
+                logger.exception(
+                    "Impossible d'enregistrer l'envoi du help automatique pour %s", author.id
+                )
 
 
 class ErrorHandler:
