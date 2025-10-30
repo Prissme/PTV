@@ -127,9 +127,9 @@ class EcoBot(commands.Bot):
         self._market_tip_cooldowns: Dict[int, float] = {}
         self._dm_tip_cooldowns: Dict[int, float] = {}
         self._market_followup_tips: tuple[str, ...] = (
-            "Essaye en MP, tu verras comme c’est plus fluide 💬",
-            "Le spam ici devient fort 😅, en MP c’est plus tranquille.",
-            "Pssst... les vrais traders utilisent la voie privée 💼",
+            "Passe en MP pour gérer tes commandes, puis reviens ici pour négocier tes meilleurs deals 🤝",
+            "Le MP c’est la base pour gérer tranquille, mais les vraies affaires se concluent ici dans le marché 💼",
+            "Optimise tes commandes en privé et garde ce salon pour décrocher tes partenaires de trade 🔄",
         )
 
     async def setup_hook(self) -> None:  # pragma: no cover - cycle de vie discord.py
@@ -197,7 +197,8 @@ class EcoBot(commands.Bot):
                 return
 
             message = (
-                "✅ Tu utilises le bot en privé, parfait ! Ici tu peux tout gérer sans déranger personne 🔒."
+                "✅ Tu utilises le bot en privé, parfait ! Ici tu peux tout gérer sans déranger personne 🔒.\n"
+                "Profite-en pour préparer tes ventes et passe ensuite sur le salon du marché pour trouver des partenaires !"
             )
             with suppress(discord.HTTPException, discord.Forbidden):
                 await ctx.send(message, allowed_mentions=allowed_mentions)
@@ -223,7 +224,7 @@ class EcoBot(commands.Bot):
 
         intro_message = (
             "💡 Astuce : tu peux aussi utiliser cette commande **en message privé** avec moi 😉\n"
-            "C’est plus rapide, plus calme, et tu auras exactement les mêmes résultats."
+            "Gère tes inventaires sans bruit en MP, puis viens dans ce salon pour échanger avec les autres joueurs : c’est là que les meilleures affaires se font !"
         )
 
         with suppress(discord.HTTPException, discord.Forbidden):
