@@ -7,6 +7,7 @@ import logging
 import math
 import random
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
@@ -40,7 +41,7 @@ from config import (
     PetZoneDefinition,
 )
 from utils import embeds
-from utils.mastery import EGG_MASTERY
+from utils.mastery import EGG_MASTERY, PET_MASTERY
 from database.db import ActivePetLimitError, DatabaseError
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,61 @@ logger = logging.getLogger(__name__)
 
 HUGE_SHELLY_ALERT_CHANNEL_ID = 1236724293631611022
 EGG_OPEN_EMOJI = "<:Egg:1433411763944296518>"
-DOUBLE_EGG_CHANCE = 0.05
+
+
+@dataclass(frozen=True)
+class EggMasteryPerks:
+    """Regroupe les bonus associés à la maîtrise des œufs."""
+
+    double_chance: float = 0.0
+    triple_chance: float = 0.0
+    gold_chance: float = 0.0
+    rainbow_chance: float = 0.0
+    animation_speed: float = 1.0
+    luck_bonus: float = 0.0
+
+
+def _compute_egg_mastery_perks(level: int) -> EggMasteryPerks:
+    """Calcule les bonus actifs pour un niveau donné de maîtrise des œufs."""
+
+    double_chance = 0.0
+    triple_chance = 0.0
+    gold_chance = 0.0
+    rainbow_chance = 0.0
+    animation_speed = 1.0
+    luck_bonus = 0.0
+
+    if level >= 5:
+        double_chance = 0.05
+    if level >= 10:
+        gold_chance = 0.03
+    if level >= 20:
+        rainbow_chance = 0.01
+        animation_speed = 2.0
+    if level >= 30:
+        double_chance = 0.15
+        triple_chance = 0.01
+    if level >= 40:
+        double_chance = 0.20
+        triple_chance = 0.03
+        gold_chance = 0.05
+        rainbow_chance = 0.02
+    if level >= 50:
+        double_chance = 0.35
+        triple_chance = 0.10
+        gold_chance = 0.10
+        rainbow_chance = 0.04
+    if level >= 64:
+        luck_bonus = 1.0
+
+    return EggMasteryPerks(
+        double_chance=double_chance,
+        triple_chance=triple_chance,
+        gold_chance=gold_chance,
+        rainbow_chance=rainbow_chance,
+        animation_speed=animation_speed,
+        luck_bonus=luck_bonus,
+    )
 
 
 class PetInventoryView(discord.ui.View):
@@ -469,10 +524,32 @@ class Pets(commands.Cog):
         else:
             lines.append("Tu as atteint le niveau maximal de maîtrise, félicitations !")
 
-        if previous_level < 10 <= level:
+        if previous_level < 5 <= level:
             lines.append(
                 "Tu as maintenant **5% de chance** d'obtenir un deuxième œuf gratuitement à chaque ouverture !"
             )
+        if previous_level < 10 <= level:
+            lines.append(
+                "Tu peux désormais PACK des pets **Gold** directement dans les œufs (3% de chance)."
+            )
+        if previous_level < 20 <= level:
+            lines.append(
+                "Tu débloques **1% de chance** de pet rainbow et les animations d'ouverture sont 2× plus rapides."
+            )
+        if previous_level < 30 <= level:
+            lines.append(
+                "Tu profites maintenant de **15% de chance** d'œuf double et **1% de chance** de triple ouverture."
+            )
+        if previous_level < 40 <= level:
+            lines.append(
+                "Tes chances passent à **20% double**, **3% triple**, avec **5% Gold** et **2% Rainbow** dans les œufs."
+            )
+        if previous_level < 50 <= level:
+            lines.append(
+                "Tu atteins **35%** de double, **10%** de triple et jusqu'à **10% Gold / 4% Rainbow** à chaque ouverture !"
+            )
+        if previous_level < 64 <= level:
+            lines.append("Tu obtiens le rôle ultime avec **x2 chance** permanente sur tes ouvertures d'œufs !")
 
         dm_content = "🥚 " + "\n".join(lines)
         try:
@@ -499,9 +576,21 @@ class Pets(commands.Cog):
         announcement_lines = [
             f"🥚 **{ctx.author.display_name}** vient d'atteindre le niveau {highest_milestone} de {EGG_MASTERY.display_name}!",
         ]
-        if highest_milestone >= 10:
+        if highest_milestone >= 64:
             announcement_lines.append(
-                "Ils bénéficient désormais d'une chance de 5% d'obtenir un œuf bonus à chaque ouverture !"
+                "Ils obtiennent le rôle suprême et voient leur chance d'œuf doublée en permanence !"
+            )
+        elif highest_milestone >= 50:
+            announcement_lines.append(
+                "Ils profitent maintenant de 35% de chance d'œuf double et 10% de triple à chaque ouverture !"
+            )
+        elif highest_milestone >= 30:
+            announcement_lines.append(
+                "Ils débloquent des triples ouvertures et 15% de chance d'œuf bonus !"
+            )
+        elif highest_milestone >= 10:
+            announcement_lines.append(
+                "Ils débloquent désormais une chance d'obtenir des œufs bonus à chaque ouverture !"
             )
 
         try:
@@ -755,6 +844,32 @@ class Pets(commands.Cog):
             )
             return False
 
+        if zone.egg_mastery_required > 0:
+            egg_mastery = await self.database.get_mastery_progress(
+                ctx.author.id, EGG_MASTERY.slug
+            )
+            egg_level = int(egg_mastery.get("level", 1))
+            if egg_level < zone.egg_mastery_required:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        f"Tu dois atteindre le niveau {zone.egg_mastery_required} de {EGG_MASTERY.display_name} pour accéder à {zone.name}."
+                    )
+                )
+                return False
+
+        if zone.pet_mastery_required > 0:
+            pet_mastery = await self.database.get_mastery_progress(
+                ctx.author.id, PET_MASTERY.slug
+            )
+            pet_level = int(pet_mastery.get("level", 1))
+            if pet_level < zone.pet_mastery_required:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        f"Tu dois atteindre le niveau {zone.pet_mastery_required} de {PET_MASTERY.display_name} pour accéder à {zone.name}."
+                    )
+                )
+                return False
+
         if zone.entry_cost <= 0:
             return True
 
@@ -790,15 +905,33 @@ class Pets(commands.Cog):
     async def _send_egg_overview(self, ctx: commands.Context) -> None:
         grade_level = await self.database.get_grade_level(ctx.author.id)
         unlocked_zones = await self.database.get_unlocked_zones(ctx.author.id)
+        egg_mastery = await self.database.get_mastery_progress(ctx.author.id, EGG_MASTERY.slug)
+        pet_mastery = await self.database.get_mastery_progress(ctx.author.id, PET_MASTERY.slug)
+        egg_level = int(egg_mastery.get("level", 1))
+        pet_level = int(pet_mastery.get("level", 1))
         lines: List[str] = []
         for zone in PET_ZONES:
             zone_unlocked = zone.entry_cost <= 0 or zone.slug in unlocked_zones
             meets_grade = grade_level >= zone.grade_required
-            status = "✅" if zone_unlocked and meets_grade else "🔒"
+            meets_egg_mastery = egg_level >= zone.egg_mastery_required
+            meets_pet_mastery = pet_level >= zone.pet_mastery_required
+            status = (
+                "✅"
+                if zone_unlocked and meets_grade and meets_egg_mastery and meets_pet_mastery
+                else "🔒"
+            )
             requirements: List[str] = []
             if not meets_grade:
                 requirements.append(
                     f"Grade {zone.grade_required} ({self._grade_label(zone.grade_required)})"
+                )
+            if zone.egg_mastery_required > 0 and not meets_egg_mastery:
+                requirements.append(
+                    f"{EGG_MASTERY.display_name} niveau {zone.egg_mastery_required}"
+                )
+            if zone.pet_mastery_required > 0 and not meets_pet_mastery:
+                requirements.append(
+                    f"{PET_MASTERY.display_name} niveau {zone.pet_mastery_required}"
                 )
             if zone.entry_cost > 0:
                 if zone.slug in unlocked_zones:
@@ -854,6 +987,7 @@ class Pets(commands.Cog):
         ctx: commands.Context,
         egg: PetEggDefinition,
         *,
+        mastery_perks: EggMasteryPerks | None = None,
         active_potion: tuple[PotionDefinition, datetime] | None = None,
         charge_cost: bool = True,
         bonus: bool = False,
@@ -876,22 +1010,34 @@ class Pets(commands.Cog):
                 transaction_type="pet_purchase",
                 description=f"Achat de {egg.name}",
             )
-        luck_bonus = 0.0
+        effective_luck_bonus = 0.0
+        if mastery_perks:
+            effective_luck_bonus += max(0.0, float(mastery_perks.luck_bonus))
         if active_potion:
             potion_definition, potion_expires_at = active_potion
             if (
                 potion_definition.effect_type == "egg_luck"
                 and potion_expires_at > datetime.now(timezone.utc)
             ):
-                luck_bonus = max(0.0, float(potion_definition.effect_value))
-        pet_definition, pet_id = self._choose_pet(egg, luck_bonus=luck_bonus)
+                effective_luck_bonus += max(0.0, float(potion_definition.effect_value))
+        pet_definition, pet_id = self._choose_pet(egg, luck_bonus=effective_luck_bonus)
         is_gold = False
         is_rainbow = False
         if not pet_definition.is_huge:
-            if GOLD_PET_CHANCE > 0:
-                is_gold = random.random() < GOLD_PET_CHANCE
-            if RAINBOW_PET_CHANCE > 0:
-                is_rainbow = random.random() < RAINBOW_PET_CHANCE
+            gold_chance = (
+                max(0.0, float(mastery_perks.gold_chance))
+                if mastery_perks is not None
+                else max(0.0, float(GOLD_PET_CHANCE))
+            )
+            rainbow_chance = (
+                max(0.0, float(mastery_perks.rainbow_chance))
+                if mastery_perks is not None
+                else max(0.0, float(RAINBOW_PET_CHANCE))
+            )
+            if gold_chance > 0:
+                is_gold = random.random() < gold_chance
+            if rainbow_chance > 0:
+                is_rainbow = random.random() < rainbow_chance
                 if is_rainbow:
                     is_gold = False
         _user_pet = await self.database.add_user_pet(
@@ -910,6 +1056,11 @@ class Pets(commands.Cog):
             (egg_title, "Ça y est, il est sur le point d'éclore !"),
         )
         showcase_image = self._egg_showcase_image(egg)
+        speed_factor = 1.0
+        if mastery_perks is not None:
+            speed_factor = max(0.5, min(5.0, float(mastery_perks.animation_speed)))
+        step_delay = max(0.2, 1.1 / speed_factor)
+        reveal_delay = max(0.2, 1.2 / speed_factor)
         message = await ctx.send(
             content=EGG_OPEN_EMOJI,
             embed=embeds.pet_animation_embed(
@@ -919,7 +1070,7 @@ class Pets(commands.Cog):
             )
         )
         for title, description in animation_steps[1:]:
-            await asyncio.sleep(1.1)
+            await asyncio.sleep(step_delay)
             await message.edit(
                 content=EGG_OPEN_EMOJI,
                 embed=embeds.pet_animation_embed(
@@ -929,7 +1080,7 @@ class Pets(commands.Cog):
                 )
             )
 
-        await asyncio.sleep(1.2)
+        await asyncio.sleep(reveal_delay)
         market_values = await self.database.get_pet_market_values()
         market_value = int(market_values.get(pet_id, 0))
         if pet_definition.is_huge:
@@ -1067,19 +1218,20 @@ class Pets(commands.Cog):
             ctx.author.id, EGG_MASTERY.slug
         )
         mastery_level = int(mastery_progress.get("level", 1))
-        double_chance_unlocked = mastery_level >= 10
+        perks = _compute_egg_mastery_perks(mastery_level)
 
         if double_request:
-            if double_chance_unlocked:
+            if perks.double_chance > 0:
                 await ctx.send(
                     embed=embeds.info_embed(
-                        "Le mode double est désormais automatique : tu as 5% de chances d'obtenir un œuf bonus gratuitement à chaque ouverture."
+                        "Le mode double est désormais automatique : tu as "
+                        f"{perks.double_chance * 100:.0f}% de chances d'obtenir un œuf bonus gratuitement à chaque ouverture."
                     )
                 )
             else:
                 await ctx.send(
                     embed=embeds.warning_embed(
-                        "Atteins le niveau 10 de Maîtrise des œufs pour débloquer 5% de chance d'obtenir un deuxième œuf gratuit."
+                        "Atteins le niveau 5 de Maîtrise des œufs pour débloquer 5% de chance d'obtenir un deuxième œuf gratuit."
                     )
                 )
 
@@ -1088,21 +1240,37 @@ class Pets(commands.Cog):
             ctx,
             egg_definition,
             active_potion=active_potion,
+            mastery_perks=perks,
         )
         if not opened:
             return
 
-        if double_chance_unlocked and random.random() < DOUBLE_EGG_CHANCE:
-            await ctx.send(
-                f"{EGG_OPEN_EMOJI} 🎉 **Chance !** Tu ouvres un deuxième œuf gratuitement !"
-            )
-            await self._open_pet_egg(
-                ctx,
-                egg_definition,
-                active_potion=active_potion,
-                charge_cost=False,
-                bonus=True,
-            )
+        bonus_eggs = 0
+        triple_triggered = False
+        if perks.triple_chance > 0 and random.random() < perks.triple_chance:
+            bonus_eggs = 2
+            triple_triggered = True
+        elif perks.double_chance > 0 and random.random() < perks.double_chance:
+            bonus_eggs = 1
+
+        if bonus_eggs:
+            if triple_triggered:
+                await ctx.send(
+                    f"{EGG_OPEN_EMOJI} 🎉 **Chance triple !** Tu ouvres deux œufs bonus gratuitement !"
+                )
+            else:
+                await ctx.send(
+                    f"{EGG_OPEN_EMOJI} 🎉 **Chance !** Tu ouvres un œuf bonus gratuitement !"
+                )
+            for _ in range(bonus_eggs):
+                await self._open_pet_egg(
+                    ctx,
+                    egg_definition,
+                    active_potion=active_potion,
+                    mastery_perks=perks,
+                    charge_cost=False,
+                    bonus=True,
+                )
 
     @commands.command(name="eggs", aliases=("zones", "zone"))
     async def eggs(self, ctx: commands.Context) -> None:
