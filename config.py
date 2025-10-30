@@ -69,14 +69,24 @@ CLAN_CAPACITY_UPGRADE_COSTS: Final[Tuple[int, ...]] = (
     150_000,
     300_000,
 )
-CLAN_BOOST_INCREMENT: Final[float] = 0.05
-CLAN_BOOST_COSTS: Final[Tuple[int, ...]] = (
-    50_000,
-    125_000,
-    250_000,
-    450_000,
-    750_000,
-)
+CLAN_BOOST_INCREMENT: Final[float] = 0.03
+
+
+def _generate_clan_boost_costs(
+    *, base_cost: int = 50_000, growth_factor: float = 1.65, levels: int = 64
+) -> Tuple[int, ...]:
+    """Génère une séquence de coûts exponentiels pour les boosts de clan."""
+
+    costs: list[int] = []
+    current = float(base_cost)
+    for _ in range(levels):
+        costs.append(int(round(current // 100 * 100)))
+        current *= growth_factor
+    return tuple(costs)
+
+
+CLAN_BOOST_COSTS: Final[Tuple[int, ...]] = _generate_clan_boost_costs()
+CLAN_SHINY_LUCK_INCREMENT: Final[float] = 0.002
 
 # ---------------------------------------------------------------------------
 # Paramètres Statistiques
@@ -143,6 +153,9 @@ GRADE_ROLE_IDS: Tuple[int, ...] = (
 # ---------------------------------------------------------------------------
 
 VIP_ROLE_ID: Final[int] = 1_431_428_621_959_954_623
+EGG_MASTERY_MAX_ROLE_ID: Final[int] = 1_433_423_014_065_602_600
+PET_MASTERY_MAX_ROLE_ID: Final[int] = 1_433_425_659_182_448_720
+MASTERMIND_MASTERY_MAX_ROLE_ID: Final[int] = 1_433_426_656_361_447_646
 
 # ---------------------------------------------------------------------------
 # Esthétique
@@ -303,13 +316,14 @@ FORET_ZONE_SLUG: Final[str] = "foret"
 MANOIR_ZONE_SLUG: Final[str] = "manoir_hante"
 ROBOT_ZONE_SLUG: Final[str] = "robotique"
 GOLD_PET_MULTIPLIER: Final[int] = 3
-GOLD_PET_CHANCE: Final[float] = _get_float_env("PET_GOLD_CHANCE", 0.05)
+GOLD_PET_CHANCE: Final[float] = _get_float_env("PET_GOLD_CHANCE", 0.0)
 GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
     "PET_GOLD_COMBINE_REQUIRED", 10, minimum=2
 )
 RAINBOW_PET_MULTIPLIER: Final[int] = 10
 RAINBOW_PET_COMBINE_REQUIRED: Final[int] = 10
-RAINBOW_PET_CHANCE: Final[float] = 0.01
+RAINBOW_PET_CHANCE: Final[float] = 0.0
+SHINY_PET_MULTIPLIER: Final[int] = 5
 HUGE_PET_NAME: Final[str] = "Huge Shelly"
 HUGE_PET_MULTIPLIER: Final[int] = 6
 HUGE_PET_MIN_INCOME: Final[int] = 600
@@ -321,7 +335,7 @@ HUGE_GRIFF_NAME: Final[str] = "Huge Griff"
 TITANIC_GRIFF_NAME: Final[str] = "Titanic Griff"
 HUGE_KENJI_ONI_NAME: Final[str] = "Huge Kenji Oni"
 HUGE_GRIFF_MULTIPLIER: Final[int] = 4
-TITANIC_GRIFF_MULTIPLIER: Final[int] = 200
+TITANIC_GRIFF_MULTIPLIER: Final[int] = 100
 HUGE_GALE_MULTIPLIER: Final[int] = 80
 HUGE_KENJI_ONI_MULTIPLIER: Final[int] = 9
 HUGE_SHADE_NAME: Final[str] = "Huge Shade"

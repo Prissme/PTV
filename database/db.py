@@ -17,12 +17,16 @@ from config import (
     CLAN_CAPACITY_UPGRADE_COSTS,
     CLAN_BOOST_COSTS,
     CLAN_BOOST_INCREMENT,
+    CLAN_SHINY_LUCK_INCREMENT,
     GOLD_PET_MULTIPLIER,
     GOLD_PET_COMBINE_REQUIRED,
     HUGE_PET_LEVEL_CAP,
     HUGE_PET_MIN_INCOME,
+    HUGE_GRIFF_NAME,
     RAINBOW_PET_COMBINE_REQUIRED,
     RAINBOW_PET_MULTIPLIER,
+    SHINY_PET_MULTIPLIER,
+    TITANIC_GRIFF_NAME,
     POTION_DEFINITION_MAP,
     PotionDefinition,
     get_huge_level_multiplier,
@@ -214,6 +218,12 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_user_pets_rainbow ON user_pets(user_id) WHERE is_rainbow"
             )
             await connection.execute(
+                "ALTER TABLE user_pets ADD COLUMN IF NOT EXISTS is_shiny BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_pets_shiny ON user_pets(user_id) WHERE is_shiny"
+            )
+            await connection.execute(
                 "ALTER TABLE user_pets ADD COLUMN IF NOT EXISTS huge_level INTEGER NOT NULL DEFAULT 1"
             )
             await connection.execute(
@@ -340,6 +350,12 @@ class Database:
                 """
                 ALTER TABLE clans ADD COLUMN IF NOT EXISTS pb_boost_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1
                     CHECK (pb_boost_multiplier >= 1)
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clans ADD COLUMN IF NOT EXISTS shiny_luck_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1
+                    CHECK (shiny_luck_multiplier >= 1)
                 """
             )
             await connection.execute(
@@ -1194,17 +1210,19 @@ class Database:
 
             new_level = current_level + 1
             multiplier = 1 + new_level * CLAN_BOOST_INCREMENT
+            shiny_multiplier = 1 + new_level * CLAN_SHINY_LUCK_INCREMENT
 
             updated = await connection.fetchrow(
                 """
                 UPDATE clans
-                SET boost_level = $2, pb_boost_multiplier = $3
+                SET boost_level = $2, pb_boost_multiplier = $3, shiny_luck_multiplier = $4
                 WHERE clan_id = $1
                 RETURNING *
                 """,
                 clan_id,
                 new_level,
                 multiplier,
+                shiny_multiplier,
             )
             if updated is None:
                 raise DatabaseError("Impossible d'améliorer le boost maintenant.")
@@ -1416,6 +1434,7 @@ class Database:
                 up.is_gold,
                 up.is_huge,
                 up.is_rainbow,
+                up.is_shiny,
                 up.huge_level,
                 p.base_income_per_hour,
                 p.name
@@ -1437,6 +1456,8 @@ class Database:
                 value = int(value * RAINBOW_PET_MULTIPLIER)
             elif bool(row["is_gold"]):
                 value = int(value * GOLD_PET_MULTIPLIER)
+            if bool(row.get("is_shiny")):
+                value = int(value * SHINY_PET_MULTIPLIER)
             if bool(row["is_huge"]):
                 level = int(row.get("huge_level") or 1)
                 multiplier = get_huge_level_multiplier(name, level)
@@ -1460,6 +1481,7 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+                up.is_shiny,
                 up.huge_level,
                 p.name,
                 p.base_income_per_hour
@@ -1477,6 +1499,8 @@ class Database:
                 base_income *= RAINBOW_PET_MULTIPLIER
             elif bool(row.get("is_gold")):
                 base_income *= GOLD_PET_MULTIPLIER
+            if bool(row.get("is_shiny")):
+                base_income *= SHINY_PET_MULTIPLIER
             user_id = int(row["user_id"])
             if base_income > best_non_huge[user_id]:
                 best_non_huge[user_id] = base_income
@@ -1500,6 +1524,8 @@ class Database:
                     income_value = base_income * GOLD_PET_MULTIPLIER
                 else:
                     income_value = base_income
+                if bool(row.get("is_shiny")):
+                    income_value *= SHINY_PET_MULTIPLIER
             income_totals[user_id] += income_value
 
         sorted_totals = sorted(
@@ -1639,28 +1665,30 @@ class Database:
         is_huge: bool = False,
         is_gold: bool = False,
         is_rainbow: bool = False,
+        is_shiny: bool = False,
     ) -> asyncpg.Record:
         await self.ensure_user(user_id)
         if is_rainbow:
             is_gold = False
         row = await self.pool.fetchrow(
             """
-            INSERT INTO user_pets (user_id, pet_id, is_huge, is_gold, is_rainbow)
-            VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, user_id, pet_id, is_active, is_huge, is_gold, is_rainbow, acquired_at
+            INSERT INTO user_pets (user_id, pet_id, is_huge, is_gold, is_rainbow, is_shiny)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, user_id, pet_id, is_active, is_huge, is_gold, is_rainbow, is_shiny, acquired_at
             """,
             user_id,
             pet_id,
             is_huge,
             is_gold,
             is_rainbow,
+            is_shiny,
         )
         if row is None:
             raise DatabaseError("Impossible de créer l'entrée user_pet")
         return row
 
     async def upgrade_pet_to_gold(
-        self, user_id: int, pet_id: int
+        self, user_id: int, pet_id: int, *, make_shiny: bool = False
     ) -> tuple[asyncpg.Record, int]:
         await self.ensure_user(user_id)
         async with self.transaction() as connection:
@@ -1700,12 +1728,13 @@ class Database:
 
             inserted = await connection.fetchrow(
                 """
-                INSERT INTO user_pets (user_id, pet_id, is_gold)
-                VALUES ($1, $2, TRUE)
+                INSERT INTO user_pets (user_id, pet_id, is_gold, is_shiny)
+                VALUES ($1, $2, TRUE, $3)
                 RETURNING id
                 """,
                 user_id,
                 pet_id,
+                make_shiny,
             )
             if inserted is None:
                 raise DatabaseError("Impossible de créer le pet doré")
@@ -1719,6 +1748,7 @@ class Database:
                     up.is_huge,
                     up.is_gold,
                     up.is_rainbow,
+                    up.is_shiny,
                     up.huge_level,
                     up.huge_xp,
                     up.acquired_at,
@@ -1739,7 +1769,7 @@ class Database:
         return new_record, required
 
     async def upgrade_pet_to_rainbow(
-        self, user_id: int, pet_id: int
+        self, user_id: int, pet_id: int, *, make_shiny: bool = False
     ) -> tuple[asyncpg.Record, int]:
         await self.ensure_user(user_id)
         async with self.transaction() as connection:
@@ -1777,12 +1807,13 @@ class Database:
 
             inserted = await connection.fetchrow(
                 """
-                INSERT INTO user_pets (user_id, pet_id, is_rainbow)
-                VALUES ($1, $2, TRUE)
+                INSERT INTO user_pets (user_id, pet_id, is_rainbow, is_shiny)
+                VALUES ($1, $2, TRUE, $3)
                 RETURNING id
                 """,
                 user_id,
                 pet_id,
+                make_shiny,
             )
 
             if inserted is None:
@@ -1797,6 +1828,7 @@ class Database:
                     up.is_huge,
                     up.is_gold,
                     up.is_rainbow,
+                    up.is_shiny,
                     up.huge_level,
                     up.huge_xp,
                     up.acquired_at,
@@ -1817,6 +1849,87 @@ class Database:
 
         return new_record, required
 
+    async def fuse_user_pets(
+        self,
+        user_id: int,
+        user_pet_ids: Sequence[int],
+        result_pet_id: int,
+        *,
+        make_shiny: bool = False,
+        allow_huge: bool = False,
+    ) -> asyncpg.Record:
+        await self.ensure_user(user_id)
+        unique_ids = {int(pet_id) for pet_id in user_pet_ids if int(pet_id) > 0}
+        if len(unique_ids) < 10:
+            raise DatabaseError("La machine de fusion nécessite 10 pets distincts.")
+
+        async with self.transaction() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT id, is_active, is_huge, on_market
+                FROM user_pets
+                WHERE user_id = $1 AND id = ANY($2::INT[])
+                FOR UPDATE
+                """,
+                user_id,
+                list(unique_ids),
+            )
+            if len(rows) < len(unique_ids):
+                raise DatabaseError("Tu dois sélectionner des pets qui t'appartiennent et sont disponibles.")
+
+            for row in rows:
+                if bool(row.get("is_huge")) and not allow_huge:
+                    raise DatabaseError("Les Huge pets ne peuvent pas être fusionnés ici.")
+                if bool(row.get("is_active")) or bool(row.get("on_market")):
+                    raise DatabaseError("Les pets actifs ou en vente ne peuvent pas être fusionnés.")
+
+            await connection.execute(
+                "DELETE FROM user_pets WHERE id = ANY($1::INT[])",
+                list(unique_ids),
+            )
+
+            inserted = await connection.fetchrow(
+                """
+                INSERT INTO user_pets (user_id, pet_id, is_shiny)
+                VALUES ($1, $2, $3)
+                RETURNING id
+                """,
+                user_id,
+                result_pet_id,
+                make_shiny,
+            )
+            if inserted is None:
+                raise DatabaseError("Impossible de créer le pet fusionné.")
+
+            new_record = await connection.fetchrow(
+                """
+                SELECT
+                    up.id,
+                    up.nickname,
+                    up.is_active,
+                    up.is_huge,
+                    up.is_gold,
+                    up.is_rainbow,
+                    up.is_shiny,
+                    up.huge_level,
+                    up.huge_xp,
+                    up.acquired_at,
+                    p.pet_id,
+                    p.name,
+                    p.rarity,
+                    p.image_url,
+                    p.base_income_per_hour
+                FROM user_pets AS up
+                JOIN pets AS p ON p.pet_id = up.pet_id
+                WHERE up.id = $1
+                """,
+                int(inserted["id"]),
+            )
+
+        if new_record is None:
+            raise DatabaseError("Impossible de récupérer le pet fusionné.")
+        return new_record
+
     async def get_user_pets(self, user_id: int) -> Sequence[asyncpg.Record]:
         return await self.pool.fetch(
             """
@@ -1827,6 +1940,7 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+                up.is_shiny,
                 up.on_market,
                 up.huge_level,
                 up.huge_xp,
@@ -1854,6 +1968,7 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+                up.is_shiny,
                 up.on_market,
                 up.huge_level,
                 up.huge_xp,
@@ -1893,6 +2008,7 @@ class Database:
                     up.is_huge,
                     up.is_gold,
                     up.is_rainbow,
+                    up.is_shiny,
                     up.on_market,
                     up.huge_level,
                     up.huge_xp,
@@ -1944,6 +2060,7 @@ class Database:
                     up.is_huge,
                     up.is_gold,
                     up.is_rainbow,
+                    up.is_shiny,
                     up.huge_level,
                     up.huge_xp,
                     up.acquired_at,
@@ -1962,6 +2079,16 @@ class Database:
             raise DatabaseError("Impossible de récupérer le pet transféré.")
 
         return updated
+
+    async def transfer_user_pet(
+        self,
+        source_user_id: int,
+        target_user_id: int,
+        user_pet_id: int,
+    ) -> asyncpg.Record:
+        """Transfère un pet entre deux joueurs en vérifiant les contraintes de base."""
+
+        return await self.admin_transfer_user_pet(source_user_id, target_user_id, user_pet_id)
 
     async def get_user_pet_by_name(
         self,
@@ -2006,6 +2133,7 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+                up.is_shiny,
                 up.on_market,
                 up.huge_level,
                 up.huge_xp,
@@ -2033,6 +2161,7 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+                up.is_shiny,
                 up.huge_level,
                 up.huge_xp,
                 up.acquired_at,
@@ -2338,6 +2467,7 @@ class Database:
                     up.is_huge,
                     up.is_gold,
                     up.is_rainbow,
+                    up.is_shiny,
                     up.huge_level,
                     up.huge_xp,
                     up.acquired_at,
@@ -2357,7 +2487,8 @@ class Database:
                     c.name AS clan_name,
                     c.pb_boost_multiplier,
                     c.boost_level AS clan_boost_level,
-                    c.banner_emoji AS clan_banner
+                    c.banner_emoji AS clan_banner,
+                    c.shiny_luck_multiplier
                 FROM user_pets AS up
                 JOIN pets AS p ON p.pet_id = up.pet_id
                 JOIN users AS u ON u.user_id = up.user_id
@@ -2445,6 +2576,8 @@ class Database:
                         income_value = base_income * GOLD_PET_MULTIPLIER
                     else:
                         income_value = base_income
+                    if bool(row.get("is_shiny")):
+                        income_value *= SHINY_PET_MULTIPLIER
                 effective_incomes.append(income_value)
 
             hourly_income = sum(effective_incomes)
@@ -2492,8 +2625,12 @@ class Database:
             clan_info: dict[str, object] = {}
             clan_id = first_row.get("member_clan_id")
             clan_multiplier = 1.0
+            clan_shiny_multiplier = 1.0
             if clan_id is not None:
                 clan_multiplier = max(1.0, float(first_row.get("pb_boost_multiplier") or 1.0))
+                clan_shiny_multiplier = max(
+                    1.0, float(first_row.get("shiny_luck_multiplier") or 1.0)
+                )
             boosted_income = int(raw_income * clan_multiplier)
             clan_bonus = max(0, boosted_income - raw_income)
             if clan_id is not None:
@@ -2504,6 +2641,7 @@ class Database:
                     "bonus": clan_bonus,
                     "boost_level": int(first_row.get("clan_boost_level") or 0),
                     "banner": str(first_row.get("clan_banner") or "⚔️"),
+                    "shiny_multiplier": clan_shiny_multiplier,
                 }
 
             income = boosted_income

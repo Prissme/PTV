@@ -417,14 +417,18 @@ def _pet_title(
     is_gold: bool,
     *,
     is_rainbow: bool = False,
+    is_shiny: bool = False,
 ) -> str:
     rainbow_marker = " 🌈" if is_rainbow else ""
     gold_marker = " 🥇" if is_gold and not is_rainbow else ""
-    display_name = f"{_pet_emoji(name)} {name}{rainbow_marker}{gold_marker}".strip()
+    shiny_marker = " ✨" if is_shiny else ""
+    display_name = f"{_pet_emoji(name)} {name}{rainbow_marker}{gold_marker}{shiny_marker}".strip()
     if is_rainbow:
         rarity_label = f"{rarity} Rainbow"
     elif is_gold:
         rarity_label = f"{rarity} Or"
+    elif is_shiny:
+        rarity_label = f"{rarity} Shiny"
     else:
         rarity_label = rarity
     title = f"{display_name} ({rarity_label})"
@@ -442,6 +446,7 @@ def pet_reveal_embed(
     is_huge: bool,
     is_gold: bool,
     is_rainbow: bool = False,
+    is_shiny: bool = False,
     market_value: int = 0,
 ) -> discord.Embed:
     base_color = Colors.GOLD if is_gold or is_rainbow else PET_RARITY_COLORS.get(rarity, Colors.INFO)
@@ -452,10 +457,14 @@ def pet_reveal_embed(
         description += f"\n🌈 Variante rainbow ! Puissance x{RAINBOW_PET_MULTIPLIER}."
     elif is_gold:
         description += f"\n🥇 Variante or ! Puissance x{GOLD_PET_MULTIPLIER}."
+    if is_shiny:
+        description += f"\n✨ Variante shiny ! Puissance x{SHINY_PET_MULTIPLIER}."
     if market_value > 0 and not is_huge:
         description += f"\nValeur marché : **{format_currency(market_value)}**"
     embed = _base_embed(
-        _pet_title(name, rarity, is_huge, is_gold, is_rainbow=is_rainbow),
+        _pet_title(
+            name, rarity, is_huge, is_gold, is_rainbow=is_rainbow, is_shiny=is_shiny
+        ),
         description,
         color=base_color,
     )
@@ -490,6 +499,7 @@ def pet_collection_embed(
         is_huge = bool(pet.get("is_huge"))
         is_gold = bool(pet.get("is_gold"))
         is_rainbow = bool(pet.get("is_rainbow"))
+        is_shiny = bool(pet.get("is_shiny"))
         income = int(pet.get("income", pet.get("base_income_per_hour", 0)))
         tags: list[str] = []
         if is_huge:
@@ -499,6 +509,8 @@ def pet_collection_embed(
             tags.append("Rainbow")
         elif is_gold:
             tags.append("Gold")
+        if is_shiny:
+            tags.append("Shiny")
         line_parts = [
             "⭐" if is_active else "",
             _pet_emoji(name),
@@ -721,11 +733,14 @@ def pet_claim_embed(
         clan_name = str(clan.get("name", "Clan"))
         clan_multiplier = float(clan.get("multiplier", 1.0))
         clan_bonus = int(clan.get("bonus", 0))
+        shiny_mult = float(clan.get("shiny_multiplier", 1.0))
         clan_line = f"Clan {clan_name}"
         if clan_multiplier > 1.0:
             clan_line += f" x{clan_multiplier:.2f}"
         if clan_bonus > 0:
             clan_line += f" (+{format_currency(clan_bonus)})"
+        if shiny_mult > 1.0:
+            clan_line += f" • Shiny x{shiny_mult:.2f}"
         extra_info.append(clan_line)
 
     color = Colors.SUCCESS if amount else Colors.INFO
@@ -771,6 +786,7 @@ def pet_claim_embed(
         is_huge = bool(pet.get("is_huge", False))
         is_gold = bool(pet.get("is_gold", False))
         is_rainbow = bool(pet.get("is_rainbow", False))
+        is_shiny = bool(pet.get("is_shiny", False))
         level = int(pet.get("huge_level", 1)) if is_huge else 0
         acquired_at = pet.get("acquired_at")
         acquired_text = ""
@@ -786,6 +802,8 @@ def pet_claim_embed(
             tags.append("Rainbow")
         elif is_gold:
             tags.append("Gold")
+        if is_shiny:
+            tags.append("Shiny")
         share_text = f"+{format_currency(share)}" if share > 0 else "0 PB"
         line_parts = [
             _pet_emoji(name),
@@ -813,6 +831,7 @@ def clan_overview_embed(
     member_count: int,
     capacity: int,
     boost_multiplier: float,
+    shiny_multiplier: float,
     boost_level: int,
     capacity_level: int,
     members: Sequence[Mapping[str, object]],
@@ -823,6 +842,7 @@ def clan_overview_embed(
         f"⚔️ Chef : **{leader_name}**",
         f"🧮 Membres : **{member_count}/{capacity}**",
         f"🔥 Turbo PB : **x{boost_multiplier:.2f}** (Niv. boost {boost_level})",
+        f"✨ Chance shiny : **x{shiny_multiplier:.2f}**",
         f"📦 Extension : Niv. {capacity_level}",
     ]
     if next_capacity_cost is not None:
