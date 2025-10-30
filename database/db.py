@@ -28,6 +28,7 @@ from config import (
     get_huge_level_multiplier,
     huge_level_required_xp,
 )
+from utils.mastery import get_mastery_definition
 
 __all__ = [
     "Database",
@@ -230,6 +231,20 @@ class Database:
             )
             await connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_pet_openings_user ON pet_openings(user_id)"
+            )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_masteries (
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    mastery_slug TEXT NOT NULL,
+                    level INTEGER NOT NULL DEFAULT 1 CHECK (level >= 1),
+                    experience BIGINT NOT NULL DEFAULT 0 CHECK (experience >= 0),
+                    PRIMARY KEY (user_id, mastery_slug)
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_masteries_slug ON user_masteries(mastery_slug)"
             )
 
             await connection.execute(
@@ -2615,6 +2630,123 @@ class Database:
             user_id,
             pet_id,
         )
+
+    async def get_mastery_progress(self, user_id: int, mastery_slug: str) -> Dict[str, int]:
+        definition = get_mastery_definition(mastery_slug)
+        await self.ensure_user(user_id)
+        row = await self.pool.fetchrow(
+            """
+            SELECT level, experience
+            FROM user_masteries
+            WHERE user_id = $1 AND mastery_slug = $2
+            """,
+            user_id,
+            mastery_slug,
+        )
+        if row is None:
+            await self.pool.execute(
+                "INSERT INTO user_masteries (user_id, mastery_slug) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                user_id,
+                mastery_slug,
+            )
+            level = 1
+            experience = 0
+        else:
+            level = int(row["level"])
+            experience = int(row["experience"])
+
+        xp_to_next = definition.required_xp(level) if level < definition.max_level else 0
+        return {
+            "level": level,
+            "experience": experience,
+            "max_level": definition.max_level,
+            "xp_to_next_level": xp_to_next,
+        }
+
+    async def add_mastery_experience(
+        self, user_id: int, mastery_slug: str, amount: int
+    ) -> Dict[str, object]:
+        definition = get_mastery_definition(mastery_slug)
+        if amount <= 0:
+            progress = await self.get_mastery_progress(user_id, mastery_slug)
+            progress.update(
+                previous_level=progress["level"],
+                levels_gained=0,
+                new_levels=[],
+            )
+            return progress
+
+        await self.ensure_user(user_id)
+        async with self.transaction() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT level, experience
+                FROM user_masteries
+                WHERE user_id = $1 AND mastery_slug = $2
+                FOR UPDATE
+                """,
+                user_id,
+                mastery_slug,
+            )
+            if row is None:
+                level = 1
+                experience = 0
+                await connection.execute(
+                    """
+                    INSERT INTO user_masteries (user_id, mastery_slug, level, experience)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (user_id, mastery_slug) DO UPDATE
+                    SET level = EXCLUDED.level, experience = EXCLUDED.experience
+                    """,
+                    user_id,
+                    mastery_slug,
+                    level,
+                    experience,
+                )
+            else:
+                level = int(row["level"])
+                experience = int(row["experience"])
+
+            previous_level = level
+            experience += int(amount)
+            levels_gained = 0
+            new_levels: List[int] = []
+
+            while level < definition.max_level:
+                required = definition.required_xp(level)
+                if required <= 0 or experience < required:
+                    break
+                experience -= required
+                level += 1
+                levels_gained += 1
+                new_levels.append(level)
+
+            if level >= definition.max_level:
+                level = definition.max_level
+                experience = 0
+
+            await connection.execute(
+                """
+                UPDATE user_masteries
+                SET level = $3, experience = $4
+                WHERE user_id = $1 AND mastery_slug = $2
+                """,
+                user_id,
+                mastery_slug,
+                level,
+                experience,
+            )
+
+        xp_to_next = definition.required_xp(level) if level < definition.max_level else 0
+        return {
+            "level": level,
+            "experience": experience,
+            "max_level": definition.max_level,
+            "xp_to_next_level": xp_to_next,
+            "previous_level": previous_level,
+            "levels_gained": levels_gained,
+            "new_levels": new_levels,
+        }
 
     async def get_pet_opening_counts(self) -> tuple[int, Mapping[int, int]]:
         rows = await self.pool.fetch(

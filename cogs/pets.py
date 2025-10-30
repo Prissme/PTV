@@ -40,12 +40,15 @@ from config import (
     PetZoneDefinition,
 )
 from utils import embeds
+from utils.mastery import EGG_MASTERY
 from database.db import ActivePetLimitError, DatabaseError
 
 logger = logging.getLogger(__name__)
 
 
 HUGE_SHELLY_ALERT_CHANNEL_ID = 1236724293631611022
+EGG_OPEN_EMOJI = "<:Egg:1433411763944296518>"
+DOUBLE_EGG_CHANCE = 0.05
 
 
 class PetInventoryView(discord.ui.View):
@@ -444,6 +447,68 @@ class Pets(commands.Cog):
             return
         self.bot.dispatch("grade_quest_progress", member, quest_type, amount, ctx.channel)
 
+    async def _handle_mastery_notifications(
+        self, ctx: commands.Context, update: Mapping[str, object]
+    ) -> None:
+        levels_gained = int(update.get("levels_gained", 0) or 0)
+        if levels_gained <= 0:
+            return
+
+        level = int(update.get("level", 1) or 1)
+        previous_level = int(update.get("previous_level", level) or level)
+        xp_to_next = int(update.get("xp_to_next_level", 0) or 0)
+        current_progress = int(update.get("experience", 0) or 0)
+
+        lines = [
+            f"Tu passes niveau **{level}** de {EGG_MASTERY.display_name} !"
+        ]
+        if xp_to_next > 0:
+            remaining = max(0, xp_to_next - current_progress)
+            remaining_text = f"Encore {remaining:,} œufs à ouvrir pour le prochain niveau.".replace(",", " ")
+            lines.append(remaining_text)
+        else:
+            lines.append("Tu as atteint le niveau maximal de maîtrise, félicitations !")
+
+        if previous_level < 10 <= level:
+            lines.append(
+                "Tu as maintenant **5% de chance** d'obtenir un deuxième œuf gratuitement à chaque ouverture !"
+            )
+
+        dm_content = "🥚 " + "\n".join(lines)
+        try:
+            await ctx.author.send(dm_content)
+        except discord.Forbidden:
+            logger.debug("Impossible d'envoyer le MP de maîtrise à %s", ctx.author.id)
+        except discord.HTTPException:
+            logger.warning("Échec de l'envoi du MP de maîtrise", exc_info=True)
+
+        new_levels = [int(level) for level in update.get("new_levels", [])]
+        milestone_levels = [lvl for lvl in new_levels if lvl in EGG_MASTERY.broadcast_levels]
+        if not milestone_levels or ctx.guild is None:
+            return
+
+        highest_milestone = max(milestone_levels)
+        channel = ctx.channel
+        if not hasattr(channel, "permissions_for"):
+            return
+
+        me = ctx.guild.me
+        if me is None or not channel.permissions_for(me).send_messages:
+            return
+
+        announcement_lines = [
+            f"🥚 **{ctx.author.display_name}** vient d'atteindre le niveau {highest_milestone} de {EGG_MASTERY.display_name}!",
+        ]
+        if highest_milestone >= 10:
+            announcement_lines.append(
+                "Ils bénéficient désormais d'une chance de 5% d'obtenir un œuf bonus à chaque ouverture !"
+            )
+
+        try:
+            await channel.send("\n".join(announcement_lines))
+        except discord.HTTPException:
+            logger.warning("Impossible d'envoyer l'annonce de maîtrise", exc_info=True)
+
     def _parse_pet_query(self, raw: str) -> tuple[str, Optional[int], Optional[str]]:
         tokens = [token for token in raw.split() if token]
         if not tokens:
@@ -790,24 +855,27 @@ class Pets(commands.Cog):
         egg: PetEggDefinition,
         *,
         active_potion: tuple[PotionDefinition, datetime] | None = None,
-    ) -> None:
+        charge_cost: bool = True,
+        bonus: bool = False,
+    ) -> bool:
         await self.database.ensure_user(ctx.author.id)
-        balance = await self.database.fetch_balance(ctx.author.id)
-        if balance < egg.price:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Tu n'as pas assez de PB. Il te faut "
-                    f"**{embeds.format_currency(egg.price)}** pour acheter {egg.name}."
+        if charge_cost:
+            balance = await self.database.fetch_balance(ctx.author.id)
+            if balance < egg.price:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Tu n'as pas assez de PB. Il te faut "
+                        f"**{embeds.format_currency(egg.price)}** pour acheter {egg.name}."
+                    )
                 )
-            )
-            return
+                return False
 
-        await self.database.increment_balance(
-            ctx.author.id,
-            -egg.price,
-            transaction_type="pet_purchase",
-            description=f"Achat de {egg.name}",
-        )
+            await self.database.increment_balance(
+                ctx.author.id,
+                -egg.price,
+                transaction_type="pet_purchase",
+                description=f"Achat de {egg.name}",
+            )
         luck_bonus = 0.0
         if active_potion:
             potion_definition, potion_expires_at = active_potion
@@ -835,13 +903,15 @@ class Pets(commands.Cog):
         )
         await self.database.record_pet_opening(ctx.author.id, pet_id)
 
+        egg_title = f"{egg.name} (bonus)" if bonus else egg.name
         animation_steps = (
-            (egg.name, "L'œuf commence à bouger…"),
-            (egg.name, "Des fissures apparaissent !"),
-            (egg.name, "Ça y est, il est sur le point d'éclore !"),
+            (egg_title, "L'œuf commence à bouger…"),
+            (egg_title, "Des fissures apparaissent !"),
+            (egg_title, "Ça y est, il est sur le point d'éclore !"),
         )
         showcase_image = self._egg_showcase_image(egg)
         message = await ctx.send(
+            content=EGG_OPEN_EMOJI,
             embed=embeds.pet_animation_embed(
                 title=animation_steps[0][0],
                 description=animation_steps[0][1],
@@ -851,6 +921,7 @@ class Pets(commands.Cog):
         for title, description in animation_steps[1:]:
             await asyncio.sleep(1.1)
             await message.edit(
+                content=EGG_OPEN_EMOJI,
                 embed=embeds.pet_animation_embed(
                     title=title,
                     description=description,
@@ -884,12 +955,18 @@ class Pets(commands.Cog):
             market_value=market_value,
         )
         reveal_embed.set_footer(text=f"Utilise e!equip {pet_definition.name} pour l'équiper !")
-        await message.edit(embed=reveal_embed)
+        await message.edit(content=EGG_OPEN_EMOJI, embed=reveal_embed)
 
         if pet_definition.name == HUGE_PET_NAME:
             await self._send_huge_shelly_alert(ctx)
 
+        mastery_update = await self.database.add_mastery_experience(
+            ctx.author.id, EGG_MASTERY.slug, 1
+        )
+        await self._handle_mastery_notifications(ctx, mastery_update)
+
         self._dispatch_grade_progress(ctx, "egg", 1)
+        return True
 
     def _sort_pets_for_display(
         self,
@@ -950,13 +1027,24 @@ class Pets(commands.Cog):
     @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.command(name="openbox", aliases=("buyegg", "openegg", "egg"))
     async def openbox(self, ctx: commands.Context, egg: str | None = None) -> None:
-        if egg and egg.strip().lower() in {"list", "liste", "eggs", "oeufs"}:
+        raw_request = (egg or "").strip()
+        double_request = False
+        if raw_request:
+            tokens = raw_request.split()
+            if tokens and tokens[-1].lower() in {"x2", "2", "double"}:
+                double_request = True
+                tokens = tokens[:-1]
+                raw_request = " ".join(tokens).strip()
+
+        normalized_request = raw_request or None
+
+        if normalized_request and normalized_request.lower() in {"list", "liste", "eggs", "oeufs"}:
             await self._send_egg_overview(ctx)
             return
 
-        egg_definition = self._resolve_egg(egg)
+        egg_definition = self._resolve_egg(normalized_request)
         if egg_definition is None:
-            if egg:
+            if normalized_request:
                 await ctx.send(
                     embed=embeds.error_embed("Œuf introuvable. Voici les options disponibles :")
                 )
@@ -975,12 +1063,46 @@ class Pets(commands.Cog):
         if not await self._ensure_zone_access(ctx, zone):
             return
 
+        mastery_progress = await self.database.get_mastery_progress(
+            ctx.author.id, EGG_MASTERY.slug
+        )
+        mastery_level = int(mastery_progress.get("level", 1))
+        double_chance_unlocked = mastery_level >= 10
+
+        if double_request:
+            if double_chance_unlocked:
+                await ctx.send(
+                    embed=embeds.info_embed(
+                        "Le mode double est désormais automatique : tu as 5% de chances d'obtenir un œuf bonus gratuitement à chaque ouverture."
+                    )
+                )
+            else:
+                await ctx.send(
+                    embed=embeds.warning_embed(
+                        "Atteins le niveau 10 de Maîtrise des œufs pour débloquer 5% de chance d'obtenir un deuxième œuf gratuit."
+                    )
+                )
+
         active_potion = await self.database.get_active_potion(ctx.author.id)
-        await self._open_pet_egg(
+        opened = await self._open_pet_egg(
             ctx,
             egg_definition,
             active_potion=active_potion,
         )
+        if not opened:
+            return
+
+        if double_chance_unlocked and random.random() < DOUBLE_EGG_CHANCE:
+            await ctx.send(
+                f"{EGG_OPEN_EMOJI} 🎉 **Chance !** Tu ouvres un deuxième œuf gratuitement !"
+            )
+            await self._open_pet_egg(
+                ctx,
+                egg_definition,
+                active_potion=active_potion,
+                charge_cost=False,
+                bonus=True,
+            )
 
     @commands.command(name="eggs", aliases=("zones", "zone"))
     async def eggs(self, ctx: commands.Context) -> None:
