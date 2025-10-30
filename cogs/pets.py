@@ -1313,19 +1313,48 @@ class Pets(commands.Cog):
 
         mastery_definitions = list(iter_masteries())
         async with ctx.typing():
-            progress_list = await asyncio.gather(
+            progress_results = await asyncio.gather(
                 *(
                     self.database.get_mastery_progress(ctx.author.id, mastery.slug)
                     for mastery in mastery_definitions
-                )
+                ),
+                return_exceptions=True,
             )
 
         overview_entries: List[Dict[str, object]] = []
-        for mastery, progress in zip(mastery_definitions, progress_list):
-            level = int(progress.get("level", 1))
-            max_level = int(progress.get("max_level", mastery.max_level))
-            current_xp = int(progress.get("experience", 0))
-            xp_to_next = int(progress.get("xp_to_next_level", 0))
+        for mastery, progress in zip(mastery_definitions, progress_results):
+            if isinstance(progress, Exception):
+                logger.error(
+                    "Impossible de récupérer la progression de la maîtrise %s pour %s",
+                    mastery.slug,
+                    ctx.author.id,
+                    exc_info=progress,
+                )
+                progress_data: Mapping[str, object] = {}
+            else:
+                progress_data = dict(progress)
+
+            max_level = mastery.max_level
+            try:
+                stored_level = int(progress_data.get("level", 1))
+            except (TypeError, ValueError):
+                stored_level = 1
+            level = max(1, min(stored_level, max_level))
+            try:
+                stored_xp = int(progress_data.get("experience", 0))
+            except (TypeError, ValueError):
+                stored_xp = 0
+            current_xp = max(0, stored_xp)
+            xp_to_next = mastery.required_xp(level) if level < max_level else 0
+            try:
+                stored_target = int(progress_data.get("xp_to_next_level", xp_to_next))
+            except (TypeError, ValueError):
+                stored_target = xp_to_next
+            if level < max_level and stored_target > 0:
+                xp_to_next = stored_target
+            if xp_to_next > 0:
+                current_xp = min(current_xp, xp_to_next)
+
             perks = list(get_mastery_perks(mastery.slug))
             active_perks = [perk.description for perk in perks if perk.level <= level]
             next_perk_text = ""

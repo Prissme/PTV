@@ -288,10 +288,12 @@ def mastery_overview_embed(
             entry.get("display_name")
             or getattr(definition, "display_name", mastery_slug.title())
         )
-        level = int(entry.get("level", 1))
-        max_level = int(entry.get("max_level", 1))
-        xp = int(entry.get("experience", 0))
-        xp_to_next = int(entry.get("xp_to_next_level", 0))
+        raw_level = int(entry.get("level", 1))
+        raw_max_level = int(entry.get("max_level", 1))
+        max_level = max(1, raw_max_level)
+        level = max(1, min(raw_level, max_level))
+        xp = max(0, int(entry.get("experience", 0)))
+        xp_to_next = max(0, int(entry.get("xp_to_next_level", 0)))
         perks: Sequence[str] = tuple(entry.get("active_perks", ()))
         next_perk = entry.get("next_perk")
 
@@ -301,14 +303,20 @@ def mastery_overview_embed(
 
         if level >= max_level:
             lines.append("Niveau maximal atteint, profite de tous les bonus !")
+            xp = 0
+            xp_to_next = 0
         else:
-            bar = _mastery_progress_bar(xp, xp_to_next)
-            percent = (xp / xp_to_next * 100) if xp_to_next else 0
+            effective_target = xp_to_next if xp_to_next > 0 else max(xp, 1)
+            effective_progress = min(xp, effective_target)
+            bar = _mastery_progress_bar(effective_progress, effective_target)
+            percent = 0.0
+            if effective_target > 0:
+                percent = min(100.0, (effective_progress / effective_target) * 100)
             progress_line = "`{bar}` {percent:>4.0f}% ({current} / {target} XP)".format(
                 bar=bar,
                 percent=percent,
-                current=f"{xp:,}".replace(",", " "),
-                target=f"{xp_to_next:,}".replace(",", " "),
+                current=f"{effective_progress:,}".replace(",", " "),
+                target=f"{effective_target:,}".replace(",", " "),
             )
             lines.append(progress_line)
 
