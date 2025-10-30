@@ -696,7 +696,7 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
     PetEggDefinition(
         name="Œuf métallique",
         slug="metallique",
-        price=150_000,
+        price=1_000_000,
         pets=_ROBOT_EGG_PETS,
         zone_slug=ROBOT_ZONE_SLUG,
         aliases=(
