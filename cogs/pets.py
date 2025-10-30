@@ -28,6 +28,7 @@ from config import (
     RAINBOW_PET_CHANCE,
     RAINBOW_PET_COMBINE_REQUIRED,
     RAINBOW_PET_MULTIPLIER,
+    SHINY_PET_MULTIPLIER,
     HUGE_PET_LEVEL_CAP,
     HUGE_PET_NAME,
     HUGE_PET_MIN_INCOME,
@@ -39,8 +40,11 @@ from config import (
     PetDefinition,
     PetEggDefinition,
     PetZoneDefinition,
+    EGG_MASTERY_ROLE_ID,
+    PET_MASTERY_ROLE_ID,
 )
 from utils import embeds
+from utils.mastery import EGG_MASTERY, PET_MASTERY, get_mastery_perks, iter_masteries
 from utils.mastery import EGG_MASTERY, PET_MASTERY
 from database.db import ActivePetLimitError, DatabaseError
 
@@ -103,6 +107,79 @@ def _compute_egg_mastery_perks(level: int) -> EggMasteryPerks:
         rainbow_chance=rainbow_chance,
         animation_speed=animation_speed,
         luck_bonus=luck_bonus,
+    )
+
+
+@dataclass(frozen=True)
+class PetMasteryPerks:
+    """Bonus liés à la maîtrise des pets."""
+
+    fuse_machine_unlocked: bool = False
+    auto_goldify: bool = False
+    auto_rainbow: bool = False
+    shiny_egg_chance: float = 0.0
+    shiny_goldify_chance: float = 0.0
+    shiny_rainbow_chance: float = 0.0
+    fuse_double_chance: float = 0.0
+    fuse_triple_chance: float = 0.0
+    gold_luck_multiplier: float = 1.0
+    shiny_luck_multiplier: float = 1.0
+    rainbow_luck_multiplier: float = 1.0
+
+
+def _compute_pet_mastery_perks(level: int) -> PetMasteryPerks:
+    """Calcule les bonus actifs pour la maîtrise des pets."""
+
+    fuse_machine_unlocked = False
+    auto_goldify = False
+    auto_rainbow = False
+    shiny_egg_chance = 0.0
+    shiny_goldify_chance = 0.0
+    shiny_rainbow_chance = 0.0
+    fuse_double_chance = 0.0
+    fuse_triple_chance = 0.0
+    gold_luck_multiplier = 1.0
+    shiny_luck_multiplier = 1.0
+    rainbow_luck_multiplier = 1.0
+
+    if level >= 5:
+        fuse_machine_unlocked = True
+        auto_goldify = True
+        shiny_egg_chance = 0.01
+    if level >= 10:
+        fuse_double_chance = 0.10
+    if level >= 20:
+        shiny_goldify_chance = 0.03
+        shiny_rainbow_chance = 0.01
+    if level >= 30:
+        auto_rainbow = True
+        shiny_egg_chance = max(shiny_egg_chance, 0.03)
+    if level >= 40:
+        fuse_double_chance = max(fuse_double_chance, 0.35)
+        fuse_triple_chance = 0.10
+    if level >= 50:
+        fuse_double_chance = max(fuse_double_chance, 0.50)
+        fuse_triple_chance = max(fuse_triple_chance, 0.10)
+        shiny_egg_chance = max(shiny_egg_chance, 0.05)
+        shiny_goldify_chance = max(shiny_goldify_chance, 0.05)
+        shiny_rainbow_chance = max(shiny_rainbow_chance, 0.03)
+    if level >= 64:
+        gold_luck_multiplier = 1.5
+        shiny_luck_multiplier = 1.2
+        rainbow_luck_multiplier = 1.3
+
+    return PetMasteryPerks(
+        fuse_machine_unlocked=fuse_machine_unlocked,
+        auto_goldify=auto_goldify,
+        auto_rainbow=auto_rainbow,
+        shiny_egg_chance=shiny_egg_chance,
+        shiny_goldify_chance=shiny_goldify_chance,
+        shiny_rainbow_chance=shiny_rainbow_chance,
+        fuse_double_chance=fuse_double_chance,
+        fuse_triple_chance=fuse_triple_chance,
+        gold_luck_multiplier=gold_luck_multiplier,
+        shiny_luck_multiplier=shiny_luck_multiplier,
+        rainbow_luck_multiplier=rainbow_luck_multiplier,
     )
 
 
@@ -283,6 +360,104 @@ class PetSelectionView(discord.ui.View):
             with contextlib.suppress(discord.HTTPException):
                 await self.message.edit(view=self)
 
+
+class PetFusionView(discord.ui.View):
+    """Vue permettant de sélectionner exactement dix pets pour une fusion."""
+
+    def __init__(
+        self,
+        ctx: commands.Context,
+        candidates: Sequence[Mapping[str, Any]],
+    ) -> None:
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.candidates = list(candidates)
+        self.message: discord.Message | None = None
+        self.selected_ids: list[int] = []
+        self.confirmed = False
+        self.cancelled = False
+        options: list[discord.SelectOption] = []
+        max_entries = min(len(self.candidates), 25)
+        self._value_map: Dict[str, Mapping[str, Any]] = {}
+        for candidate in self.candidates[:max_entries]:
+            record = candidate.get("record", {})
+            data = candidate.get("data", {})
+            user_pet_id = int(record.get("id") or 0)
+            if user_pet_id <= 0:
+                continue
+            name = str(data.get("name", "Pet"))
+            markers: list[str] = []
+            if data.get("is_rainbow"):
+                markers.append("🌈")
+            elif data.get("is_gold"):
+                markers.append("🥇")
+            if data.get("is_shiny"):
+                markers.append("✨")
+            label = f"{' '.join(markers)} {name}".strip()
+            if len(label) > 90:
+                label = label[:87] + "…"
+            income = int(data.get("base_income_per_hour", 0))
+            description = f"{income:,} PB/h".replace(",", " ")
+            options.append(
+                discord.SelectOption(label=label or name[:90], value=str(user_pet_id), description=description)
+            )
+            self._value_map[str(user_pet_id)] = candidate
+
+        selectable = min(10, len(options))
+        self.select = discord.ui.Select(
+            placeholder="Choisis exactement 10 pets à fusionner",
+            options=options,
+            min_values=selectable,
+            max_values=selectable,
+        )
+
+        async def _on_select(interaction: discord.Interaction) -> None:
+            self.selected_ids = [int(value) for value in self.select.values]
+            await interaction.response.defer()
+
+        self.select.callback = _on_select  # type: ignore[assignment]
+        self.add_item(self.select)
+
+    def disable_all(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+    @discord.ui.button(label="Fusionner", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if len(self.select.values) != self.select.max_values:
+            await interaction.response.send_message(
+                "Tu dois sélectionner exactement 10 pets pour lancer la fusion.",
+                ephemeral=True,
+            )
+            return
+        self.selected_ids = [int(value) for value in self.select.values]
+        self.confirmed = True
+        self.disable_all()
+        await interaction.response.edit_message(view=self)
+        self.stop()
+
+    @discord.ui.button(label="Annuler", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.cancelled = True
+        self.disable_all()
+        await interaction.response.edit_message(view=self)
+        self.stop()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seule la personne qui a lancé la commande peut choisir les pets à fusionner.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        self.disable_all()
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=self)
+
 class Pets(commands.Cog):
     """Commande de collection de pets inspirée de Brawl Stars."""
 
@@ -326,6 +501,7 @@ class Pets(commands.Cog):
                     self._egg_lookup[key] = egg.slug
         if self._default_egg_slug:
             self._egg_lookup.setdefault(self._default_egg_slug, self._default_egg_slug)
+        self._fusion_pool: List[PetDefinition] = [pet for pet in self._definitions if not pet.is_huge]
 
     @staticmethod
     def _normalize_pet_key(value: str) -> str:
@@ -360,6 +536,17 @@ class Pets(commands.Cog):
         pet = random.choices(egg.pets, weights=weights, k=1)[0]
         pet_id = self._pet_ids[pet.name]
         return pet, pet_id
+
+    def _choose_fusion_pet(self) -> PetDefinition:
+        if not self._fusion_pool:
+            self._fusion_pool = [pet for pet in self._definitions if not pet.is_huge]
+        weights = []
+        for pet in self._fusion_pool:
+            weight = getattr(pet, "drop_rate", 0.0)
+            if weight <= 0:
+                weight = 1.0
+            weights.append(weight)
+        return random.choices(self._fusion_pool, weights=weights, k=1)[0]
 
     def _egg_showcase_image(self, egg: PetEggDefinition) -> str | None:
         if egg.image_url:
@@ -415,9 +602,11 @@ class Pets(commands.Cog):
         definition = self._definition_by_id.get(pet_identifier)
         is_gold = bool(record.get("is_gold"))
         is_rainbow = bool(record.get("is_rainbow"))
+        is_shiny = bool(record.get("is_shiny"))
         is_huge = bool(record.get("is_huge"))
         data["is_gold"] = is_gold
         data["is_rainbow"] = is_rainbow
+        data["is_shiny"] = is_shiny
         base_income = int(record.get("base_income_per_hour", data.get("base_income_per_hour", 0)))
         pet_name = str(data.get("name", ""))
         if definition is not None:
@@ -445,12 +634,14 @@ class Pets(commands.Cog):
             data.pop("huge_xp_required", None)
             data.pop("huge_progress", None)
             data.pop("_reference_income", None)
+            multiplier = 1
             if is_rainbow:
-                effective_income = base_income * RAINBOW_PET_MULTIPLIER
+                multiplier *= RAINBOW_PET_MULTIPLIER
             elif is_gold:
-                effective_income = base_income * GOLD_PET_MULTIPLIER
-            else:
-                effective_income = base_income
+                multiplier *= GOLD_PET_MULTIPLIER
+            if is_shiny:
+                multiplier *= SHINY_PET_MULTIPLIER
+            effective_income = base_income * multiplier
 
         data["base_income_per_hour"] = int(effective_income)
         return data
@@ -502,8 +693,132 @@ class Pets(commands.Cog):
             return
         self.bot.dispatch("grade_quest_progress", member, quest_type, amount, ctx.channel)
 
+    @staticmethod
+    def _roll_shiny(perks: PetMasteryPerks | None, base_chance: float) -> bool:
+        chance = max(0.0, float(base_chance))
+        if chance <= 0:
+            return False
+        multiplier = 1.0
+        if perks is not None:
+            multiplier = max(0.0, float(perks.shiny_luck_multiplier))
+        chance = min(1.0, chance * multiplier)
+        return random.random() < chance
+
+    async def _apply_auto_pet_upgrades(
+        self,
+        ctx: commands.Context,
+        pet_definition: PetDefinition,
+        pet_perks: PetMasteryPerks | None,
+    ) -> None:
+        if (
+            pet_perks is None
+            or (not pet_perks.auto_goldify and not pet_perks.auto_rainbow)
+            or pet_definition.is_huge
+        ):
+            return
+
+        pet_id = self._pet_ids.get(pet_definition.name)
+        if pet_id is None:
+            return
+
+        market_values = await self.database.get_pet_market_values()
+        notifications: list[discord.Embed] = []
+        total_xp = 0
+
+        if pet_perks.auto_goldify:
+            while True:
+                try:
+                    make_shiny = self._roll_shiny(pet_perks, pet_perks.shiny_goldify_chance)
+                    record, consumed = await self.database.upgrade_pet_to_gold(
+                        ctx.author.id, pet_id, make_shiny=make_shiny
+                    )
+                except DatabaseError:
+                    break
+                total_xp += consumed
+                best_income = await self.database.get_best_non_huge_income(ctx.author.id)
+                pet_data = self._convert_record(record, best_non_huge_income=best_income)
+                pet_identifier = int(pet_data.get("pet_id", pet_id))
+                pet_data["market_value"] = int(market_values.get(pet_identifier, 0))
+                embed = embeds.pet_reveal_embed(
+                    name=str(pet_data.get("name", pet_definition.name)),
+                    rarity=str(pet_data.get("rarity", pet_definition.rarity)),
+                    image_url=str(pet_data.get("image_url", pet_definition.image_url)),
+                    income_per_hour=int(pet_data.get("base_income_per_hour", pet_definition.base_income_per_hour)),
+                    is_huge=False,
+                    is_gold=True,
+                    is_rainbow=False,
+                    is_shiny=bool(pet_data.get("is_shiny")),
+                    market_value=int(pet_data.get("market_value", 0)),
+                )
+                embed.add_field(
+                    name="Auto Goldify",
+                    value=f"{consumed} pets fusionnés automatiquement !",
+                    inline=False,
+                )
+                notifications.append(embed)
+
+        if pet_perks.auto_rainbow:
+            while True:
+                try:
+                    make_shiny = self._roll_shiny(pet_perks, pet_perks.shiny_rainbow_chance)
+                    record, consumed = await self.database.upgrade_pet_to_rainbow(
+                        ctx.author.id, pet_id, make_shiny=make_shiny
+                    )
+                except DatabaseError:
+                    break
+                total_xp += consumed
+                best_income = await self.database.get_best_non_huge_income(ctx.author.id)
+                pet_data = self._convert_record(record, best_non_huge_income=best_income)
+                pet_identifier = int(pet_data.get("pet_id", pet_id))
+                pet_data["market_value"] = int(market_values.get(pet_identifier, 0))
+                embed = embeds.pet_reveal_embed(
+                    name=str(pet_data.get("name", pet_definition.name)),
+                    rarity=str(pet_data.get("rarity", pet_definition.rarity)),
+                    image_url=str(pet_data.get("image_url", pet_definition.image_url)),
+                    income_per_hour=int(pet_data.get("base_income_per_hour", pet_definition.base_income_per_hour)),
+                    is_huge=False,
+                    is_gold=False,
+                    is_rainbow=True,
+                    is_shiny=bool(pet_data.get("is_shiny")),
+                    market_value=int(pet_data.get("market_value", 0)),
+                )
+                embed.add_field(
+                    name="Auto Rainbowify",
+                    value=f"{consumed} pets GOLD combinés automatiquement !",
+                    inline=False,
+                )
+                notifications.append(embed)
+
+        if total_xp > 0:
+            mastery_update = await self.database.add_mastery_experience(
+                ctx.author.id, PET_MASTERY.slug, total_xp
+            )
+            await self._handle_mastery_notifications(ctx, mastery_update, PET_MASTERY)
+
+        for embed in notifications:
+            await ctx.send(embed=embed)
+
+    async def _grant_mastery_role(self, ctx: commands.Context, role_id: int) -> None:
+        if role_id <= 0 or ctx.guild is None:
+            return
+        role = ctx.guild.get_role(role_id)
+        if role is None:
+            return
+        member = ctx.guild.get_member(ctx.author.id)
+        if member is None or role in member.roles:
+            return
+        try:
+            await member.add_roles(role, reason="Maîtrise maximale atteinte")
+        except discord.Forbidden:
+            logger.debug("Impossible d'ajouter le rôle %s à %s", role_id, ctx.author.id)
+        except discord.HTTPException:
+            logger.warning("Échec de l'ajout du rôle de maîtrise", exc_info=True)
+
     async def _handle_mastery_notifications(
-        self, ctx: commands.Context, update: Mapping[str, object]
+        self,
+        ctx: commands.Context,
+        update: Mapping[str, object],
+        mastery,
     ) -> None:
         levels_gained = int(update.get("levels_gained", 0) or 0)
         if levels_gained <= 0:
@@ -514,16 +829,74 @@ class Pets(commands.Cog):
         xp_to_next = int(update.get("xp_to_next_level", 0) or 0)
         current_progress = int(update.get("experience", 0) or 0)
 
-        lines = [
-            f"Tu passes niveau **{level}** de {EGG_MASTERY.display_name} !"
-        ]
+        if mastery.slug == EGG_MASTERY.slug:
+            lines = [f"Tu passes niveau **{level}** de {EGG_MASTERY.display_name} !"]
+        elif mastery.slug == PET_MASTERY.slug:
+            lines = [f"Tu passes niveau **{level}** de {PET_MASTERY.display_name} !"]
+        else:
+            lines = [f"Niveau **{level}** atteint sur {mastery.display_name} !"]
+
         if xp_to_next > 0:
             remaining = max(0, xp_to_next - current_progress)
-            remaining_text = f"Encore {remaining:,} œufs à ouvrir pour le prochain niveau.".replace(",", " ")
-            lines.append(remaining_text)
+            lines.append(f"Encore {remaining:,} XP pour le prochain niveau.".replace(",", " "))
         else:
             lines.append("Tu as atteint le niveau maximal de maîtrise, félicitations !")
 
+        prefix = "✨ "
+        if mastery.slug == EGG_MASTERY.slug:
+            prefix = "🥚 "
+            if previous_level < 5 <= level:
+                lines.append(
+                    "Tu as maintenant **5% de chance** d'obtenir un deuxième œuf gratuitement à chaque ouverture !"
+                )
+            if previous_level < 10 <= level:
+                lines.append(
+                    "Tu peux désormais PACK des pets **Gold** directement dans les œufs (3% de chance)."
+                )
+            if previous_level < 20 <= level:
+                lines.append(
+                    "Tu débloques **1% de chance** de pet rainbow et les animations d'ouverture sont 2× plus rapides."
+                )
+            if previous_level < 30 <= level:
+                lines.append(
+                    "Tu profites maintenant de **15% de chance** d'œuf double et **1% de chance** de triple ouverture."
+                )
+            if previous_level < 40 <= level:
+                lines.append(
+                    "Tes chances passent à **20% double**, **3% triple**, avec **5% Gold** et **2% Rainbow** dans les œufs."
+                )
+            if previous_level < 50 <= level:
+                lines.append(
+                    "Tu atteins **35%** de double, **10%** de triple et jusqu'à **10% Gold / 4% Rainbow** à chaque ouverture !"
+                )
+            if previous_level < 64 <= level:
+                lines.append("Tu obtiens le rôle ultime avec **x2 chance** permanente sur tes ouvertures d'œufs !")
+                await self._grant_mastery_role(ctx, EGG_MASTERY_ROLE_ID)
+        elif mastery.slug == PET_MASTERY.slug:
+            prefix = "🐾 "
+            if previous_level < 5 <= level:
+                lines.append(
+                    "La fuse machine est débloquée, l'auto goldify arrive et tu gagnes **1%** de shiny dans les œufs !"
+                )
+            if previous_level < 10 <= level:
+                lines.append("La fuse machine peut désormais donner un **deuxième pet** (10%).")
+            if previous_level < 20 <= level:
+                lines.append(
+                    "Tes goldify offrent **3%** de shiny et les rainbowify **1%** supplémentaires !"
+                )
+            if previous_level < 30 <= level:
+                lines.append("Auto rainbowify activé et les œufs passent à **3%** de shiny !")
+            if previous_level < 40 <= level:
+                lines.append("La fuse machine grimpe à **35%** de double et **10%** de triple !")
+            if previous_level < 50 <= level:
+                lines.append(
+                    "50% de double, **5%** de shiny dans les œufs et boosts shiny sur goldify/rainbowify !"
+                )
+            if previous_level < 64 <= level:
+                lines.append(
+                    "Tu débloques le rôle ultime : chance **Gold x1,5 / Shiny x1,2 / Rainbow x1,3** permanente !"
+                )
+                await self._grant_mastery_role(ctx, PET_MASTERY_ROLE_ID)
         if previous_level < 5 <= level:
             lines.append(
                 "Tu as maintenant **5% de chance** d'obtenir un deuxième œuf gratuitement à chaque ouverture !"
@@ -551,13 +924,16 @@ class Pets(commands.Cog):
         if previous_level < 64 <= level:
             lines.append("Tu obtiens le rôle ultime avec **x2 chance** permanente sur tes ouvertures d'œufs !")
 
-        dm_content = "🥚 " + "\n".join(lines)
+        dm_content = prefix + "\n".join(lines)
         try:
             await ctx.author.send(dm_content)
         except discord.Forbidden:
             logger.debug("Impossible d'envoyer le MP de maîtrise à %s", ctx.author.id)
         except discord.HTTPException:
             logger.warning("Échec de l'envoi du MP de maîtrise", exc_info=True)
+
+        if mastery.slug != EGG_MASTERY.slug:
+            return
 
         new_levels = [int(level) for level in update.get("new_levels", [])]
         milestone_levels = [lvl for lvl in new_levels if lvl in EGG_MASTERY.broadcast_levels]
@@ -581,6 +957,15 @@ class Pets(commands.Cog):
                 "Ils obtiennent le rôle suprême et voient leur chance d'œuf doublée en permanence !"
             )
         elif highest_milestone >= 50:
+            announcement_lines.append(
+                "Ils profitent maintenant de 35% de chance d'œuf double et 10% de triple à chaque ouverture !"
+            )
+        elif highest_milestone >= 30:
+            announcement_lines.append(
+                "Ils débloquent des triples ouvertures et 15% de chance d'œuf bonus !"
+            )
+        elif highest_milestone >= 10:
+            announcement_lines.append(
             announcement_lines.append(
                 "Ils profitent maintenant de 35% de chance d'œuf double et 10% de triple à chaque ouverture !"
             )
@@ -955,6 +1340,90 @@ class Pets(commands.Cog):
         embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
         await ctx.send(embed=embed)
 
+    @commands.command(
+        name="masteries",
+        aliases=("maitrises", "mastery", "maitrise"),
+    )
+    async def masteries_overview(self, ctx: commands.Context) -> None:
+        """Affiche une synthèse des maîtrises et des prochains bonus."""
+
+        mastery_definitions = list(iter_masteries())
+        async with ctx.typing():
+            progress_results = await asyncio.gather(
+                *(
+                    self.database.get_mastery_progress(ctx.author.id, mastery.slug)
+                    for mastery in mastery_definitions
+                ),
+                return_exceptions=True,
+            )
+
+        overview_entries: List[Dict[str, object]] = []
+        for mastery, progress in zip(mastery_definitions, progress_results):
+            if isinstance(progress, Exception):
+                logger.error(
+                    "Impossible de récupérer la progression de la maîtrise %s pour %s",
+                    mastery.slug,
+                    ctx.author.id,
+                    exc_info=progress,
+                )
+                progress_data: Mapping[str, object] = {}
+            else:
+                progress_data = dict(progress)
+
+            max_level = mastery.max_level
+            try:
+                stored_level = int(progress_data.get("level", 1))
+            except (TypeError, ValueError):
+                stored_level = 1
+            level = max(1, min(stored_level, max_level))
+            try:
+                stored_xp = int(progress_data.get("experience", 0))
+            except (TypeError, ValueError):
+                stored_xp = 0
+            current_xp = max(0, stored_xp)
+            xp_to_next = mastery.required_xp(level) if level < max_level else 0
+            try:
+                stored_target = int(progress_data.get("xp_to_next_level", xp_to_next))
+            except (TypeError, ValueError):
+                stored_target = xp_to_next
+            if level < max_level and stored_target > 0:
+                xp_to_next = stored_target
+            if xp_to_next > 0:
+                current_xp = min(current_xp, xp_to_next)
+
+            perks = list(get_mastery_perks(mastery.slug))
+            active_perks = [perk.description for perk in perks if perk.level <= level]
+            next_perk_text = ""
+            for perk in perks:
+                if perk.level > level:
+                    levels_remaining = perk.level - level
+                    if levels_remaining == 1:
+                        next_perk_text = (
+                            f"**Prochain niveau ({perk.level}) :** {perk.description}"
+                        )
+                    else:
+                        next_perk_text = (
+                            f"**Dans {levels_remaining} niveaux (niveau {perk.level}) :** {perk.description}"
+                        )
+                    break
+
+            overview_entries.append(
+                {
+                    "definition": mastery,
+                    "slug": mastery.slug,
+                    "display_name": mastery.display_name,
+                    "level": level,
+                    "max_level": max_level,
+                    "experience": current_xp,
+                    "xp_to_next_level": xp_to_next,
+                    "active_perks": active_perks,
+                    "next_perk": next_perk_text,
+                }
+            )
+
+        embed = embeds.mastery_overview_embed(ctx.author, overview_entries)
+        await ctx.send(embed=embed)
+
     async def _send_huge_shelly_alert(self, ctx: commands.Context) -> None:
         channel = self.bot.get_channel(HUGE_SHELLY_ALERT_CHANNEL_ID)
         if channel is None:
@@ -988,6 +1457,7 @@ class Pets(commands.Cog):
         egg: PetEggDefinition,
         *,
         mastery_perks: EggMasteryPerks | None = None,
+        pet_mastery_perks: PetMasteryPerks | None = None,
         active_potion: tuple[PotionDefinition, datetime] | None = None,
         charge_cost: bool = True,
         bonus: bool = False,
@@ -1023,6 +1493,7 @@ class Pets(commands.Cog):
         pet_definition, pet_id = self._choose_pet(egg, luck_bonus=effective_luck_bonus)
         is_gold = False
         is_rainbow = False
+        is_shiny = False
         if not pet_definition.is_huge:
             gold_chance = (
                 max(0.0, float(mastery_perks.gold_chance))
@@ -1034,18 +1505,35 @@ class Pets(commands.Cog):
                 if mastery_perks is not None
                 else max(0.0, float(RAINBOW_PET_CHANCE))
             )
+            gold_multiplier = 1.0
+            rainbow_multiplier = 1.0
+            shiny_multiplier = 1.0
+            shiny_egg_chance = 0.0
+            if pet_mastery_perks is not None:
+                gold_multiplier = max(0.0, float(pet_mastery_perks.gold_luck_multiplier))
+                rainbow_multiplier = max(0.0, float(pet_mastery_perks.rainbow_luck_multiplier))
+                shiny_multiplier = max(0.0, float(pet_mastery_perks.shiny_luck_multiplier))
+                shiny_egg_chance = max(0.0, float(pet_mastery_perks.shiny_egg_chance))
+
+            gold_chance = min(1.0, gold_chance * gold_multiplier)
+            rainbow_chance = min(1.0, rainbow_chance * rainbow_multiplier)
+
             if gold_chance > 0:
                 is_gold = random.random() < gold_chance
             if rainbow_chance > 0:
                 is_rainbow = random.random() < rainbow_chance
                 if is_rainbow:
                     is_gold = False
+            shiny_chance = min(1.0, shiny_egg_chance * shiny_multiplier)
+            if shiny_chance > 0:
+                is_shiny = random.random() < shiny_chance
         _user_pet = await self.database.add_user_pet(
             ctx.author.id,
             pet_id,
             is_huge=pet_definition.is_huge,
             is_gold=is_gold,
             is_rainbow=is_rainbow,
+            is_shiny=is_shiny,
         )
         await self.database.record_pet_opening(ctx.author.id, pet_id)
 
@@ -1094,6 +1582,8 @@ class Pets(commands.Cog):
                 multiplier = RAINBOW_PET_MULTIPLIER
             elif is_gold:
                 multiplier = GOLD_PET_MULTIPLIER
+            if is_shiny:
+                multiplier *= SHINY_PET_MULTIPLIER
             income_per_hour = int(pet_definition.base_income_per_hour * multiplier)
         reveal_embed = embeds.pet_reveal_embed(
             name=pet_definition.name,
@@ -1103,6 +1593,7 @@ class Pets(commands.Cog):
             is_huge=pet_definition.is_huge,
             is_gold=is_gold,
             is_rainbow=is_rainbow,
+            is_shiny=is_shiny,
             market_value=market_value,
         )
         reveal_embed.set_footer(text=f"Utilise e!equip {pet_definition.name} pour l'équiper !")
@@ -1111,10 +1602,12 @@ class Pets(commands.Cog):
         if pet_definition.name == HUGE_PET_NAME:
             await self._send_huge_shelly_alert(ctx)
 
+        await self._apply_auto_pet_upgrades(ctx, pet_definition, pet_mastery_perks)
+
         mastery_update = await self.database.add_mastery_experience(
             ctx.author.id, EGG_MASTERY.slug, 1
         )
-        await self._handle_mastery_notifications(ctx, mastery_update)
+        await self._handle_mastery_notifications(ctx, mastery_update, EGG_MASTERY)
 
         self._dispatch_grade_progress(ctx, "egg", 1)
         return True
@@ -1219,6 +1712,11 @@ class Pets(commands.Cog):
         )
         mastery_level = int(mastery_progress.get("level", 1))
         perks = _compute_egg_mastery_perks(mastery_level)
+        pet_mastery_progress = await self.database.get_mastery_progress(
+            ctx.author.id, PET_MASTERY.slug
+        )
+        pet_mastery_level = int(pet_mastery_progress.get("level", 1))
+        pet_perks = _compute_pet_mastery_perks(pet_mastery_level)
 
         if double_request:
             if perks.double_chance > 0:
@@ -1241,6 +1739,7 @@ class Pets(commands.Cog):
             egg_definition,
             active_potion=active_potion,
             mastery_perks=perks,
+            pet_mastery_perks=pet_perks,
         )
         if not opened:
             return
@@ -1884,8 +2383,17 @@ class Pets(commands.Cog):
             await ctx.send(embed=embeds.error_embed("Pet non synchronisé. Réessaie plus tard."))
             return
 
+        mastery_progress = await self.database.get_mastery_progress(
+            ctx.author.id, PET_MASTERY.slug
+        )
+        mastery_level = int(mastery_progress.get("level", 1))
+        pet_perks = _compute_pet_mastery_perks(mastery_level)
+        make_shiny = self._roll_shiny(pet_perks, pet_perks.shiny_goldify_chance)
+
         try:
-            record, consumed = await self.database.upgrade_pet_to_gold(ctx.author.id, pet_id)
+            record, consumed = await self.database.upgrade_pet_to_gold(
+                ctx.author.id, pet_id, make_shiny=make_shiny
+            )
         except DatabaseError as exc:
             await ctx.send(embed=embeds.error_embed(str(exc)))
             return
@@ -1902,6 +2410,7 @@ class Pets(commands.Cog):
             income_per_hour=int(pet_data.get("base_income_per_hour", definition.base_income_per_hour)),
             is_huge=bool(pet_data.get("is_huge", False)),
             is_gold=True,
+            is_shiny=bool(pet_data.get("is_shiny")),
             market_value=int(pet_data.get("market_value", 0)),
         )
         reveal_embed.add_field(
@@ -1918,6 +2427,11 @@ class Pets(commands.Cog):
                 text=f"Utilise e!equip {definition.name} pour l'équiper !"
             )
         await ctx.send(embed=reveal_embed)
+
+        mastery_update = await self.database.add_mastery_experience(
+            ctx.author.id, PET_MASTERY.slug, consumed
+        )
+        await self._handle_mastery_notifications(ctx, mastery_update, PET_MASTERY)
 
         self._dispatch_grade_progress(ctx, "gold", 1)
 
@@ -1941,30 +2455,46 @@ class Pets(commands.Cog):
             await ctx.send(embed=embeds.error_embed("Pet non synchronisé."))
             return
 
+        mastery_progress = await self.database.get_mastery_progress(
+            ctx.author.id, PET_MASTERY.slug
+        )
+        mastery_level = int(mastery_progress.get("level", 1))
+        pet_perks = _compute_pet_mastery_perks(mastery_level)
+        make_shiny = self._roll_shiny(pet_perks, pet_perks.shiny_rainbow_chance)
+
         try:
-            _record, consumed = await self.database.upgrade_pet_to_rainbow(ctx.author.id, pet_id)
+            record, consumed = await self.database.upgrade_pet_to_rainbow(
+                ctx.author.id, pet_id, make_shiny=make_shiny
+            )
         except DatabaseError as exc:
             await ctx.send(embed=embeds.error_embed(str(exc)))
             return
 
-        base_income = definition.base_income_per_hour
-        rainbow_income = base_income * RAINBOW_PET_MULTIPLIER
+        best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
+        pet_data = self._convert_record(record, best_non_huge_income=best_non_huge_income)
+        market_values = await self.database.get_pet_market_values()
+        pet_identifier = int(pet_data.get("pet_id", 0))
+        pet_data["market_value"] = int(market_values.get(pet_identifier, 0))
+        rainbow_income = int(pet_data.get("base_income_per_hour", definition.base_income_per_hour))
+        base_income_value = max(1, int(definition.base_income_per_hour))
+        effective_multiplier = rainbow_income / base_income_value
 
         embed = embeds.pet_reveal_embed(
-            name=definition.name,
-            rarity=definition.rarity,
-            image_url=definition.image_url,
+            name=str(pet_data.get("name", definition.name)),
+            rarity=str(pet_data.get("rarity", definition.rarity)),
+            image_url=str(pet_data.get("image_url", definition.image_url)),
             income_per_hour=rainbow_income,
             is_huge=False,
             is_gold=False,
             is_rainbow=True,
-            market_value=0,
+            is_shiny=bool(pet_data.get("is_shiny")),
+            market_value=int(pet_data.get("market_value", 0)),
         )
         embed.add_field(
             name="🌈 Fusion Rainbow",
             value=(
                 f"🎉 {consumed} pets GOLD fusionnés en 1 RAINBOW !\n"
-                f"Puissance : **{rainbow_income:,} PB/h** ({RAINBOW_PET_MULTIPLIER}x le pet de base)\n"
+                f"Puissance : **{rainbow_income:,} PB/h** ({effective_multiplier:.1f}x le pet de base)\n"
                 "Les pets utilisés ont été retirés de ton inventaire."
             ).replace(",", " "),
             inline=False,
@@ -1972,7 +2502,141 @@ class Pets(commands.Cog):
 
         await ctx.send(embed=embed)
 
+        mastery_update = await self.database.add_mastery_experience(
+            ctx.author.id, PET_MASTERY.slug, consumed
+        )
+        await self._handle_mastery_notifications(ctx, mastery_update, PET_MASTERY)
+
         self._dispatch_grade_progress(ctx, "gold", 1)
+
+    @commands.command(name="fuse", aliases=("fusion", "fusemachine"))
+    async def fuse(self, ctx: commands.Context) -> None:
+        mastery_progress = await self.database.get_mastery_progress(
+            ctx.author.id, PET_MASTERY.slug
+        )
+        mastery_level = int(mastery_progress.get("level", 1))
+        pet_perks = _compute_pet_mastery_perks(mastery_level)
+        if not pet_perks.fuse_machine_unlocked:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Atteins le niveau 5 de Maîtrise des pets pour débloquer la machine de fusion."
+                )
+            )
+            return
+
+        rows = await self.database.get_fusible_pets(ctx.author.id)
+        if len(rows) < 10:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Tu as besoin d'au moins 10 pets non équipés et non listés pour utiliser la machine."
+                )
+            )
+            return
+
+        best_income = await self.database.get_best_non_huge_income(ctx.author.id)
+        candidates = [
+            {"record": row, "data": self._convert_record(row, best_non_huge_income=best_income)}
+            for row in rows
+        ]
+
+        displayed_candidates = candidates[:25]
+        view = PetFusionView(ctx, displayed_candidates)
+        instructions = [
+            "Sélectionne **10** pets à fusionner. Ils seront définitivement consommés.",
+        ]
+        if pet_perks.fuse_double_chance > 0 or pet_perks.fuse_triple_chance > 0:
+            chance_lines: list[str] = []
+            if pet_perks.fuse_double_chance > 0:
+                chance_lines.append(f"{pet_perks.fuse_double_chance * 100:.0f}% de chance de double pet")
+            if pet_perks.fuse_triple_chance > 0:
+                chance_lines.append(f"{pet_perks.fuse_triple_chance * 100:.0f}% de chance de triple pet")
+            instructions.append("Bonus: " + " et ".join(chance_lines) + ".")
+        if len(rows) > len(displayed_candidates):
+            instructions.append("Seuls les 25 premiers pets disponibles sont affichés dans le menu.")
+
+        embed = embeds.info_embed("\n".join(instructions), title="Machine de fusion")
+        message = await ctx.send(embed=embed, view=view)
+        view.message = message
+        await view.wait()
+
+        if view.cancelled:
+            await ctx.send(embed=embeds.warning_embed("Fusion annulée."))
+            return
+
+        if not view.confirmed or len(view.selected_ids) != 10:
+            await ctx.send(embed=embeds.warning_embed("Aucune fusion n'a été effectuée."))
+            return
+
+        consumed_ids = view.selected_ids
+        results_count = 1
+        triple_triggered = False
+        if pet_perks.fuse_triple_chance > 0 and random.random() < pet_perks.fuse_triple_chance:
+            results_count = 3
+            triple_triggered = True
+        elif pet_perks.fuse_double_chance > 0 and random.random() < pet_perks.fuse_double_chance:
+            results_count = 2
+
+        results_payload: list[Mapping[str, object]] = []
+        for _ in range(results_count):
+            definition = self._choose_fusion_pet()
+            pet_id = self._pet_ids.get(definition.name)
+            if pet_id is None:
+                continue
+            shiny = self._roll_shiny(pet_perks, pet_perks.shiny_egg_chance)
+            results_payload.append(
+                {
+                    "pet_id": pet_id,
+                    "is_gold": False,
+                    "is_rainbow": False,
+                    "is_shiny": shiny,
+                }
+            )
+
+        fused_records = await self.database.fuse_user_pets(
+            ctx.author.id, consumed_ids, results_payload
+        )
+
+        if not fused_records:
+            await ctx.send(embed=embeds.error_embed("La fusion a échoué. Réessaie plus tard."))
+            return
+
+        market_values = await self.database.get_pet_market_values()
+        for index, record in enumerate(fused_records):
+            data = self._convert_record(record, best_non_huge_income=best_income)
+            pet_identifier = int(data.get("pet_id", 0))
+            data["market_value"] = int(market_values.get(pet_identifier, 0))
+            embed = embeds.pet_reveal_embed(
+                name=str(data.get("name", "Pet")),
+                rarity=str(data.get("rarity", "?")),
+                image_url=str(data.get("image_url", "")),
+                income_per_hour=int(data.get("base_income_per_hour", 0)),
+                is_huge=bool(data.get("is_huge", False)),
+                is_gold=bool(data.get("is_gold", False)),
+                is_rainbow=bool(data.get("is_rainbow", False)),
+                is_shiny=bool(data.get("is_shiny", False)),
+                market_value=int(data.get("market_value", 0)),
+            )
+            if index == 0:
+                summary_lines = ["10 pets ont été consommés par la machine."]
+                if results_count > 1:
+                    bonus_text = "triple" if triple_triggered else "double"
+                    summary_lines.append(f"Chance {bonus_text} activée !")
+                embed.add_field(
+                    name="Machine de fusion",
+                    value="\n".join(summary_lines),
+                    inline=False,
+                )
+            await ctx.send(embed=embed)
+            definition = self._definition_by_id.get(pet_identifier)
+            if definition is not None:
+                await self._apply_auto_pet_upgrades(ctx, definition, pet_perks)
+
+        mastery_update = await self.database.add_mastery_experience(
+            ctx.author.id, PET_MASTERY.slug, len(consumed_ids)
+        )
+        await self._handle_mastery_notifications(ctx, mastery_update, PET_MASTERY)
+
+        self._dispatch_grade_progress(ctx, "gold", results_count)
 
     @commands.command(name="claim")
     async def claim(self, ctx: commands.Context) -> None:

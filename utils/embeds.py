@@ -88,6 +88,7 @@ __all__ = [
     "pet_equip_embed",
     "pet_claim_embed",
     "clan_overview_embed",
+    "mastery_overview_embed",
 ]
 
 
@@ -237,6 +238,100 @@ def mastermind_board_embed(
     if status_lines:
         embed.add_field(name="Résultat", value="\n".join(status_lines), inline=False)
 
+    return _finalize_embed(embed)
+
+
+def _mastery_progress_bar(current: int, required: int, width: int = 12) -> str:
+    """Construit une barre de progression textuelle pour les maîtrises."""
+
+    if required <= 0:
+        return "█" * width
+
+    ratio = min(1.0, max(0.0, current / required))
+    filled = max(0, min(width, int(round(ratio * width))))
+    if filled > width:
+        filled = width
+    return "█" * filled + "░" * (width - filled)
+
+
+def mastery_overview_embed(
+    member: discord.Member,
+    entries: Sequence[Mapping[str, object]],
+) -> discord.Embed:
+    """Affiche la progression et les bonus des différentes maîtrises."""
+
+    if not entries:
+        return info_embed(
+            "Aucune maîtrise n'est encore disponible.",
+            title="Maîtrises",
+        )
+
+    embed = discord.Embed(
+        title="📚 Progression des maîtrises",
+        description=(
+            "Focus sur les niveaux en cours et les prochains paliers de bonus."
+        ),
+        color=Colors.INFO,
+    )
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+
+    icon_map = {
+        "egg": "🥚",
+        "pet": "🐾",
+        "mastermind": "🧠",
+    }
+
+    for entry in entries:
+        definition = entry.get("definition")
+        mastery_slug = str(entry.get("slug") or getattr(definition, "slug", ""))
+        display_name = str(
+            entry.get("display_name")
+            or getattr(definition, "display_name", mastery_slug.title())
+        )
+        raw_level = int(entry.get("level", 1))
+        raw_max_level = int(entry.get("max_level", 1))
+        max_level = max(1, raw_max_level)
+        level = max(1, min(raw_level, max_level))
+        xp = max(0, int(entry.get("experience", 0)))
+        xp_to_next = max(0, int(entry.get("xp_to_next_level", 0)))
+        perks: Sequence[str] = tuple(entry.get("active_perks", ()))
+        next_perk = entry.get("next_perk")
+
+        icon = icon_map.get(mastery_slug, "✨")
+        title = f"{icon} {display_name} — niveau {level}/{max_level}"
+        lines = []
+
+        if level >= max_level:
+            lines.append("Niveau maximal atteint, profite de tous les bonus !")
+            xp = 0
+            xp_to_next = 0
+        else:
+            effective_target = xp_to_next if xp_to_next > 0 else max(xp, 1)
+            effective_progress = min(xp, effective_target)
+            bar = _mastery_progress_bar(effective_progress, effective_target)
+            percent = 0.0
+            if effective_target > 0:
+                percent = min(100.0, (effective_progress / effective_target) * 100)
+            progress_line = "`{bar}` {percent:>4.0f}% ({current} / {target} XP)".format(
+                bar=bar,
+                percent=percent,
+                current=f"{effective_progress:,}".replace(",", " "),
+                target=f"{effective_target:,}".replace(",", " "),
+            )
+            lines.append(progress_line)
+
+        if perks:
+            perk_lines = "\n".join(f"• {text}" for text in perks)
+            lines.append(f"**Bonus actuels :**\n{perk_lines}")
+
+        if isinstance(next_perk, str) and next_perk:
+            lines.append(next_perk)
+        elif level >= max_level:
+            lines.append("Tous les paliers ont été débloqués.")
+
+        embed.add_field(name=title, value="\n".join(lines), inline=False)
+
+    embed.set_footer(text="Continuer à jouer débloquera encore plus d'avantages !")
     return _finalize_embed(embed)
 
 
@@ -417,10 +512,12 @@ def _pet_title(
     is_gold: bool,
     *,
     is_rainbow: bool = False,
+    is_shiny: bool = False,
 ) -> str:
     rainbow_marker = " 🌈" if is_rainbow else ""
     gold_marker = " 🥇" if is_gold and not is_rainbow else ""
-    display_name = f"{_pet_emoji(name)} {name}{rainbow_marker}{gold_marker}".strip()
+    shiny_marker = " ✨" if is_shiny else ""
+    display_name = f"{_pet_emoji(name)} {name}{rainbow_marker}{gold_marker}{shiny_marker}".strip()
     if is_rainbow:
         rarity_label = f"{rarity} Rainbow"
     elif is_gold:
@@ -442,9 +539,14 @@ def pet_reveal_embed(
     is_huge: bool,
     is_gold: bool,
     is_rainbow: bool = False,
+    is_shiny: bool = False,
     market_value: int = 0,
 ) -> discord.Embed:
-    base_color = Colors.GOLD if is_gold or is_rainbow else PET_RARITY_COLORS.get(rarity, Colors.INFO)
+    base_color = (
+        Colors.GOLD
+        if is_gold or is_rainbow
+        else (Colors.MAGENTA if is_shiny else PET_RARITY_COLORS.get(rarity, Colors.INFO))
+    )
     description = f"Revenus passifs : **{income_per_hour:,} PB/h**".replace(",", " ")
     if is_huge:
         description += f"\n🎉 Incroyable ! Tu as obtenu **{name}** ! 🎉"
@@ -452,10 +554,19 @@ def pet_reveal_embed(
         description += f"\n🌈 Variante rainbow ! Puissance x{RAINBOW_PET_MULTIPLIER}."
     elif is_gold:
         description += f"\n🥇 Variante or ! Puissance x{GOLD_PET_MULTIPLIER}."
+    if is_shiny:
+        description += "\n✨ Shiny trouvé ! Puissance x5 cumulable."
     if market_value > 0 and not is_huge:
         description += f"\nValeur marché : **{format_currency(market_value)}**"
     embed = _base_embed(
-        _pet_title(name, rarity, is_huge, is_gold, is_rainbow=is_rainbow),
+        _pet_title(
+            name,
+            rarity,
+            is_huge,
+            is_gold,
+            is_rainbow=is_rainbow,
+            is_shiny=is_shiny,
+        ),
         description,
         color=base_color,
     )
@@ -490,6 +601,7 @@ def pet_collection_embed(
         is_huge = bool(pet.get("is_huge"))
         is_gold = bool(pet.get("is_gold"))
         is_rainbow = bool(pet.get("is_rainbow"))
+        is_shiny = bool(pet.get("is_shiny"))
         income = int(pet.get("income", pet.get("base_income_per_hour", 0)))
         tags: list[str] = []
         if is_huge:
@@ -499,6 +611,8 @@ def pet_collection_embed(
             tags.append("Rainbow")
         elif is_gold:
             tags.append("Gold")
+        if is_shiny:
+            tags.append("Shiny")
         line_parts = [
             "⭐" if is_active else "",
             _pet_emoji(name),
@@ -640,10 +754,11 @@ def pet_equip_embed(
     is_huge = bool(pet.get("is_huge", False))
     is_gold = bool(pet.get("is_gold", False))
     is_rainbow = bool(pet.get("is_rainbow", False))
+    is_shiny = bool(pet.get("is_shiny", False))
     market_value = int(pet.get("market_value", 0))
 
     status_symbol = "✅" if activated else "🛌"
-    title = f"{status_symbol} {_pet_title(name, rarity, is_huge, is_gold, is_rainbow=is_rainbow)}"
+    title = f"{status_symbol} {_pet_title(name, rarity, is_huge, is_gold, is_rainbow=is_rainbow, is_shiny=is_shiny)}"
     color = Colors.SUCCESS if activated else Colors.INFO
     lines = [
         "Ce pet génère désormais des revenus passifs !" if activated else "Ce pet se repose pour le moment.",

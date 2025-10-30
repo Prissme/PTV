@@ -158,6 +158,7 @@ class Colors:
     GOLD = 0xF7B731
     NEUTRAL = 0x99AAB5
     ACCENT = 0xF47FFF
+    MAGENTA = 0xFF77FF
 
 
 class Emojis:
@@ -310,6 +311,7 @@ GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
 RAINBOW_PET_MULTIPLIER: Final[int] = 10
 RAINBOW_PET_COMBINE_REQUIRED: Final[int] = 10
 RAINBOW_PET_CHANCE: Final[float] = 0.01
+SHINY_PET_MULTIPLIER: Final[int] = 5
 HUGE_PET_NAME: Final[str] = "Huge Shelly"
 HUGE_PET_MULTIPLIER: Final[int] = 6
 HUGE_PET_MIN_INCOME: Final[int] = 600
@@ -773,6 +775,9 @@ PET_EMOJIS: Final[dict[str, str]] = {
 }
 
 HUGE_MORTIS_ROLE_ID: Final[int] = 1431428621959954623
+EGG_MASTERY_ROLE_ID: Final[int] = 1433423014065602600
+PET_MASTERY_ROLE_ID: Final[int] = 1433425659182448720
+MASTERMIND_MASTERY_ROLE_ID: Final[int] = 1433426656361447646
 
 PET_RARITY_COLORS: Final[dict[str, int]] = {
     "Commun": 0x95A5A6,
