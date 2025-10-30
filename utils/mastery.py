@@ -57,6 +57,26 @@ MASTERMIND_MASTERY = MasteryDefinition(
     broadcast_levels=(10, 30, 50, 64),
 )
 
+PET_MASTERY_SLUG = "pet"
+PET_MASTERY = MasteryDefinition(
+    slug=PET_MASTERY_SLUG,
+    display_name="Maîtrise des pets",
+    max_level=64,
+    base_xp=20,
+    growth_factor=1.24,
+    broadcast_levels=(10, 30, 50, 64),
+)
+
+MASTERMIND_MASTERY_SLUG = "mastermind"
+MASTERMIND_MASTERY = MasteryDefinition(
+    slug=MASTERMIND_MASTERY_SLUG,
+    display_name="Maîtrise Mastermind",
+    max_level=64,
+    base_xp=12,
+    growth_factor=1.28,
+    broadcast_levels=(10, 30, 50, 64),
+)
+
 @dataclass(frozen=True)
 class MasteryPerk:
     """Description textuelle d'un bonus débloqué à un niveau donné."""

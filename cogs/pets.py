@@ -45,6 +45,7 @@ from config import (
 )
 from utils import embeds
 from utils.mastery import EGG_MASTERY, PET_MASTERY, get_mastery_perks, iter_masteries
+from utils.mastery import EGG_MASTERY, PET_MASTERY
 from database.db import ActivePetLimitError, DatabaseError
 
 logger = logging.getLogger(__name__)
@@ -896,6 +897,32 @@ class Pets(commands.Cog):
                     "Tu débloques le rôle ultime : chance **Gold x1,5 / Shiny x1,2 / Rainbow x1,3** permanente !"
                 )
                 await self._grant_mastery_role(ctx, PET_MASTERY_ROLE_ID)
+        if previous_level < 5 <= level:
+            lines.append(
+                "Tu as maintenant **5% de chance** d'obtenir un deuxième œuf gratuitement à chaque ouverture !"
+            )
+        if previous_level < 10 <= level:
+            lines.append(
+                "Tu peux désormais PACK des pets **Gold** directement dans les œufs (3% de chance)."
+            )
+        if previous_level < 20 <= level:
+            lines.append(
+                "Tu débloques **1% de chance** de pet rainbow et les animations d'ouverture sont 2× plus rapides."
+            )
+        if previous_level < 30 <= level:
+            lines.append(
+                "Tu profites maintenant de **15% de chance** d'œuf double et **1% de chance** de triple ouverture."
+            )
+        if previous_level < 40 <= level:
+            lines.append(
+                "Tes chances passent à **20% double**, **3% triple**, avec **5% Gold** et **2% Rainbow** dans les œufs."
+            )
+        if previous_level < 50 <= level:
+            lines.append(
+                "Tu atteins **35%** de double, **10%** de triple et jusqu'à **10% Gold / 4% Rainbow** à chaque ouverture !"
+            )
+        if previous_level < 64 <= level:
+            lines.append("Tu obtiens le rôle ultime avec **x2 chance** permanente sur tes ouvertures d'œufs !")
 
         dm_content = prefix + "\n".join(lines)
         try:
@@ -930,6 +957,15 @@ class Pets(commands.Cog):
                 "Ils obtiennent le rôle suprême et voient leur chance d'œuf doublée en permanence !"
             )
         elif highest_milestone >= 50:
+            announcement_lines.append(
+                "Ils profitent maintenant de 35% de chance d'œuf double et 10% de triple à chaque ouverture !"
+            )
+        elif highest_milestone >= 30:
+            announcement_lines.append(
+                "Ils débloquent des triples ouvertures et 15% de chance d'œuf bonus !"
+            )
+        elif highest_milestone >= 10:
+            announcement_lines.append(
             announcement_lines.append(
                 "Ils profitent maintenant de 35% de chance d'œuf double et 10% de triple à chaque ouverture !"
             )
