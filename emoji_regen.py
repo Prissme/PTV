@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import io
-import json
 import logging
 import os
 import re
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Iterable, List, Sequence, Tuple
 
 import discord
 from discord import app_commands
@@ -27,9 +27,9 @@ logging.basicConfig(
 logger = logging.getLogger("emoji_regen")
 
 
-EMOJI_SOURCE_DIR = Path("./emojis")
-GENERATED_DIR = Path("./generated")
-PETS_MAPPING_FILE = Path("./pets.json")
+BASE_DIR = Path(__file__).resolve().parent
+EMOJI_SOURCE_DIR = BASE_DIR / "emojis"
+GENERATED_DIR = BASE_DIR / "generated"
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID_ENV = os.getenv("GUILD_ID")
@@ -50,15 +50,15 @@ except ValueError as exc:
 class GeneratedEmoji:
     """Représente un emoji généré et prêt à être téléversé."""
 
-    display_name: str
-    slug: str
+    base_name: str
     variant: str
     file_path: Path
     image_bytes: bytes
 
     @property
     def emoji_name(self) -> str:
-        return f"{self.slug}_{self.variant}"
+        slug = slugify(self.base_name)
+        return f"{slug}_{self.variant}"
 
 
 def slugify(name: str) -> str:
@@ -197,62 +197,23 @@ def apply_rainbow_effect(image: Image.Image) -> Image.Image:
     return combined
 
 
-def load_pet_mappings() -> Dict[str, Path]:
-    """Charge la correspondance facultative des pets personnalisés."""
-
-    if not PETS_MAPPING_FILE.exists():
-        return {}
-
-    try:
-        content = PETS_MAPPING_FILE.read_text(encoding="utf-8")
-        data = json.loads(content)
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("Impossible de lire %s: %s", PETS_MAPPING_FILE, exc)
-        return {}
-
-    if not isinstance(data, dict):
-        logger.warning("Le fichier %s doit contenir un objet JSON.", PETS_MAPPING_FILE)
-        return {}
-
-    mappings: Dict[str, Path] = {}
-    for name, filename in data.items():
-        if not isinstance(name, str) or not isinstance(filename, str):
-            continue
-        candidate = EMOJI_SOURCE_DIR / filename
-        if candidate.suffix.lower() != ".png":
-            logger.debug("Fichier ignoré (non PNG) pour %s: %s", name, candidate)
-            continue
-        if not candidate.exists():
-            logger.warning("Fichier mentionné introuvable pour %s: %s", name, candidate)
-            continue
-        mappings[name] = candidate
-
-    return mappings
-
-
-def discover_emoji_sources() -> List[Tuple[str, Path]]:
-    """Détermine la liste des images source à transformer."""
-
-    custom_mappings = load_pet_mappings()
-    if custom_mappings:
-        return sorted(custom_mappings.items())
+def list_png_sources() -> List[Path]:
+    """Retourne la liste des fichiers PNG dans le dossier ./emojis/."""
 
     if not EMOJI_SOURCE_DIR.exists():
-        logger.warning("Le dossier %s est introuvable.", EMOJI_SOURCE_DIR)
         return []
 
-    sources: List[Tuple[str, Path]] = []
-    for path in sorted(EMOJI_SOURCE_DIR.iterdir()):
-        if path.suffix.lower() != ".png":
-            continue
-        sources.append((path.stem, path))
-    return sources
+    return [
+        path
+        for path in sorted(EMOJI_SOURCE_DIR.iterdir())
+        if path.is_file() and path.suffix.lower() == ".png"
+    ]
 
 
-def generate_variants_for_image(name: str, path: Path) -> Iterable[GeneratedEmoji]:
+def generate_variants_for_image(path: Path) -> Iterable[GeneratedEmoji]:
     """Génère les variantes gold et rainbow pour une image donnée."""
 
-    slug = slugify(name)
+    base_name = path.stem
     GENERIC_VARIANTS = (
         ("gold", apply_gold_effect),
         ("rainbow", apply_rainbow_effect),
@@ -263,29 +224,26 @@ def generate_variants_for_image(name: str, path: Path) -> Iterable[GeneratedEmoj
         GENERATED_DIR.mkdir(parents=True, exist_ok=True)
         for variant_name, processor in GENERIC_VARIANTS:
             result = processor(base_image.copy())
-            output_path = GENERATED_DIR / f"{slug}_{variant_name}.png"
+            output_path = GENERATED_DIR / f"{base_name}_{variant_name}.png"
             result.save(output_path, format="PNG")
             buffer = io.BytesIO()
             result.save(buffer, format="PNG")
             buffer.seek(0)
             yield GeneratedEmoji(
-                display_name=name,
-                slug=slug,
+                base_name=base_name,
                 variant=variant_name,
                 file_path=output_path,
                 image_bytes=buffer.getvalue(),
             )
 
 
-def generate_all_emojis() -> List[GeneratedEmoji]:
+def generate_all_emojis(paths: Iterable[Path]) -> List[GeneratedEmoji]:
     """Génère toutes les variantes pour l'ensemble des images sources."""
 
     generated: List[GeneratedEmoji] = []
-    sources = discover_emoji_sources()
-    for name, path in sources:
-        logger.info("Traitement de %s", path)
+    for path in paths:
         try:
-            generated.extend(generate_variants_for_image(name, path))
+            generated.extend(list(generate_variants_for_image(path)))
         except Exception:
             logger.exception("Échec du traitement de %s", path)
     return generated
@@ -303,15 +261,15 @@ async def upload_emojis(guild: discord.Guild, emojis: Sequence[GeneratedEmoji]) 
         try:
             if target_name in existing:
                 discord_emoji = existing[target_name]
-                await discord_emoji.edit(name=target_name, image=emoji.image_bytes)
+                await discord_emoji.edit(image=emoji.image_bytes, name=target_name)
                 updated += 1
-                print(f"♻️  updated :{target_name}:")
+                print(f"♻️ updated {target_name}")
             else:
                 await guild.create_custom_emoji(name=target_name, image=emoji.image_bytes)
                 created += 1
-                print(f"✅ uploaded :{target_name}:")
+                print(f"✅ uploaded {target_name}")
         except discord.HTTPException as exc:
-            logger.error("Impossible de téléverser %s: %s", target_name, exc)
+            raise RuntimeError(f"Impossible de téléverser {target_name}: {exc}") from exc
     return created, updated
 
 
@@ -329,23 +287,44 @@ class EmojiRegeneration(commands.Cog):
             )
             return
 
-        if interaction.guild_id != TARGET_GUILD_ID:
-            await interaction.response.send_message(
-                "Cette commande n'est pas disponible sur ce serveur.", ephemeral=True
+        await interaction.response.send_message(
+            "🔄 Génération des emojis en cours...", ephemeral=True
+        )
+
+        guild = interaction.guild
+        assert guild is not None
+
+        try:
+            source_images = await asyncio.to_thread(list_png_sources)
+            if not source_images:
+                await interaction.followup.send(
+                    "Aucun fichier PNG trouvé dans ./emojis/.", ephemeral=True
+                )
+                return
+
+            generated_emojis = await asyncio.to_thread(generate_all_emojis, source_images)
+            if not generated_emojis:
+                print("Aucune variante générée pour les images sources disponibles.")
+                await interaction.followup.send(
+                    "Une erreur est survenue lors de la régénération des emojis.",
+                    ephemeral=True,
+                )
+                return
+
+            created, updated = await upload_emojis(guild, generated_emojis)
+        except Exception:
+            print("Erreur lors de la régénération des emojis :")
+            print(traceback.format_exc())
+            await interaction.followup.send(
+                "Une erreur est survenue lors de la régénération des emojis.",
+                ephemeral=True,
             )
             return
 
-        await interaction.response.defer(thinking=True)
-
-        emojis = await asyncio.to_thread(generate_all_emojis)
-        if not emojis:
-            await interaction.followup.send("Aucun emoji à générer.")
-            return
-
-        created, updated = await upload_emojis(interaction.guild, emojis)
         total = created + updated
-        message = f"✅ {total} emojis générés avec succès."
-        await interaction.followup.send(message)
+        await interaction.followup.send(
+            f"✅ {total} emojis générés et téléversés avec succès.", ephemeral=True
+        )
 
 
 class EmojiRegenBot(commands.Bot):
