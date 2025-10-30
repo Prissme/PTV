@@ -11,6 +11,48 @@ from config import PREFIX
 from utils import embeds
 
 
+def _strip_prefix(value: str) -> str:
+    """Retire le préfixe configuré de la commande fournie si présent."""
+
+    value = value.strip()
+    if not value:
+        return value
+
+    prefix_length = len(PREFIX)
+    if value[:prefix_length].lower() == PREFIX.lower():
+        return value[prefix_length:].strip()
+
+    return value
+
+
+def _generate_lookup_variants(value: str) -> tuple[str, ...]:
+    """Génère les variantes normalisées permettant de retrouver une commande."""
+
+    base = value.strip()
+    if not base:
+        return ()
+
+    variants: list[str] = []
+
+    def _add_variant(text: str) -> None:
+        normalized = text.strip().lower()
+        if normalized and normalized not in variants:
+            variants.append(normalized)
+
+    _add_variant(base)
+
+    stripped = _strip_prefix(base)
+    if stripped:
+        _add_variant(stripped)
+        parts = stripped.split()
+        if parts:
+            _add_variant(parts[0])
+            if len(parts) > 1:
+                _add_variant(" ".join(parts[:2]))
+
+    return tuple(variants)
+
+
 @dataclass(frozen=True)
 class HelpCommand:
     """Représente une commande individuelle affichée dans le menu d'aide."""
@@ -38,6 +80,36 @@ class HelpCommand:
             body_lines.append(f"> {self.note}")
 
         return "\n".join([header, *body_lines])
+
+    def iter_lookup_keys(self) -> tuple[str, ...]:
+        """Retourne les clés normalisées permettant d'identifier la commande."""
+
+        variants = list(_generate_lookup_variants(self.command))
+        for alias in self.aliases:
+            alias_value = alias if alias.startswith(PREFIX) else f"{PREFIX}{alias}"
+            variants.extend(_generate_lookup_variants(alias_value))
+
+        seen: set[str] = set()
+        unique_variants: list[str] = []
+        for variant in variants:
+            if variant not in seen:
+                seen.add(variant)
+                unique_variants.append(variant)
+
+        return tuple(unique_variants)
+
+    def matches(self, query: str) -> bool:
+        """Indique si la requête fournie correspond à cette commande."""
+
+        normalized_query = _strip_prefix(query).lower()
+        if not normalized_query:
+            return False
+
+        for key in self.iter_lookup_keys():
+            if normalized_query == key or key.startswith(normalized_query):
+                return True
+
+        return False
 
 
 @dataclass(frozen=True)
@@ -357,8 +429,33 @@ class Help(commands.Cog):
         )
 
     @commands.command(name="help")
-    async def help_command(self, ctx: commands.Context) -> None:
-        """Envoie un menu déroulant répertoriant toutes les commandes."""
+    async def help_command(self, ctx: commands.Context, *, query: Optional[str] = None) -> None:
+        """Envoie un menu déroulant ou le détail d'une commande recherchée."""
+
+        if query:
+            result = self._find_command(query)
+            if result is not None:
+                section, command = result
+                embed = self._build_command_detail_embed(section, command)
+                await ctx.send(embed=embed)
+                return
+
+            suggestions = self._suggest_commands(query)
+            if suggestions:
+                suggestion_lines = "\n".join(f"• `{suggestion}`" for suggestion in suggestions)
+                embed = embeds.warning_embed(
+                    "Je n'ai trouvé aucune commande correspondant à ta recherche.\n\n"
+                    f"Essaie peut-être :\n{suggestion_lines}",
+                    title="Commande introuvable",
+                )
+            else:
+                embed = embeds.error_embed(
+                    f"Aucune commande ne correspond à `{query}`.",
+                    title="Commande introuvable",
+                )
+
+            await ctx.send(embed=embed)
+            return
 
         view = HelpMenuView(
             author=ctx.author,
@@ -403,6 +500,75 @@ class Help(commands.Cog):
 
         embed.set_footer(text=self.FOOTER_TEXT)
         return embed
+
+    def _find_command(self, query: str) -> Optional[tuple[HelpSection, HelpCommand]]:
+        """Recherche une commande correspondant à la requête fournie."""
+
+        for section in self._sections:
+            for command in section.commands:
+                if command.matches(query):
+                    return section, command
+
+        return None
+
+    def _build_command_detail_embed(
+        self, section: HelpSection, command: HelpCommand
+    ) -> discord.Embed:
+        """Construit un embed détaillant une commande spécifique."""
+
+        description_lines = [command.description]
+        if command.note:
+            description_lines.append(f"💡 {command.note}")
+
+        embed = embeds.info_embed(
+            "\n\n".join(description_lines),
+            title=f"{command.command} — Aide détaillée",
+        )
+
+        embed.add_field(name="Catégorie", value=section.label, inline=False)
+        embed.add_field(name="Utilisation", value=f"`{command.command}`", inline=False)
+
+        if command.aliases:
+            alias_display = ", ".join(
+                f"`{alias}`" if alias.startswith(PREFIX) else f"`{PREFIX}{alias}`"
+                for alias in command.aliases
+            )
+            embed.add_field(name="Alias", value=alias_display, inline=False)
+
+        bot_user = self.bot.user
+        if bot_user is not None:
+            avatar_url = bot_user.display_avatar.url
+            embed.set_author(name="EcoBot", icon_url=avatar_url)
+            embed.set_thumbnail(url=avatar_url)
+
+        embed.set_footer(text=self.FOOTER_TEXT)
+        return embed
+
+    def _suggest_commands(self, query: str, *, limit: int = 5) -> list[str]:
+        """Propose des commandes proches de la requête fournie."""
+
+        normalized_query = _strip_prefix(query).lower()
+        if not normalized_query:
+            return []
+
+        suggestions: list[str] = []
+        seen: set[str] = set()
+
+        for section in self._sections:
+            for command in section.commands:
+                if command.command in seen:
+                    continue
+
+                for key in command.iter_lookup_keys():
+                    if normalized_query in key and command.command not in seen:
+                        suggestions.append(command.command)
+                        seen.add(command.command)
+                        break
+
+                if len(suggestions) >= limit:
+                    return suggestions[:limit]
+
+        return suggestions[:limit]
 
 
 async def setup(bot: commands.Bot) -> None:
