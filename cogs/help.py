@@ -286,6 +286,11 @@ class Help(commands.Cog):
                         "Équipe un pet pour augmenter tes gains.",
                     ),
                     HelpCommand(
+                        f"{PREFIX}equipbest",
+                        "Équipe automatiquement tes pets les plus rentables.",
+                        aliases=("bestpets", "autoequip"),
+                    ),
+                    HelpCommand(
                         f"{PREFIX}goldify",
                         "Fusionne tes pets en version or pour booster leur puissance.",
                         aliases=("gold", "fusion"),

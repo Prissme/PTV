@@ -14,6 +14,7 @@ import discord
 from discord.ext import commands
 
 from config import (
+    BASE_PET_SLOTS,
     DEFAULT_PET_EGG_SLUG,
     GOLD_PET_CHANCE,
     GOLD_PET_COMBINE_REQUIRED,
@@ -301,6 +302,22 @@ class Pets(commands.Cog):
         pet = random.choices(egg.pets, weights=weights, k=1)[0]
         pet_id = self._pet_ids[pet.name]
         return pet, pet_id
+
+    def _egg_showcase_image(self, egg: PetEggDefinition) -> str | None:
+        if egg.image_url:
+            return egg.image_url
+        if not egg.pets:
+            return None
+
+        def _sort_key(pet: PetDefinition) -> tuple[int, int]:
+            rarity_rank = PET_RARITY_ORDER.get(pet.rarity, -1)
+            return rarity_rank, int(getattr(pet, "base_income_per_hour", 0))
+
+        for pet in sorted(egg.pets, key=_sort_key, reverse=True):
+            image = getattr(pet, "image_url", None)
+            if image:
+                return image
+        return None
 
     @staticmethod
     def _compute_huge_income(
@@ -823,10 +840,23 @@ class Pets(commands.Cog):
             (egg.name, "Des fissures apparaissent !"),
             (egg.name, "Ça y est, il est sur le point d'éclore !"),
         )
-        message = await ctx.send(embed=embeds.pet_animation_embed(title=animation_steps[0][0], description=animation_steps[0][1]))
+        showcase_image = self._egg_showcase_image(egg)
+        message = await ctx.send(
+            embed=embeds.pet_animation_embed(
+                title=animation_steps[0][0],
+                description=animation_steps[0][1],
+                image_url=showcase_image,
+            )
+        )
         for title, description in animation_steps[1:]:
             await asyncio.sleep(1.1)
-            await message.edit(embed=embeds.pet_animation_embed(title=title, description=description))
+            await message.edit(
+                embed=embeds.pet_animation_embed(
+                    title=title,
+                    description=description,
+                    image_url=showcase_image,
+                )
+            )
 
         await asyncio.sleep(1.2)
         market_values = await self.database.get_pet_market_values()
@@ -1016,6 +1046,207 @@ class Pets(commands.Cog):
             huge_descriptions=HUGE_PET_SOURCES,
             pet_counts=count_lookup,
             market_values=market_lookup,
+        )
+        await ctx.send(embed=embed)
+
+    @commands.command(name="equipbest", aliases=("bestpets", "autoequip"))
+    async def equip_best_pets(self, ctx: commands.Context) -> None:
+        await self.database.ensure_user(ctx.author.id)
+        rows = await self.database.get_user_pets(ctx.author.id)
+        if not rows:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    "Tu n'as pas encore de pet à équiper. Ouvre un œuf avec `e!openbox`."
+                )
+            )
+            return
+
+        available_rows = [row for row in rows if not bool(row.get("on_market"))]
+        if not available_rows:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    "Tous tes pets sont actuellement listés sur ton stand. Retire-en un avec `e!stand remove` avant d'utiliser cette commande."
+                )
+            )
+            return
+
+        grade_level = await self.database.get_grade_level(ctx.author.id)
+        max_slots = max(0, BASE_PET_SLOTS + grade_level)
+        if max_slots <= 0:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Impossible d'équiper un pet pour le moment. Monte en grade pour débloquer un premier slot."
+                )
+            )
+            return
+
+        best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
+        entry_by_id: Dict[int, Dict[str, Any]] = {}
+        scored_entries: List[Dict[str, Any]] = []
+        for row in available_rows:
+            user_pet_id = int(row.get("id") or 0)
+            if user_pet_id <= 0:
+                continue
+            data = self._convert_record(row, best_non_huge_income=best_non_huge_income)
+            income = int(data.get("base_income_per_hour", 0))
+            rarity = str(data.get("rarity", ""))
+            rarity_rank = PET_RARITY_ORDER.get(rarity, -1)
+            acquired_at = row.get("acquired_at")
+            if isinstance(acquired_at, datetime):
+                acquired_sort = acquired_at.timestamp()
+            else:
+                acquired_sort = float("inf")
+            name = str(data.get("name", "Pet"))
+            entry = {
+                "id": user_pet_id,
+                "record": row,
+                "data": data,
+                "income": income,
+                "rarity_rank": rarity_rank,
+                "acquired_sort": acquired_sort,
+                "name": name,
+            }
+            entry_by_id[user_pet_id] = entry
+            scored_entries.append(entry)
+
+        if not scored_entries:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    "Aucun pet disponible n'a pu être évalué. Vérifie que tes pets ne sont pas verrouillés sur le marché."
+                )
+            )
+            return
+
+        scored_entries.sort(
+            key=lambda item: (
+                -int(item.get("income", 0)),
+                -int(item.get("rarity_rank", -1)),
+                float(item.get("acquired_sort", float("inf"))),
+                str(item.get("name", "")),
+            )
+        )
+        desired_entries = scored_entries[:max_slots]
+        desired_ids = {int(entry["id"]) for entry in desired_entries if int(entry["id"]) > 0}
+
+        if not desired_ids:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    "Tu n'as aucun pet libre à équiper pour le moment."
+                )
+            )
+            return
+
+        current_active_ids = {int(row.get("id") or 0) for row in rows if bool(row.get("is_active"))}
+        to_deactivate = [pet_id for pet_id in current_active_ids if pet_id not in desired_ids]
+        to_activate = [pet_id for pet_id in desired_ids if pet_id not in current_active_ids]
+
+        removed_names: List[str] = []
+        for user_pet_id in to_deactivate:
+            try:
+                await self.database.deactivate_user_pet(ctx.author.id, user_pet_id)
+            except DatabaseError as exc:
+                await ctx.send(embed=embeds.error_embed(str(exc)))
+                return
+            entry = entry_by_id.get(user_pet_id)
+            if entry:
+                removed_names.append(entry.get("name", "Pet"))
+
+        added_names: List[str] = []
+        for user_pet_id in to_activate:
+            try:
+                await self.database.activate_user_pet(ctx.author.id, user_pet_id)
+            except ActivePetLimitError as exc:
+                message = (
+                    "❌ Tous tes slots sont déjà utilisés "
+                    f"({exc.active}/{exc.limit}). Déséquipe un pet avant de relancer la commande."
+                )
+                await ctx.send(embed=embeds.error_embed(message))
+                return
+            except DatabaseError as exc:
+                await ctx.send(embed=embeds.error_embed(str(exc)))
+                return
+            entry = entry_by_id.get(user_pet_id)
+            if entry:
+                added_names.append(entry.get("name", "Pet"))
+
+        updated_rows = await self.database.get_user_pets(ctx.author.id)
+        active_rows = [row for row in updated_rows if bool(row.get("is_active"))]
+        pets_data = await self._prepare_pet_data(ctx.author.id, active_rows)
+
+        active_entries: List[Dict[str, Any]] = []
+        for row, data in zip(active_rows, pets_data):
+            user_pet_id = int(row.get("id") or 0)
+            income = int(data.get("base_income_per_hour", 0))
+            rarity = str(data.get("rarity", ""))
+            active_entries.append(
+                {
+                    "id": user_pet_id,
+                    "data": data,
+                    "income": income,
+                    "rarity_rank": PET_RARITY_ORDER.get(rarity, -1),
+                    "name": str(data.get("name", "Pet")),
+                }
+            )
+
+        active_entries.sort(
+            key=lambda item: (
+                -int(item.get("income", 0)),
+                -int(item.get("rarity_rank", -1)),
+                str(item.get("name", "")),
+            )
+        )
+
+        total_income = sum(int(item.get("income", 0)) for item in active_entries)
+        summary_lines: List[str] = []
+        if added_names or removed_names:
+            if added_names:
+                summary_lines.append(
+                    "✅ Activés : " + ", ".join(f"**{name}**" for name in added_names)
+                )
+            if removed_names:
+                summary_lines.append(
+                    "♻️ Retirés : " + ", ".join(f"**{name}**" for name in removed_names)
+                )
+        else:
+            summary_lines.append("🔄 Tes meilleurs pets étaient déjà équipés.")
+
+        summary_lines.append(
+            f"Slots utilisés : **{len(active_entries)}/{max_slots}**"
+        )
+        summary_lines.append(
+            f"Revenus actifs : **{embeds.format_currency(total_income)}**/h"
+        )
+
+        if active_entries:
+            detail_lines = []
+            for index, item in enumerate(active_entries, start=1):
+                data = item.get("data", {})
+                name = str(data.get("name", "Pet"))
+                income = int(item.get("income", 0))
+                markers: List[str] = []
+                if bool(data.get("is_rainbow")):
+                    markers.append("🌈")
+                elif bool(data.get("is_gold")):
+                    markers.append("🥇")
+                if bool(data.get("is_huge")):
+                    markers.append("✨")
+                marker_text = " ".join(markers)
+                rarity = str(data.get("rarity", ""))
+                line = (
+                    f"{index}. {marker_text} **{name}** ({rarity}) — {income:,} PB/h"
+                ).replace(",", " ")
+                detail_lines.append(line.strip())
+            summary_lines.append("")
+            summary_lines.extend(detail_lines)
+
+        description = "\n".join(summary_lines)
+        embed = embeds.success_embed(
+            description,
+            title="Équipe de pets optimisée",
+        )
+        embed.set_author(
+            name=ctx.author.display_name,
+            icon_url=ctx.author.display_avatar.url,
         )
         await ctx.send(embed=embed)
 

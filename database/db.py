@@ -121,6 +121,9 @@ class Database:
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS pet_last_claim TIMESTAMPTZ"
             )
             await connection.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS help_dm_sent_at TIMESTAMPTZ"
+            )
+            await connection.execute(
                 """
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS pet_booster_multiplier
                 DOUBLE PRECISION NOT NULL DEFAULT 1
@@ -405,6 +408,21 @@ class Database:
             VALUES ($1)
             ON CONFLICT (user_id) DO NOTHING
             """,
+            user_id,
+        )
+
+    async def should_send_help_dm(self, user_id: int) -> bool:
+        await self.ensure_user(user_id)
+        value = await self.pool.fetchval(
+            "SELECT help_dm_sent_at FROM users WHERE user_id = $1",
+            user_id,
+        )
+        return value is None
+
+    async def mark_help_dm_sent(self, user_id: int) -> None:
+        await self.ensure_user(user_id)
+        await self.pool.execute(
+            "UPDATE users SET help_dm_sent_at = NOW() WHERE user_id = $1",
             user_id,
         )
 
