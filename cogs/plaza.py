@@ -4,8 +4,9 @@ from __future__ import annotations
 import contextlib
 import unicodedata
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Iterable, Mapping, Optional
+from typing import Dict, Iterable, Mapping, Optional, Sequence, cast
 
 import discord
 from discord.ext import commands
@@ -13,6 +14,188 @@ from discord.ext import commands
 from config import PET_DEFINITIONS, PetDefinition
 from database.db import DatabaseError, InsufficientBalanceError
 from utils import embeds
+
+
+@dataclass(frozen=True)
+class SellerListings:
+    """Représente un stand et les annonces associées."""
+
+    seller_id: int
+    seller_name: str
+    listings: tuple[str, ...]
+    total: int
+    cheapest: int
+    priciest: int
+    latest_at: Optional[datetime]
+
+
+def _chunk_lines(lines: Sequence[str], *, limit: int = 1024) -> list[str]:
+    """Découpe une séquence de lignes pour respecter les limites Discord."""
+
+    chunks: list[str] = []
+    buffer: list[str] = []
+    length = 0
+
+    for line in lines:
+        addition = len(line) + (1 if buffer else 0)
+        if buffer and length + addition > limit:
+            chunks.append("\n".join(buffer))
+            buffer = [line]
+            length = len(line)
+            continue
+
+        buffer.append(line)
+        length += addition
+
+    if buffer:
+        chunks.append("\n".join(buffer))
+
+    return chunks
+
+
+class PlazaListingsSelect(discord.ui.Select):
+    """Menu déroulant pour naviguer entre les stands disponibles."""
+
+    def __init__(self, view: "PlazaListingsView") -> None:
+        options = [
+            discord.SelectOption(
+                label="🌐 Toutes les annonces",
+                value="all",
+                description="Voir un aperçu des stands actifs.",
+            )
+        ]
+
+        for seller in view.sellers[:24]:
+            label = seller.seller_name[:95]
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    value=str(seller.seller_id),
+                    description=f"{seller.total} annonce{'s' if seller.total > 1 else ''}",
+                )
+            )
+
+        super().__init__(
+            placeholder="Sélectionne un stand pour voir ses détails…",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if self.view is None:  # pragma: no cover - defensive
+            return
+
+        view = cast(PlazaListingsView, self.view)
+        embed = view.get_embed(self.values[0])
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class PlazaListingsView(discord.ui.View):
+    """Vue interactive permettant d'explorer les stands de la plaza."""
+
+    def __init__(
+        self,
+        *,
+        author: discord.abc.User,
+        sellers: Sequence[SellerListings],
+        recent_lines: Sequence[str],
+        total_listings: int,
+        total_sellers: int,
+        hidden_count: int = 0,
+    ) -> None:
+        super().__init__(timeout=180)
+        self.author = author
+        self.sellers: tuple[SellerListings, ...] = tuple(sellers)
+        self.recent_lines: tuple[str, ...] = tuple(recent_lines)
+        self.total_listings = total_listings
+        self.total_sellers = total_sellers
+        self.hidden_count = hidden_count
+        self.message: Optional[discord.Message] = None
+        self._seller_map = {str(seller.seller_id): seller for seller in self.sellers}
+        self.add_item(PlazaListingsSelect(self))
+
+    def _build_overview_embed(self) -> discord.Embed:
+        embed = embeds.info_embed(
+            "Sélectionne un stand dans le menu pour consulter ses annonces.",
+            title="🏬 Plaza des stands",
+        )
+
+        stats_lines = [
+            f"**{self.total_listings}** annonce{'s' if self.total_listings > 1 else ''} actives",
+            f"Aperçu des **{min(len(self.recent_lines), self.total_listings)}** plus récentes",
+            f"**{self.total_sellers}** stand{'s' if self.total_sellers > 1 else ''} en activité",
+        ]
+        if self.hidden_count:
+            stats_lines.append(
+                f"{self.hidden_count} stand{'s' if self.hidden_count > 1 else ''} supplémentaires ne peuvent pas être affichés (limite Discord)."
+            )
+
+        embed.add_field(name="Statistiques", value="\n".join(stats_lines), inline=False)
+
+        if self.recent_lines:
+            for index, chunk in enumerate(_chunk_lines(self.recent_lines)):
+                name = "🆕 Dernières annonces" if index == 0 else "\u200b"
+                embed.add_field(name=name, value=chunk, inline=False)
+
+        embed.set_footer(text="Astuce : tu peux rouvrir la plaza avec e!plaza à tout moment.")
+        return embed
+
+    def _build_seller_embed(self, seller: SellerListings) -> discord.Embed:
+        embed = embeds.info_embed(
+            f"{seller.seller_name} propose actuellement {seller.total} annonce{'s' if seller.total > 1 else ''}.",
+            title=f"🛒 Stand de {seller.seller_name}",
+        )
+
+        stats_lines = [
+            f"Prix : {embeds.format_currency(seller.cheapest)}",
+        ]
+        if seller.cheapest != seller.priciest:
+            stats_lines[-1] += f" → {embeds.format_currency(seller.priciest)}"
+
+        if seller.latest_at:
+            stats_lines.append(
+                f"Dernière mise à jour {discord.utils.format_dt(seller.latest_at, style='R')}"
+            )
+
+        embed.add_field(name="Informations", value="\n".join(stats_lines), inline=False)
+
+        for index, chunk in enumerate(_chunk_lines(seller.listings)):
+            name = "Annonces disponibles" if index == 0 else "\u200b"
+            embed.add_field(name=name, value=chunk, inline=False)
+
+        embed.set_footer(text="Utilise le menu déroulant pour changer de stand.")
+        return embed
+
+    def get_embed(self, key: str) -> discord.Embed:
+        if key == "all":
+            return self._build_overview_embed()
+
+        seller = self._seller_map.get(key)
+        if seller is None:
+            return self._build_overview_embed()
+
+        return self._build_seller_embed(seller)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user and interaction.user.id == self.author.id:
+            return True
+
+        await interaction.response.send_message(
+            "Seule la personne qui a ouvert la plaza peut utiliser ce menu.",
+            ephemeral=True,
+        )
+        return False
+
+    async def on_timeout(self) -> None:
+        if self.message is None:
+            return
+
+        for child in self.children:
+            if isinstance(child, discord.ui.Select):
+                child.disabled = True
+
+        await self.message.edit(view=self)
 
 
 class Plaza(commands.Cog):
@@ -106,6 +289,24 @@ class Plaza(commands.Cog):
             timestamp = discord.utils.format_dt(created_at, style="R")
             return f"#{listing_id} • {name} — {price} • {timestamp}"
         return f"#{listing_id} • {name} — {price}"
+
+    @staticmethod
+    def _listing_sort_key(record: Mapping[str, object]) -> tuple[int, float]:
+        price = int(record.get("price", 0))
+        created_at = record.get("created_at")
+        timestamp = 0.0
+        if isinstance(created_at, datetime):
+            timestamp = -created_at.timestamp()
+        return price, timestamp
+
+    @staticmethod
+    def _recent_listing_sort(record: Mapping[str, object]) -> tuple[float, int]:
+        created_at = record.get("created_at")
+        timestamp = 0.0
+        if isinstance(created_at, datetime):
+            timestamp = -created_at.timestamp()
+        price = int(record.get("price", 0))
+        return timestamp, price
 
     async def _resolve_pet(
         self, user_id: int, raw: str
@@ -348,18 +549,60 @@ class Plaza(commands.Cog):
 
         user_cache = await self._build_user_cache(ctx, grouped.keys())
 
-        embed = embeds.info_embed("Découvrez les stands des joueurs !", title="🏬 Plaza des stands")
+        seller_sections: list[SellerListings] = []
         for seller_id, records in grouped.items():
             seller = user_cache.get(seller_id)
             seller_name = seller.display_name if seller else f"Utilisateur {seller_id}"
-            value_lines = [self._format_listing_line(record) for record in records]
-            embed.add_field(
-                name=f"{seller_name} ({len(records)} annonce{'s' if len(records) > 1 else ''})",
-                value="\n".join(value_lines),
-                inline=False,
+
+            sorted_records = sorted(records, key=self._listing_sort_key)
+            lines = [self._format_listing_line(record) for record in sorted_records]
+
+            prices = [int(record.get("price", 0)) for record in sorted_records]
+            cheapest = min(prices) if prices else 0
+            priciest = max(prices) if prices else 0
+
+            latest_at: Optional[datetime] = None
+            for record in records:
+                created_at = record.get("created_at")
+                if isinstance(created_at, datetime) and (
+                    latest_at is None or created_at > latest_at
+                ):
+                    latest_at = created_at
+
+            seller_sections.append(
+                SellerListings(
+                    seller_id=seller_id,
+                    seller_name=seller_name,
+                    listings=tuple(lines),
+                    total=len(records),
+                    cheapest=cheapest,
+                    priciest=priciest,
+                    latest_at=latest_at,
+                )
             )
 
-        await ctx.send(embed=embed)
+        seller_sections.sort(key=lambda entry: entry.seller_name.lower())
+
+        total_sellers = len(seller_sections)
+        visible_sellers = seller_sections[:24]
+        hidden_count = total_sellers - len(visible_sellers)
+
+        recent_lines = [
+            self._format_listing_line(record)
+            for record in sorted(listings, key=self._recent_listing_sort)
+        ][:10]
+
+        view = PlazaListingsView(
+            author=ctx.author,
+            sellers=visible_sellers,
+            recent_lines=recent_lines,
+            total_listings=len(listings),
+            total_sellers=total_sellers,
+            hidden_count=hidden_count,
+        )
+
+        message = await ctx.send(embed=view.get_embed("all"), view=view)
+        view.message = message
 
 
 async def setup(bot: commands.Bot) -> None:
