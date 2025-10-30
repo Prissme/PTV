@@ -12,3 +12,6 @@ aiohttp==3.9.1
 
 # Optional: Logging and monitoring
 colorlog==6.8.2
+
+# Génération d'images pour les emojis
+Pillow==10.3.0
