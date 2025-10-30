@@ -307,23 +307,23 @@ RAINBOW_PET_MULTIPLIER: Final[int] = 10
 RAINBOW_PET_COMBINE_REQUIRED: Final[int] = 10
 RAINBOW_PET_CHANCE: Final[float] = 0.01
 HUGE_PET_NAME: Final[str] = "Huge Shelly"
-HUGE_PET_MULTIPLIER: Final[int] = 5
-HUGE_PET_MIN_INCOME: Final[int] = 500
-HUGE_PET_LEVEL_CAP: Final[int] = 64
-HUGE_PET_LEVEL_BASE_XP: Final[int] = 150
-HUGE_PET_LEVEL_EXPONENT: Final[float] = 1.35
+HUGE_PET_MULTIPLIER: Final[int] = 6
+HUGE_PET_MIN_INCOME: Final[int] = 600
+HUGE_PET_LEVEL_CAP: Final[int] = 80
+HUGE_PET_LEVEL_BASE_XP: Final[int] = 120
+HUGE_PET_LEVEL_EXPONENT: Final[float] = 1.5
 HUGE_GALE_NAME: Final[str] = "Huge Gale"
 HUGE_GRIFF_NAME: Final[str] = "Huge Griff"
 TITANIC_GRIFF_NAME: Final[str] = "Titanic Griff"
 HUGE_KENJI_ONI_NAME: Final[str] = "Huge Kenji Oni"
-HUGE_GRIFF_MULTIPLIER: Final[int] = 3
-TITANIC_GRIFF_MULTIPLIER: Final[int] = 1_000
-HUGE_GALE_MULTIPLIER: Final[int] = 100
-HUGE_KENJI_ONI_MULTIPLIER: Final[int] = 10
+HUGE_GRIFF_MULTIPLIER: Final[int] = 4
+TITANIC_GRIFF_MULTIPLIER: Final[int] = 400
+HUGE_GALE_MULTIPLIER: Final[int] = 80
+HUGE_KENJI_ONI_MULTIPLIER: Final[int] = 9
 HUGE_SHADE_NAME: Final[str] = "Huge Shade"
-HUGE_SHADE_MULTIPLIER: Final[int] = 7
+HUGE_SHADE_MULTIPLIER: Final[int] = 6
 HUGE_MORTIS_NAME: Final[str] = "Huge Mortis"
-HUGE_MORTIS_MULTIPLIER: Final[int] = 10
+HUGE_MORTIS_MULTIPLIER: Final[int] = 9
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, int]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
     HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
@@ -334,7 +334,7 @@ HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, int]] = {
 }
 
 HUGE_PET_MIN_LEVEL_MULTIPLIERS: Final[Dict[str, float]] = {
-    TITANIC_GRIFF_NAME: 10.0,
+    TITANIC_GRIFF_NAME: 12.0,
 }
 
 
@@ -401,7 +401,7 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     HUGE_PET_NAME: "Extrêmement rare dans l'œuf basique.",
     "Huge Trunk": "Peut apparaître dans l'œuf bio avec un taux minuscule.",
     HUGE_GRIFF_NAME: "Récompense spéciale lors d'événements ou de giveaways du staff.",
-    TITANIC_GRIFF_NAME: "Jackpot quasi impossible du casino, 10 000× plus rare que Huge Griff.",
+    TITANIC_GRIFF_NAME: "Jackpot quasi impossible du casino, 4 000× plus rare que Huge Griff.",
     HUGE_GALE_NAME: "Récompense finale du mode Millionaire Race (étape 20).",
     HUGE_KENJI_ONI_NAME: "Récompense rarissime du Mastermind pour les esprits les plus vifs.",
     HUGE_SHADE_NAME: "Extrêmement rare dans l'Œuf Maudit (0.5%) - Zone Manoir Hanté.",
@@ -449,7 +449,7 @@ _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
         rarity="Secret",
         image_url="https://example.com/document48.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.001,
+        drop_rate=0.0015,
         is_huge=True,
     ),
 )
@@ -488,7 +488,7 @@ _FOREST_EGG_PETS: Tuple[PetDefinition, ...] = (
         rarity="Secret",
         image_url="https://example.com/document53.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.005,
+        drop_rate=0.004,
         is_huge=True,
     ),
 )
