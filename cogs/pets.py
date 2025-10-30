@@ -44,7 +44,7 @@ from config import (
     PET_MASTERY_ROLE_ID,
 )
 from utils import embeds
-from utils.mastery import EGG_MASTERY, PET_MASTERY
+from utils.mastery import EGG_MASTERY, PET_MASTERY, get_mastery_perks, iter_masteries
 from database.db import ActivePetLimitError, DatabaseError
 
 logger = logging.getLogger(__name__)
@@ -1302,6 +1302,61 @@ class Pets(commands.Cog):
         )
         embed = embeds.info_embed(description, title="Œufs & zones disponibles")
         embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+        await ctx.send(embed=embed)
+
+    @commands.command(
+        name="masteries",
+        aliases=("maitrises", "mastery", "maitrise"),
+    )
+    async def masteries_overview(self, ctx: commands.Context) -> None:
+        """Affiche une synthèse des maîtrises et des prochains bonus."""
+
+        mastery_definitions = list(iter_masteries())
+        async with ctx.typing():
+            progress_list = await asyncio.gather(
+                *(
+                    self.database.get_mastery_progress(ctx.author.id, mastery.slug)
+                    for mastery in mastery_definitions
+                )
+            )
+
+        overview_entries: List[Dict[str, object]] = []
+        for mastery, progress in zip(mastery_definitions, progress_list):
+            level = int(progress.get("level", 1))
+            max_level = int(progress.get("max_level", mastery.max_level))
+            current_xp = int(progress.get("experience", 0))
+            xp_to_next = int(progress.get("xp_to_next_level", 0))
+            perks = list(get_mastery_perks(mastery.slug))
+            active_perks = [perk.description for perk in perks if perk.level <= level]
+            next_perk_text = ""
+            for perk in perks:
+                if perk.level > level:
+                    levels_remaining = perk.level - level
+                    if levels_remaining == 1:
+                        next_perk_text = (
+                            f"**Prochain niveau ({perk.level}) :** {perk.description}"
+                        )
+                    else:
+                        next_perk_text = (
+                            f"**Dans {levels_remaining} niveaux (niveau {perk.level}) :** {perk.description}"
+                        )
+                    break
+
+            overview_entries.append(
+                {
+                    "definition": mastery,
+                    "slug": mastery.slug,
+                    "display_name": mastery.display_name,
+                    "level": level,
+                    "max_level": max_level,
+                    "experience": current_xp,
+                    "xp_to_next_level": xp_to_next,
+                    "active_perks": active_perks,
+                    "next_perk": next_perk_text,
+                }
+            )
+
+        embed = embeds.mastery_overview_embed(ctx.author, overview_entries)
         await ctx.send(embed=embed)
 
     async def _send_huge_shelly_alert(self, ctx: commands.Context) -> None:

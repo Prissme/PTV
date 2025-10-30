@@ -88,6 +88,7 @@ __all__ = [
     "pet_equip_embed",
     "pet_claim_embed",
     "clan_overview_embed",
+    "mastery_overview_embed",
 ]
 
 
@@ -237,6 +238,92 @@ def mastermind_board_embed(
     if status_lines:
         embed.add_field(name="Résultat", value="\n".join(status_lines), inline=False)
 
+    return _finalize_embed(embed)
+
+
+def _mastery_progress_bar(current: int, required: int, width: int = 12) -> str:
+    """Construit une barre de progression textuelle pour les maîtrises."""
+
+    if required <= 0:
+        return "█" * width
+
+    ratio = min(1.0, max(0.0, current / required))
+    filled = max(0, min(width, int(round(ratio * width))))
+    if filled > width:
+        filled = width
+    return "█" * filled + "░" * (width - filled)
+
+
+def mastery_overview_embed(
+    member: discord.Member,
+    entries: Sequence[Mapping[str, object]],
+) -> discord.Embed:
+    """Affiche la progression et les bonus des différentes maîtrises."""
+
+    if not entries:
+        return info_embed(
+            "Aucune maîtrise n'est encore disponible.",
+            title="Maîtrises",
+        )
+
+    embed = discord.Embed(
+        title="📚 Progression des maîtrises",
+        description=(
+            "Focus sur les niveaux en cours et les prochains paliers de bonus."
+        ),
+        color=Colors.INFO,
+    )
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+
+    icon_map = {
+        "egg": "🥚",
+        "pet": "🐾",
+        "mastermind": "🧠",
+    }
+
+    for entry in entries:
+        definition = entry.get("definition")
+        mastery_slug = str(entry.get("slug") or getattr(definition, "slug", ""))
+        display_name = str(
+            entry.get("display_name")
+            or getattr(definition, "display_name", mastery_slug.title())
+        )
+        level = int(entry.get("level", 1))
+        max_level = int(entry.get("max_level", 1))
+        xp = int(entry.get("experience", 0))
+        xp_to_next = int(entry.get("xp_to_next_level", 0))
+        perks: Sequence[str] = tuple(entry.get("active_perks", ()))
+        next_perk = entry.get("next_perk")
+
+        icon = icon_map.get(mastery_slug, "✨")
+        title = f"{icon} {display_name} — niveau {level}/{max_level}"
+        lines = []
+
+        if level >= max_level:
+            lines.append("Niveau maximal atteint, profite de tous les bonus !")
+        else:
+            bar = _mastery_progress_bar(xp, xp_to_next)
+            percent = (xp / xp_to_next * 100) if xp_to_next else 0
+            progress_line = "`{bar}` {percent:>4.0f}% ({current} / {target} XP)".format(
+                bar=bar,
+                percent=percent,
+                current=f"{xp:,}".replace(",", " "),
+                target=f"{xp_to_next:,}".replace(",", " "),
+            )
+            lines.append(progress_line)
+
+        if perks:
+            perk_lines = "\n".join(f"• {text}" for text in perks)
+            lines.append(f"**Bonus actuels :**\n{perk_lines}")
+
+        if isinstance(next_perk, str) and next_perk:
+            lines.append(next_perk)
+        elif level >= max_level:
+            lines.append("Tous les paliers ont été débloqués.")
+
+        embed.add_field(name=title, value="\n".join(lines), inline=False)
+
+    embed.set_footer(text="Continuer à jouer débloquera encore plus d'avantages !")
     return _finalize_embed(embed)
 
 
