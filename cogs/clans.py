@@ -54,6 +54,7 @@ class Clans(commands.Cog):
         member_count = len(members)
         banner = str(clan_record.get("banner_emoji") or "⚔️")
         boost_multiplier = float(clan_record.get("pb_boost_multiplier") or 1.0)
+        shiny_multiplier = float(clan_record.get("shiny_luck_multiplier") or 1.0)
 
         next_capacity_cost = (
             CLAN_CAPACITY_UPGRADE_COSTS[capacity_level]
@@ -95,6 +96,7 @@ class Clans(commands.Cog):
             member_count=member_count,
             capacity=capacity,
             boost_multiplier=boost_multiplier,
+            shiny_multiplier=shiny_multiplier,
             boost_level=boost_level,
             capacity_level=capacity_level,
             members=members_payload,
@@ -272,10 +274,6 @@ class Clans(commands.Cog):
             await ctx.send(embed=embeds.error_embed("Tu dois appartenir à un clan pour acheter un boost."))
             return
 
-        if str(membership.get("role")) != "leader":
-            await ctx.send(embed=embeds.error_embed("Seul le chef peut activer les boosts permanents."))
-            return
-
         clan_id = int(membership["clan_id"])
         clan = await self.database.get_clan(clan_id)
         if clan is None:
@@ -314,9 +312,13 @@ class Clans(commands.Cog):
 
         new_level = int(updated.get("boost_level") or 0)
         new_multiplier = float(updated.get("pb_boost_multiplier") or 1.0)
+        shiny_multiplier = float(updated.get("shiny_luck_multiplier") or 1.0)
         await ctx.send(
             embed=embeds.success_embed(
-                f"Boost permanent niveau {new_level} débloqué ! Tous les membres gagnent désormais x{new_multiplier:.2f} PB."
+                (
+                    f"Boost permanent niveau {new_level} débloqué !\n"
+                    f"Tous les membres gagnent désormais x{new_multiplier:.2f} PB et leur chance de shiny est multipliée par {shiny_multiplier:.2f}."
+                )
             )
         )
 
