@@ -1353,22 +1353,24 @@ class Pets(commands.Cog):
         is_rainbow = False
         is_shiny = False
         if not pet_definition.is_huge:
-            gold_chance = (
-                max(0.0, float(mastery_perks.gold_chance))
-                if mastery_perks is not None
-                else max(0.0, float(GOLD_PET_CHANCE))
-            )
-            rainbow_chance = (
-                max(0.0, float(mastery_perks.rainbow_chance))
-                if mastery_perks is not None
-                else max(0.0, float(RAINBOW_PET_CHANCE))
-            )
+            base_gold_chance = max(0.0, float(GOLD_PET_CHANCE))
+            base_rainbow_chance = max(0.0, float(RAINBOW_PET_CHANCE))
+            bonus_gold_chance = 0.0
+            bonus_rainbow_chance = 0.0
+            if mastery_perks is not None:
+                bonus_gold_chance = max(0.0, float(mastery_perks.gold_chance))
+                bonus_rainbow_chance = max(0.0, float(mastery_perks.rainbow_chance))
+
+            gold_chance = min(1.0, base_gold_chance + bonus_gold_chance)
+            rainbow_chance = min(1.0, base_rainbow_chance + bonus_rainbow_chance)
             shiny_chance = 0.0
             if pet_mastery_perks is not None:
                 gold_chance *= float(pet_mastery_perks.gold_luck_multiplier)
                 rainbow_chance *= float(pet_mastery_perks.rainbow_luck_multiplier)
                 shiny_chance = max(0.0, float(pet_mastery_perks.egg_shiny_chance))
                 shiny_chance *= float(pet_mastery_perks.egg_shiny_multiplier)
+            gold_chance = min(1.0, gold_chance)
+            rainbow_chance = min(1.0, rainbow_chance)
             shiny_chance *= max(1.0, float(clan_shiny_multiplier))
             if gold_chance > 0:
                 is_gold = random.random() < gold_chance
