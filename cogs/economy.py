@@ -31,7 +31,6 @@ from config import (
     PET_EMOJIS,
     POTION_DEFINITION_MAP,
     POTION_DEFINITIONS,
-    RAFFLE_TICKET_SELL_VALUE,
     PREFIX,
     TITANIC_GRIFF_NAME,
     VIP_ROLE_ID,
@@ -91,7 +90,7 @@ TOMBOLA_TICKET_EMOJI = "🎟️"
 TOMBOLA_PRIZE_FALLBACK = "<:HugeBull:1433617222357487748>"
 TOMBOLA_PRIZE_EMOJI = PET_EMOJIS.get(HUGE_BULL_NAME, TOMBOLA_PRIZE_FALLBACK)
 TOMBOLA_PRIZE_LABEL = f"{TOMBOLA_PRIZE_EMOJI} {HUGE_BULL_NAME}"
-TOMBOLA_DRAW_INTERVAL = timedelta(hours=2)
+TOMBOLA_DRAW_INTERVAL = timedelta(hours=24)
 
 
 
@@ -285,6 +284,8 @@ class MastermindSession:
         mastery_perks: MastermindMasteryPerks | None = None,
         mastery_callback: Callable[[int, str], Awaitable[MastermindMasteryPerks | None]]
         | None = None,
+        *,
+        channel: discord.abc.Messageable | None = None,
     ) -> None:
         self.ctx = ctx
         self.bot: commands.Bot = ctx.bot
@@ -304,6 +305,8 @@ class MastermindSession:
         self.mastery_perks = mastery_perks or MastermindMasteryPerks()
         self.mastery_callback = mastery_callback
         self.raffle_ticket_total: int = 0
+        self.raffle_pool_total: int | None = None
+        self.channel: discord.abc.Messageable = channel or ctx.channel
 
     async def start(self) -> None:
         await self.database.ensure_user(self.ctx.author.id)
@@ -317,9 +320,10 @@ class MastermindSession:
                 extra={"user_id": self.ctx.author.id},
             )
             self.raffle_ticket_total = 0
+        await self._refresh_raffle_pool_total()
         self.view = MastermindView(self)
         embed = self.build_embed()
-        self.message = await self.ctx.send(embed=embed, view=self.view)
+        self.message = await self.channel.send(embed=embed, view=self.view)
         self.view.message = self.message
         await self.view.refresh()
         await self.view.wait()
@@ -353,10 +357,23 @@ class MastermindSession:
             status_lines=list(self.status_lines),
             color=self.embed_color,
             raffle_ticket_total=self.raffle_ticket_total,
+            raffle_pool_total=self.raffle_pool_total,
             next_raffle_draw=next_draw,
             raffle_prize_label=TOMBOLA_PRIZE_LABEL,
             raffle_ticket_emoji=TOMBOLA_TICKET_EMOJI,
         )
+
+    async def _refresh_raffle_pool_total(self) -> None:
+        try:
+            total = await self.database.get_total_raffle_tickets()
+        except Exception:
+            self._logger.exception(
+                "Impossible de récupérer le total de tickets de tombola",
+                extra={"user_id": self.ctx.author.id},
+            )
+            self.raffle_pool_total = None
+        else:
+            self.raffle_pool_total = int(total)
 
     async def process_guess(self, guess: Sequence[str]) -> None:
         self.attempts += 1
@@ -442,6 +459,12 @@ class MastermindSession:
             self.status_lines.append(
                 f"Lot en jeu : {TOMBOLA_PRIZE_LABEL}"
             )
+            await self._refresh_raffle_pool_total()
+            if self.raffle_pool_total:
+                pool_display = f"{self.raffle_pool_total:,}".replace(",", " ")
+                self.status_lines.append(
+                    f"Tickets en lice : **{pool_display}**"
+                )
         next_draw: datetime | None = None
         economy_cog = self.bot.get_cog("Economy")
         getter = getattr(economy_cog, "get_next_raffle_datetime", None) if economy_cog else None
@@ -550,11 +573,11 @@ class MastermindSession:
                     "user_id": self.ctx.author.id,
                     "chance": chance,
                     "roll": roll,
-                "attempts": self.attempts,
-                "kenji_multiplier": self.mastery_perks.kenji_multiplier,
-            },
-        )
-        return False
+                    "attempts": self.attempts,
+                    "kenji_multiplier": self.mastery_perks.kenji_multiplier,
+                },
+            )
+            return False
 
         pet_id = await self.database.get_pet_id_by_name(HUGE_KENJI_ONI_NAME)
         if pet_id is None:
@@ -1630,74 +1653,13 @@ class Economy(commands.Cog):
         aliases=("sellticket", "vendretickets", "vendreticket"),
     )
     async def sell_raffle_tickets(self, ctx: commands.Context, amount: int = 1) -> None:
-        """Permet de revendre des tickets de tombola contre des PB."""
+        """Invite les joueurs à utiliser la plaza pour céder leurs tickets."""
 
-        try:
-            amount = int(amount)
-        except (TypeError, ValueError):
-            amount = 0
-
-        if amount <= 0:
-            await ctx.send(
-                embed=embeds.error_embed("Indique un nombre positif de tickets à vendre."),
-            )
-            return
-
-        total_value = RAFFLE_TICKET_SELL_VALUE * amount
-        await self.database.ensure_user(ctx.author.id)
-
-        async with self.database.transaction() as connection:
-            remaining = await self.database.remove_raffle_tickets(
-                ctx.author.id,
-                amount=amount,
-                connection=connection,
-            )
-            if remaining is None:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Tu n'as pas assez de tickets de tombola pour cette vente.",
-                    )
-                )
-                return
-
-            row = await connection.fetchrow(
-                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
-                ctx.author.id,
-            )
-            if row is None:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Impossible d'accéder à ton solde. Réessaie plus tard.",
-                    )
-                )
-                return
-
-            before_balance = int(row.get("balance") or 0)
-            after_balance = before_balance + total_value
-
-            await connection.execute(
-                "UPDATE users SET balance = $2 WHERE user_id = $1",
-                ctx.author.id,
-                after_balance,
-            )
-            await self.database.record_transaction(
-                user_id=ctx.author.id,
-                transaction_type="raffle_ticket_sale",
-                amount=total_value,
-                balance_before=before_balance,
-                balance_after=after_balance,
-                description=f"Vente de {amount} ticket(s) de tombola",
-                connection=connection,
-            )
-
-        lines = [
-            f"Tickets vendus : **{amount}**",
-            f"Gain : {embeds.format_currency(total_value)}",
-            f"Solde actuel : {embeds.format_currency(after_balance)}",
-            f"Tickets restants : **{max(0, remaining)}**",
-        ]
         await ctx.send(
-            embed=embeds.success_embed("\n".join(lines), title="Tickets revendus"),
+            embed=embeds.warning_embed(
+                "La vente directe de tickets est désormais fermée. Ouvre `e!stand` pour accéder aux boutons permettant de lister tes tickets sur la plaza !",
+                title="🎟️ Vente de tickets",
+            )
         )
 
     @staticmethod
@@ -1981,6 +1943,23 @@ class Economy(commands.Cog):
         ) -> MastermindMasteryPerks | None:
             return await self._process_mastermind_mastery_xp(ctx, amount, reason)
 
+        try:
+            dm_channel = await ctx.author.create_dm()
+        except discord.Forbidden:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Impossible de t'envoyer un message privé. Active tes MP pour jouer au Mastermind."
+                )
+            )
+            return
+        else:
+            if ctx.guild is not None:
+                await ctx.send(
+                    embed=embeds.info_embed(
+                        "Je t'ai envoyé la partie en message privé. Consulte tes MP pour jouer !"
+                    )
+                )
+
         session = MastermindSession(
             ctx,
             helper,
@@ -1988,9 +1967,17 @@ class Economy(commands.Cog):
             potion_callback=self._maybe_award_potion,
             mastery_perks=mastery_perks,
             mastery_callback=mastery_callback,
+            channel=dm_channel,
         )
         try:
             await session.start()
+        except discord.Forbidden:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Tes messages privés sont fermés. Active-les puis relance `e!mastermind`."
+                )
+            )
+            return
         except Exception as exc:  # pragma: no cover - log unexpected runtime errors
             logger.exception("Erreur dans Mastermind", exc_info=exc)
             await ctx.send(

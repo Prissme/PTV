@@ -7,7 +7,7 @@ import random
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator, Dict, Iterable, List, Mapping, Optional, Sequence, Set
+from typing import Any, AsyncIterator, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 import asyncpg
 
@@ -322,6 +322,47 @@ class Database:
 
             await connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS pet_trade_history (
+                    id SERIAL PRIMARY KEY,
+                    pet_id INTEGER NOT NULL REFERENCES pets(pet_id) ON DELETE CASCADE,
+                    is_gold BOOLEAN NOT NULL DEFAULT FALSE,
+                    is_rainbow BOOLEAN NOT NULL DEFAULT FALSE,
+                    is_shiny BOOLEAN NOT NULL DEFAULT FALSE,
+                    price BIGINT NOT NULL CHECK (price >= 0),
+                    source TEXT NOT NULL CHECK (source IN ('stand', 'trade')),
+                    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_pet_trade_history_pet ON pet_trade_history(pet_id)"
+            )
+
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS plaza_consumable_listings (
+                    id SERIAL PRIMARY KEY,
+                    seller_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    buyer_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
+                    item_type TEXT NOT NULL CHECK (item_type IN ('ticket', 'potion')),
+                    item_slug TEXT,
+                    quantity INTEGER NOT NULL CHECK (quantity > 0),
+                    price BIGINT NOT NULL CHECK (price >= 0),
+                    status VARCHAR(20) NOT NULL DEFAULT 'active',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    completed_at TIMESTAMPTZ
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_plaza_consumable_status ON plaza_consumable_listings(status)"
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_plaza_consumable_seller ON plaza_consumable_listings(seller_id)"
+            )
+
+            await connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS clans (
                     clan_id SERIAL PRIMARY KEY,
                     name TEXT UNIQUE NOT NULL,
@@ -468,12 +509,24 @@ class Database:
             user_id,
         )
 
-    async def add_raffle_tickets(self, user_id: int, *, amount: int = 1) -> int:
+    async def add_raffle_tickets(
+        self,
+        user_id: int,
+        *,
+        amount: int = 1,
+        connection: asyncpg.Connection | None = None,
+    ) -> int:
         if amount <= 0:
             raise ValueError("La quantité de tickets doit être positive")
 
-        await self.ensure_user(user_id)
-        row = await self.pool.fetchrow(
+        executor: asyncpg.Connection | asyncpg.pool.Pool
+        if connection is None:
+            await self.ensure_user(user_id)
+            executor = self.pool
+        else:
+            executor = connection
+
+        row = await executor.fetchrow(
             """
             INSERT INTO raffle_tickets (user_id, quantity, updated_at)
             VALUES ($1, $2, NOW())
@@ -603,7 +656,13 @@ class Database:
                 total_tickets,
                 winning_ticket,
             )
-            return winner_id, total_tickets, winning_ticket
+            result = (winner_id, total_tickets, winning_ticket)
+
+        return result
+
+    async def get_total_raffle_tickets(self) -> int:
+        value = await self.pool.fetchval("SELECT COALESCE(SUM(quantity), 0) FROM raffle_tickets")
+        return int(value or 0)
 
     async def get_last_raffle_draw(self) -> datetime | None:
         row = await self.pool.fetchrow(
@@ -632,13 +691,24 @@ class Database:
         )
 
     async def add_user_potion(
-        self, user_id: int, potion_slug: str, *, quantity: int = 1
+        self,
+        user_id: int,
+        potion_slug: str,
+        *,
+        quantity: int = 1,
+        connection: asyncpg.Connection | None = None,
     ) -> None:
         if quantity <= 0:
             raise ValueError("La quantité de potions doit être positive")
 
-        await self.ensure_user(user_id)
-        await self.pool.execute(
+        executor: asyncpg.Connection | asyncpg.pool.Pool
+        if connection is None:
+            await self.ensure_user(user_id)
+            executor = self.pool
+        else:
+            executor = connection
+
+        await executor.execute(
             """
             INSERT INTO user_potions (user_id, potion_slug, quantity)
             VALUES ($1, $2, $3)
@@ -1440,6 +1510,18 @@ class Database:
     async def get_balance_leaderboard(self, limit: int) -> Sequence[asyncpg.Record]:
         query = "SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT $1"
         return await self.pool.fetch(query, limit)
+
+    async def get_mastery_leaderboard(
+        self, mastery_slug: str, limit: int
+    ) -> Sequence[asyncpg.Record]:
+        query = """
+            SELECT user_id, level, experience
+            FROM user_masteries
+            WHERE mastery_slug = $1
+            ORDER BY level DESC, experience DESC, user_id ASC
+            LIMIT $2
+        """
+        return await self.pool.fetch(query, mastery_slug, limit)
 
     # ------------------------------------------------------------------
     # Gestion des grades
@@ -3090,29 +3172,71 @@ class Database:
         )
         return {int(row["pet_id"]): int(row["total"]) for row in rows}
 
-    async def get_pet_market_values(self) -> Dict[int, int]:
-        """Calcule le prix moyen des pets vendus via les stands."""
+    @staticmethod
+    def _build_variant_code(is_gold: bool, is_rainbow: bool, is_shiny: bool) -> str:
+        base = "rainbow" if is_rainbow else "gold" if is_gold else "normal"
+        if is_shiny:
+            return f"{base}+shiny"
+        return base
+
+    async def record_pet_trade_value(
+        self,
+        *,
+        pet_id: int,
+        is_gold: bool,
+        is_rainbow: bool,
+        is_shiny: bool,
+        price: int,
+        source: str,
+        connection: asyncpg.Connection | None = None,
+    ) -> None:
+        if price < 0:
+            raise ValueError("Le prix enregistré doit être positif")
+        if source not in {"stand", "trade"}:
+            raise ValueError("Source de trade inconnue")
+
+        params = (pet_id, is_gold, is_rainbow, is_shiny, price, source)
+        query = (
+            """
+            INSERT INTO pet_trade_history (pet_id, is_gold, is_rainbow, is_shiny, price, source)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """
+        )
+
+        if connection is not None:
+            await connection.execute(query, *params)
+            return
+
+        async with self.transaction() as txn_connection:
+            await txn_connection.execute(query, *params)
+
+    async def get_pet_market_values(self) -> Dict[Tuple[int, str], int]:
+        """Calcule le prix moyen par pet et variante en se basant sur les échanges recensés."""
 
         rows = await self.pool.fetch(
             """
-            SELECT ml.price, up.pet_id
-            FROM market_listings AS ml
-            JOIN user_pets AS up ON up.id = ml.user_pet_id
-            WHERE ml.status = 'sold'
+            SELECT pet_id, is_gold, is_rainbow, is_shiny, price
+            FROM pet_trade_history
         """
         )
 
-        totals: Dict[int, tuple[int, int]] = {}
+        totals: Dict[Tuple[int, str], tuple[int, int]] = {}
         for row in rows:
             pet_id = int(row["pet_id"])
+            code = self._build_variant_code(
+                bool(row.get("is_gold")),
+                bool(row.get("is_rainbow")),
+                bool(row.get("is_shiny")),
+            )
+            key = (pet_id, code)
             price = int(row["price"])
-            total, count = totals.get(pet_id, (0, 0))
-            totals[pet_id] = (total + price, count + 1)
+            total, count = totals.get(key, (0, 0))
+            totals[key] = (total + price, count + 1)
 
-        averages: Dict[int, int] = {}
-        for pet_id, (total, count) in totals.items():
+        averages: Dict[Tuple[int, str], int] = {}
+        for key, (total, count) in totals.items():
             if count:
-                averages[pet_id] = int(round(total / count))
+                averages[key] = int(round(total / count))
         return averages
     # ------------------------------------------------------------------
     # Historique financier
@@ -3150,7 +3274,7 @@ class Database:
         async with self.transaction() as connection:
             pet_row = await connection.fetchrow(
                 """
-                SELECT id, user_id, is_active, on_market
+                SELECT id, user_id, pet_id, is_active, on_market, is_gold, is_rainbow, is_shiny
                 FROM user_pets
                 WHERE id = $1
                 FOR UPDATE
@@ -3184,6 +3308,176 @@ class Database:
         if listing is None:
             raise DatabaseError("Impossible de créer la mise en vente.")
         return listing
+
+    async def execute_trade(
+        self,
+        initiator_id: int,
+        partner_id: int,
+        initiator_offer: Mapping[str, Any],
+        partner_offer: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        if initiator_id == partner_id:
+            raise DatabaseError("Impossible de trader avec toi-même.")
+
+        async with self.transaction() as connection:
+            await self.ensure_user(initiator_id)
+            await self.ensure_user(partner_id)
+
+            async def _prepare_pets(
+                owner_id: int, offer: Mapping[str, Any]
+            ) -> list[tuple[asyncpg.Record, int]]:
+                pets_data: list[tuple[asyncpg.Record, int]] = []
+                for entry in offer.get("pets", []):
+                    user_pet_id = int(entry.get("id", 0))
+                    price = int(max(0, int(entry.get("price", 0))))
+                    row = await connection.fetchrow(
+                        """
+                        SELECT id, user_id, pet_id, is_active, on_market, is_gold, is_rainbow, is_shiny
+                        FROM user_pets
+                        WHERE id = $1
+                        FOR UPDATE
+                        """,
+                        user_pet_id,
+                    )
+                    if row is None:
+                        raise DatabaseError("Un des pets sélectionnés est introuvable.")
+                    if int(row["user_id"]) != owner_id:
+                        raise DatabaseError("Un des pets sélectionnés ne t'appartient plus.")
+                    if bool(row.get("is_active")):
+                        raise DatabaseError("Un des pets sélectionnés est actuellement équipé.")
+                    if bool(row.get("on_market")):
+                        raise DatabaseError("Un des pets sélectionnés est listé sur un stand.")
+                    pets_data.append((row, price))
+                return pets_data
+
+            initiator_pets = await _prepare_pets(initiator_id, initiator_offer)
+            partner_pets = await _prepare_pets(partner_id, partner_offer)
+
+            initiator_balance_row = await connection.fetchrow(
+                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                initiator_id,
+            )
+            partner_balance_row = await connection.fetchrow(
+                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                partner_id,
+            )
+            if initiator_balance_row is None or partner_balance_row is None:
+                raise DatabaseError("Impossible de récupérer les soldes pour le trade.")
+
+            initiator_before = int(initiator_balance_row["balance"])
+            partner_before = int(partner_balance_row["balance"])
+            initiator_pb_out = max(0, int(initiator_offer.get("pb", 0) or 0))
+            partner_pb_out = max(0, int(partner_offer.get("pb", 0) or 0))
+
+            initiator_mid = initiator_before - initiator_pb_out
+            partner_mid = partner_before - partner_pb_out
+            if initiator_mid < 0:
+                raise InsufficientBalanceError("Tu n'as pas assez de PB pour finaliser ce trade.")
+            if partner_mid < 0:
+                raise DatabaseError("Ton partenaire n'a plus assez de PB pour ce trade.")
+
+            initiator_final = initiator_mid + partner_pb_out
+            partner_final = partner_mid + initiator_pb_out
+
+            await connection.execute(
+                "UPDATE users SET balance = $1 WHERE user_id = $2",
+                initiator_final,
+                initiator_id,
+            )
+            await connection.execute(
+                "UPDATE users SET balance = $1 WHERE user_id = $2",
+                partner_final,
+                partner_id,
+            )
+
+            if initiator_pb_out:
+                await self.record_transaction(
+                    connection=connection,
+                    user_id=initiator_id,
+                    transaction_type="trade",
+                    amount=-initiator_pb_out,
+                    balance_before=initiator_before,
+                    balance_after=initiator_mid,
+                    description=f"Trade avec {partner_id}",
+                    related_user_id=partner_id,
+                )
+                await self.record_transaction(
+                    connection=connection,
+                    user_id=partner_id,
+                    transaction_type="trade",
+                    amount=initiator_pb_out,
+                    balance_before=partner_mid,
+                    balance_after=partner_mid + initiator_pb_out,
+                    description=f"Trade avec {initiator_id}",
+                    related_user_id=initiator_id,
+                )
+
+            if partner_pb_out:
+                await self.record_transaction(
+                    connection=connection,
+                    user_id=partner_id,
+                    transaction_type="trade",
+                    amount=-partner_pb_out,
+                    balance_before=partner_before,
+                    balance_after=partner_mid,
+                    description=f"Trade avec {initiator_id}",
+                    related_user_id=initiator_id,
+                )
+                await self.record_transaction(
+                    connection=connection,
+                    user_id=initiator_id,
+                    transaction_type="trade",
+                    amount=partner_pb_out,
+                    balance_before=initiator_mid,
+                    balance_after=initiator_final,
+                    description=f"Trade avec {partner_id}",
+                    related_user_id=partner_id,
+                )
+
+            async def _transfer(
+                target_id: int, pets: list[tuple[asyncpg.Record, int]]
+            ) -> list[dict[str, Any]]:
+                transferred: list[dict[str, Any]] = []
+                for row, price in pets:
+                    await connection.execute(
+                        "UPDATE user_pets SET user_id = $1, is_active = FALSE, on_market = FALSE WHERE id = $2",
+                        target_id,
+                        int(row["id"]),
+                    )
+                    await self.record_pet_trade_value(
+                        pet_id=int(row["pet_id"]),
+                        is_gold=bool(row.get("is_gold")),
+                        is_rainbow=bool(row.get("is_rainbow")),
+                        is_shiny=bool(row.get("is_shiny")),
+                        price=max(0, price),
+                        source="trade",
+                        connection=connection,
+                    )
+                    transferred.append(
+                        {
+                            "user_pet_id": int(row["id"]),
+                            "pet_id": int(row["pet_id"]),
+                            "is_gold": bool(row.get("is_gold")),
+                            "is_rainbow": bool(row.get("is_rainbow")),
+                            "is_shiny": bool(row.get("is_shiny")),
+                            "price": max(0, price),
+                        }
+                    )
+                return transferred
+
+            initiator_transferred = await _transfer(partner_id, initiator_pets)
+            partner_transferred = await _transfer(initiator_id, partner_pets)
+
+        return {
+            "initiator_before": initiator_before,
+            "initiator_after": initiator_final,
+            "partner_before": partner_before,
+            "partner_after": partner_final,
+            "initiator_pets": initiator_transferred,
+            "partner_pets": partner_transferred,
+            "initiator_pb_out": initiator_pb_out,
+            "partner_pb_out": partner_pb_out,
+        }
 
     async def cancel_market_listing(self, listing_id: int, seller_id: int) -> asyncpg.Record:
         async with self.transaction() as connection:
@@ -3243,7 +3537,7 @@ class Database:
             user_pet_id = int(listing["user_pet_id"])
             pet_row = await connection.fetchrow(
                 """
-                SELECT id, user_id, is_active, on_market
+                SELECT id, user_id, pet_id, is_active, on_market, is_gold, is_rainbow, is_shiny
                 FROM user_pets
                 WHERE id = $1
                 FOR UPDATE
@@ -3309,6 +3603,16 @@ class Database:
                 """,
                 buyer_id,
                 listing_id,
+            )
+
+            await self.record_pet_trade_value(
+                pet_id=int(pet_row["pet_id"]),
+                is_gold=bool(pet_row.get("is_gold")),
+                is_rainbow=bool(pet_row.get("is_rainbow")),
+                is_shiny=bool(pet_row.get("is_shiny")),
+                price=price,
+                source="stand",
+                connection=connection,
             )
 
             await self.record_transaction(
@@ -3418,6 +3722,260 @@ class Database:
             LIMIT $2
         """
         return await self.pool.fetch(query, user_id, limit)
+
+    async def create_consumable_listing(
+        self,
+        seller_id: int,
+        *,
+        item_type: str,
+        quantity: int,
+        price: int,
+        item_slug: str | None = None,
+    ) -> asyncpg.Record:
+        if item_type not in {"ticket", "potion"}:
+            raise DatabaseError("Type d'objet invalide pour la plaza.")
+        if quantity <= 0:
+            raise DatabaseError("La quantité doit être positive.")
+        if price < 0:
+            raise DatabaseError("Le prix doit être positif.")
+
+        await self.ensure_user(seller_id)
+
+        async with self.transaction() as connection:
+            slug = item_slug
+            if item_type == "ticket":
+                slug = "raffle_ticket"
+                remaining = await self.remove_raffle_tickets(
+                    seller_id, amount=quantity, connection=connection
+                )
+                if remaining is None:
+                    raise DatabaseError(
+                        "Tu n'as pas assez de tickets de tombola pour cette mise en vente."
+                    )
+            else:
+                if not slug:
+                    raise DatabaseError("Merci de préciser la potion à mettre en vente.")
+                consumed = await self.consume_user_potion(
+                    seller_id,
+                    slug,
+                    quantity=quantity,
+                    connection=connection,
+                )
+                if not consumed:
+                    raise DatabaseError("Tu n'as pas assez d'exemplaires de cette potion.")
+
+            listing = await connection.fetchrow(
+                """
+                INSERT INTO plaza_consumable_listings (seller_id, item_type, item_slug, quantity, price)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING *
+                """,
+                seller_id,
+                item_type,
+                slug,
+                quantity,
+                price,
+            )
+
+        if listing is None:
+            raise DatabaseError("Impossible de créer l'annonce de consommable.")
+        return listing
+
+    async def cancel_consumable_listing(
+        self, listing_id: int, seller_id: int
+    ) -> asyncpg.Record:
+        async with self.transaction() as connection:
+            listing = await connection.fetchrow(
+                "SELECT * FROM plaza_consumable_listings WHERE id = $1 FOR UPDATE",
+                listing_id,
+            )
+            if listing is None:
+                raise DatabaseError("Annonce introuvable.")
+            if listing["status"] != "active":
+                raise DatabaseError("Cette annonce n'est plus active.")
+            if int(listing["seller_id"]) != seller_id:
+                raise DatabaseError("Tu ne peux annuler que tes propres annonces.")
+
+            quantity = int(listing["quantity"])
+            item_type = str(listing["item_type"])
+            item_slug = listing.get("item_slug")
+            if item_type == "ticket":
+                await self.add_raffle_tickets(
+                    seller_id, amount=quantity, connection=connection
+                )
+            else:
+                if not item_slug:
+                    raise DatabaseError("Potion inconnue pour cette annonce.")
+                await self.add_user_potion(
+                    seller_id,
+                    str(item_slug),
+                    quantity=quantity,
+                    connection=connection,
+                )
+
+            cancelled = await connection.fetchrow(
+                """
+                UPDATE plaza_consumable_listings
+                SET status = 'cancelled', completed_at = NOW()
+                WHERE id = $1
+                RETURNING *
+                """,
+                listing_id,
+            )
+
+        if cancelled is None:
+            raise DatabaseError("Impossible d'annuler l'annonce.")
+        return cancelled
+
+    async def purchase_consumable_listing(
+        self, listing_id: int, buyer_id: int
+    ) -> Dict[str, Any]:
+        await self.ensure_user(buyer_id)
+
+        async with self.transaction() as connection:
+            listing = await connection.fetchrow(
+                "SELECT * FROM plaza_consumable_listings WHERE id = $1 FOR UPDATE",
+                listing_id,
+            )
+            if listing is None:
+                raise DatabaseError("Cette annonce n'existe pas.")
+            if listing["status"] != "active":
+                raise DatabaseError("Cette annonce n'est plus disponible.")
+
+            seller_id = int(listing["seller_id"])
+            if seller_id == buyer_id:
+                raise DatabaseError("Tu ne peux pas acheter ta propre annonce.")
+
+            price = int(listing["price"])
+            quantity = int(listing["quantity"])
+            item_type = str(listing["item_type"])
+            item_slug = str(listing.get("item_slug") or "")
+
+            seller_balance = await connection.fetchrow(
+                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                seller_id,
+            )
+            buyer_balance = await connection.fetchrow(
+                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                buyer_id,
+            )
+            if seller_balance is None or buyer_balance is None:
+                raise DatabaseError("Impossible de récupérer les soldes.")
+
+            seller_before = int(seller_balance["balance"])
+            buyer_before = int(buyer_balance["balance"])
+            if buyer_before < price:
+                raise InsufficientBalanceError("Solde insuffisant pour cet achat.")
+
+            seller_after = seller_before + price
+            buyer_after = buyer_before - price
+
+            await connection.execute(
+                "UPDATE users SET balance = $1 WHERE user_id = $2",
+                buyer_after,
+                buyer_id,
+            )
+            await connection.execute(
+                "UPDATE users SET balance = $1 WHERE user_id = $2",
+                seller_after,
+                seller_id,
+            )
+
+            if item_type == "ticket":
+                await self.add_raffle_tickets(
+                    buyer_id, amount=quantity, connection=connection
+                )
+            else:
+                await self.add_user_potion(
+                    buyer_id,
+                    item_slug,
+                    quantity=quantity,
+                    connection=connection,
+                )
+
+            completed = await connection.fetchrow(
+                """
+                UPDATE plaza_consumable_listings
+                SET status = 'sold', buyer_id = $1, completed_at = NOW()
+                WHERE id = $2
+                RETURNING *
+                """,
+                buyer_id,
+                listing_id,
+            )
+
+            await self.record_transaction(
+                connection=connection,
+                user_id=buyer_id,
+                transaction_type="stand_purchase",
+                amount=-price,
+                balance_before=buyer_before,
+                balance_after=buyer_after,
+                description=f"Achat consommable #{listing_id}",
+                related_user_id=seller_id,
+            )
+            await self.record_transaction(
+                connection=connection,
+                user_id=seller_id,
+                transaction_type="stand_sale",
+                amount=price,
+                balance_before=seller_before,
+                balance_after=seller_after,
+                description=f"Vente consommable #{listing_id}",
+                related_user_id=buyer_id,
+            )
+
+        if completed is None:
+            raise DatabaseError("Impossible de finaliser l'achat.")
+        return {
+            "listing": completed,
+            "seller_before": seller_before,
+            "buyer_before": buyer_before,
+        }
+
+    async def get_consumable_listing(
+        self, listing_id: int
+    ) -> Optional[asyncpg.Record]:
+        return await self.pool.fetchrow(
+            "SELECT * FROM plaza_consumable_listings WHERE id = $1",
+            listing_id,
+        )
+
+    async def list_active_consumable_listings(
+        self,
+        *,
+        limit: int = 25,
+        item_type: str | None = None,
+    ) -> Sequence[asyncpg.Record]:
+        limit = max(1, limit)
+        return await self.pool.fetch(
+            """
+            SELECT *
+            FROM plaza_consumable_listings
+            WHERE status = 'active'
+              AND ($2::TEXT IS NULL OR item_type = $2)
+            ORDER BY created_at ASC
+            LIMIT $1
+            """,
+            limit,
+            item_type,
+        )
+
+    async def get_consumable_activity(
+        self, user_id: int, limit: int = 20
+    ) -> Sequence[asyncpg.Record]:
+        await self.ensure_user(user_id)
+        return await self.pool.fetch(
+            """
+            SELECT *
+            FROM plaza_consumable_listings
+            WHERE seller_id = $1 OR buyer_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            """,
+            user_id,
+            limit,
+        )
     async def get_database_stats(self) -> asyncpg.Record:
         query = """
             SELECT

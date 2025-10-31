@@ -206,6 +206,7 @@ def mastermind_board_embed(
     status_lines: Sequence[str] | None = None,
     color: int = Colors.INFO,
     raffle_ticket_total: int | None = None,
+    raffle_pool_total: int | None = None,
     next_raffle_draw: datetime | None = None,
     raffle_prize_label: str | None = None,
     raffle_ticket_emoji: str = "🎟️",
@@ -245,7 +246,7 @@ def mastermind_board_embed(
 
     tombola_lines = [
         "Chaque victoire t'offre **1 ticket de tombola**.",
-        "Un tirage automatique toutes les 2h désigne un gagnant.",
+        "Un tirage automatique toutes les 24h désigne un gagnant.",
     ]
     if raffle_prize_label:
         tombola_lines.append(
@@ -253,6 +254,9 @@ def mastermind_board_embed(
         )
     if raffle_ticket_total is not None:
         tombola_lines.append(f"Tes tickets : **{max(0, int(raffle_ticket_total))}**")
+    if raffle_pool_total is not None and raffle_pool_total > 0:
+        pool_display = f"{raffle_pool_total:,}".replace(",", " ")
+        tombola_lines.append(f"Tickets en lice : **{pool_display}**")
     if next_raffle_draw is not None:
         target = next_raffle_draw
         if target.tzinfo is None:

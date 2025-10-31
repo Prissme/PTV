@@ -4,6 +4,8 @@ from __future__ import annotations
 from discord.ext import commands
 
 from config import LEADERBOARD_LIMIT
+from database.db import DatabaseError
+from utils.mastery import EGG_MASTERY, MASTERMIND_MASTERY, PET_MASTERY, MasteryDefinition
 from utils import embeds
 
 
@@ -51,6 +53,63 @@ class Leaderboard(commands.Cog):
             symbol="PB/h",
         )
         await ctx.send(embed=embed)
+
+    async def _send_mastery_leaderboard(
+        self, ctx: commands.Context, mastery: MasteryDefinition
+    ) -> None:
+        try:
+            rows = await self.database.get_mastery_leaderboard(mastery.slug, LEADERBOARD_LIMIT)
+        except DatabaseError as exc:  # type: ignore[name-defined]
+            await ctx.send(embed=embeds.error_embed(str(exc)))
+            return
+        except Exception:
+            await ctx.send(
+                embed=embeds.error_embed("Impossible de récupérer le classement demandé.")
+            )
+            return
+
+        title = f"Classement {mastery.display_name}"
+        if not rows:
+            await ctx.send(
+                embed=embeds.info_embed(
+                    "Aucune donnée disponible pour cette maîtrise pour le moment.",
+                    title=title,
+                )
+            )
+            return
+
+        lines = []
+        for rank, row in enumerate(rows, start=1):
+            user_id = int(row["user_id"])
+            level = int(row.get("level") or 0)
+            xp = int(row.get("experience") or 0)
+            required = mastery.required_xp(level)
+            if required <= 0:
+                progress = f"{xp} XP (niveau max)"
+            else:
+                progress = f"{xp}/{required} XP"
+
+            user = self.bot.get_user(user_id)
+            name = user.display_name if user else f"Utilisateur {user_id}"
+            lines.append(f"**{rank}.** {name} — Niveau {level} ({progress})")
+
+        embed = embeds.info_embed("\n".join(lines), title=title)
+        await ctx.send(embed=embed)
+
+    @commands.command(name="eggmasteryleb", aliases=("eggmasterylb",))
+    async def egg_mastery_leaderboard(self, ctx: commands.Context) -> None:
+        await self._send_mastery_leaderboard(ctx, EGG_MASTERY)
+
+    @commands.command(name="petmasteryleb", aliases=("petmasterylb",))
+    async def pet_mastery_leaderboard(self, ctx: commands.Context) -> None:
+        await self._send_mastery_leaderboard(ctx, PET_MASTERY)
+
+    @commands.command(
+        name="mastermindmasterylb",
+        aliases=("mastermindmasteryleb", "mmmasterylb"),
+    )
+    async def mastermind_mastery_leaderboard(self, ctx: commands.Context) -> None:
+        await self._send_mastery_leaderboard(ctx, MASTERMIND_MASTERY)
 
 
 async def setup(bot: commands.Bot) -> None:
