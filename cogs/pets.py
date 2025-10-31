@@ -420,6 +420,17 @@ class Pets(commands.Cog):
         base = "rainbow" if is_rainbow else "gold" if is_gold else "normal"
         return f"{base}+shiny" if is_shiny else base
 
+    @staticmethod
+    def _parse_toggle_argument(raw: str | None) -> bool | None:
+        if raw is None:
+            return None
+        normalized = raw.strip().lower()
+        if normalized in {"on", "enable", "enabled", "true", "1", "oui", "activer", "activé", "active"}:
+            return True
+        if normalized in {"off", "disable", "disabled", "false", "0", "non", "desactiver", "désactiver", "desactive", "désactivé"}:
+            return False
+        return None
+
     def _resolve_market_value(
         self,
         market_values: Mapping[tuple[int, str], int],
@@ -456,6 +467,18 @@ class Pets(commands.Cog):
         self._pet_ids = await self.database.sync_pets(self._definitions)
         self._definition_by_id = {pet_id: self._definition_by_name[name] for name, pet_id in self._pet_ids.items()}
         logger.info("Catalogue de pets synchronisé (%d entrées)", len(self._definition_by_id))
+
+    async def _resync_pets(self) -> None:
+        self._pet_ids = await self.database.sync_pets(self._definitions)
+        self._definition_by_id = {
+            pet_id: self._definition_by_name[name]
+            for name, pet_id in self._pet_ids.items()
+            if name in self._definition_by_name
+        }
+        logger.info(
+            "Catalogue de pets resynchronisé (%d entrées)",
+            len(self._definition_by_id),
+        )
 
     # ------------------------------------------------------------------
     # Utilitaires internes
@@ -649,9 +672,19 @@ class Pets(commands.Cog):
         pet_perks: PetMasteryPerks,
         *,
         clan_shiny_multiplier: float = 1.0,
+        auto_settings: Mapping[str, bool] | None = None,
     ) -> List[str]:
         messages: List[str] = []
-        if not (pet_perks.auto_goldify or pet_perks.auto_rainbowify):
+        auto_gold_enabled = pet_perks.auto_goldify
+        auto_rainbow_enabled = pet_perks.auto_rainbowify
+        if auto_settings is not None:
+            auto_gold_enabled = auto_gold_enabled and auto_settings.get(
+                "auto_goldify", True
+            )
+            auto_rainbow_enabled = auto_rainbow_enabled and auto_settings.get(
+                "auto_rainbowify", True
+            )
+        if not (auto_gold_enabled or auto_rainbow_enabled):
             return messages
 
         shiny_multiplier = max(1.0, float(clan_shiny_multiplier))
@@ -665,7 +698,7 @@ class Pets(commands.Cog):
             chance = min(1.0, chance)
             return random.random() < chance
 
-        if pet_perks.auto_goldify:
+        if auto_gold_enabled:
             while True:
                 try:
                     make_shiny = _roll_shiny(pet_perks.goldify_shiny_chance)
@@ -687,7 +720,7 @@ class Pets(commands.Cog):
                     ctx, mastery_update, mastery=PET_MASTERY
                 )
 
-        if pet_perks.auto_rainbowify:
+        if auto_rainbow_enabled:
             while True:
                 try:
                     make_shiny = _roll_shiny(pet_perks.rainbowify_shiny_chance)
@@ -1291,7 +1324,31 @@ class Pets(commands.Cog):
                 and potion_expires_at > datetime.now(timezone.utc)
             ):
                 effective_luck_bonus += max(0.0, float(potion_definition.effect_value))
-        pet_definition, pet_id = self._choose_pet(egg, luck_bonus=effective_luck_bonus)
+        try:
+            pet_definition, pet_id = self._choose_pet(
+                egg, luck_bonus=effective_luck_bonus
+            )
+        except KeyError:
+            await self._resync_pets()
+            try:
+                pet_definition, pet_id = self._choose_pet(
+                    egg, luck_bonus=effective_luck_bonus
+                )
+            except KeyError:
+                logger.exception(
+                    "Pet introuvable lors de l'ouverture d'œuf",
+                    extra={
+                        "user_id": ctx.author.id,
+                        "egg": egg.slug,
+                    },
+                )
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Impossible d'ouvrir cet œuf pour le moment. "
+                        "Réessaie dans quelques instants."
+                    )
+                )
+                return False
         is_gold = False
         is_rainbow = False
         is_shiny = False
@@ -1333,6 +1390,17 @@ class Pets(commands.Cog):
 
         auto_messages: List[str] = []
         if pet_mastery_perks is not None and not pet_definition.is_huge:
+            auto_settings: Mapping[str, bool] | None = None
+            if pet_mastery_perks.auto_goldify or pet_mastery_perks.auto_rainbowify:
+                try:
+                    auto_settings = await self.database.get_pet_auto_settings(
+                        ctx.author.id
+                    )
+                except DatabaseError:
+                    logger.exception(
+                        "Impossible de récupérer les préférences auto pet",
+                        extra={"user_id": ctx.author.id},
+                    )
             auto_messages.extend(
                 await self._apply_auto_upgrades(
                     ctx,
@@ -1340,6 +1408,7 @@ class Pets(commands.Cog):
                     pet_id,
                     pet_mastery_perks,
                     clan_shiny_multiplier=clan_shiny_multiplier,
+                    auto_settings=auto_settings,
                 )
             )
 
@@ -2048,6 +2117,69 @@ class TradeView(discord.ui.View):
                     charge_cost=False,
                     bonus=True,
                 )
+
+    @commands.group(
+        name="petauto",
+        invoke_without_command=True,
+        aliases=("autopet", "petsettings"),
+    )
+    async def pet_auto_settings(self, ctx: commands.Context) -> None:
+        settings = await self.database.get_pet_auto_settings(ctx.author.id)
+        lines = [
+            f"Auto goldify : {'✅ activé' if settings['auto_goldify'] else '❌ désactivé'}",
+            f"Auto rainbow : {'✅ activé' if settings['auto_rainbowify'] else '❌ désactivé'}",
+        ]
+        embed = embeds.info_embed(
+            "\n".join(lines),
+            title="Préférences d'amélioration automatique",
+        )
+        embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+        embed.set_footer(
+            text="Utilise e!petauto gold [on/off] ou e!petauto rainbow [on/off] pour modifier ces options."
+        )
+        await ctx.send(embed=embed)
+
+    @pet_auto_settings.command(name="gold", aliases=("goldify", "or"))
+    async def pet_auto_gold(self, ctx: commands.Context, state: str | None = None) -> None:
+        value = self._parse_toggle_argument(state)
+        if value is None:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Précise `on` ou `off` pour activer ou désactiver l'auto goldify."
+                )
+            )
+            return
+        settings = await self.database.set_pet_auto_settings(
+            ctx.author.id, auto_goldify=value
+        )
+        status = "activé" if settings["auto_goldify"] else "désactivé"
+        await ctx.send(
+            embed=embeds.success_embed(
+                f"Auto goldify {status}.", title="Préférence mise à jour"
+            )
+        )
+
+    @pet_auto_settings.command(name="rainbow", aliases=("rainbowify", "rb"))
+    async def pet_auto_rainbow(
+        self, ctx: commands.Context, state: str | None = None
+    ) -> None:
+        value = self._parse_toggle_argument(state)
+        if value is None:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Précise `on` ou `off` pour activer ou désactiver l'auto rainbow."
+                )
+            )
+            return
+        settings = await self.database.set_pet_auto_settings(
+            ctx.author.id, auto_rainbowify=value
+        )
+        status = "activé" if settings["auto_rainbowify"] else "désactivé"
+        await ctx.send(
+            embed=embeds.success_embed(
+                f"Auto rainbow {status}.", title="Préférence mise à jour"
+            )
+        )
 
     @commands.command(name="eggs", aliases=("zones", "zone"))
     async def eggs(self, ctx: commands.Context) -> None:
