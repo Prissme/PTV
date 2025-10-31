@@ -445,7 +445,7 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     TITANIC_GRIFF_NAME: "Jackpot quasi impossible du casino, 4 000× plus rare que Huge Griff.",
     HUGE_GALE_NAME: "Récompense finale du mode Millionaire Race (étape 20).",
     HUGE_KENJI_ONI_NAME: "Récompense rarissime du Mastermind pour les esprits les plus vifs.",
-    HUGE_BULL_NAME: "Tirée toutes les 2h via la tombola Mastermind (tickets garantis par victoire).",
+    HUGE_BULL_NAME: "Tirée chaque jour via la tombola Mastermind (tickets garantis par victoire).",
     HUGE_SHADE_NAME: "Extrêmement rare dans l'Œuf Maudit (0.5%) - Zone Manoir Hanté.",
     HUGE_MORTIS_NAME: "Récompense exclusive pour les membres VIP du serveur.",
     HUGE_SURGE_NAME: "Apparaît dans l'Œuf métallique pour les stratèges les plus assidus.",
