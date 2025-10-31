@@ -8,7 +8,7 @@ import random
 import time
 from collections import Counter
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Mapping, Optional, Sequence
 
 import discord
@@ -20,6 +20,7 @@ from config import (
     DAILY_REWARD,
     GRADE_DEFINITIONS,
     HUGE_GALE_NAME,
+    HUGE_BULL_NAME,
     HUGE_KENJI_ONI_NAME,
     HUGE_MORTIS_NAME,
     HUGE_PET_MIN_INCOME,
@@ -85,6 +86,13 @@ POTION_DROP_RATES: dict[str, float] = {
 POTION_SLUGS: tuple[str, ...] = tuple(potion.slug for potion in POTION_DEFINITIONS)
 
 
+TOMBOLA_TICKET_EMOJI = "🎟️"
+TOMBOLA_PRIZE_FALLBACK = "<:HugeBull:1433617222357487748>"
+TOMBOLA_PRIZE_EMOJI = PET_EMOJIS.get(HUGE_BULL_NAME, TOMBOLA_PRIZE_FALLBACK)
+TOMBOLA_PRIZE_LABEL = f"{TOMBOLA_PRIZE_EMOJI} {HUGE_BULL_NAME}"
+TOMBOLA_DRAW_INTERVAL = timedelta(hours=2)
+
+
 
 @dataclass(frozen=True)
 class MillionaireRaceStage:
@@ -146,7 +154,7 @@ class MastermindConfig:
     code_length: int = 4
     max_attempts: int = 8
     response_timeout: int = 60
-    base_reward: tuple[int, int] = (120, 200)
+    base_reward: tuple[int, int] = (170, 250)
     attempt_bonus: int = 20
     cancel_words: frozenset[str] = frozenset({"stop", "annuler", "cancel"})
     cooldown: int = 60
@@ -294,9 +302,20 @@ class MastermindSession:
         self._logger = logger.getChild("MastermindSession")
         self.mastery_perks = mastery_perks or MastermindMasteryPerks()
         self.mastery_callback = mastery_callback
+        self.raffle_ticket_total: int = 0
 
     async def start(self) -> None:
         await self.database.ensure_user(self.ctx.author.id)
+        try:
+            self.raffle_ticket_total = await self.database.get_user_raffle_tickets(
+                self.ctx.author.id
+            )
+        except Exception:
+            self._logger.exception(
+                "Impossible de récupérer les tickets de tombola",
+                extra={"user_id": self.ctx.author.id},
+            )
+            self.raffle_ticket_total = 0
         self.view = MastermindView(self)
         embed = self.build_embed()
         self.message = await self.ctx.send(embed=embed, view=self.view)
@@ -313,6 +332,14 @@ class MastermindSession:
         attempts_left = max(0, self.helper.config.max_attempts - self.attempts)
         if self.finished:
             attempts_left = 0
+        next_draw: datetime | None = None
+        economy_cog = self.bot.get_cog("Economy")
+        getter = getattr(economy_cog, "get_next_raffle_datetime", None) if economy_cog else None
+        if callable(getter):
+            try:
+                next_draw = getter()
+            except Exception:
+                next_draw = None
         return embeds.mastermind_board_embed(
             member=self.ctx.author,
             palette=self.helper.palette,
@@ -324,6 +351,10 @@ class MastermindSession:
             current_selection=selection,
             status_lines=list(self.status_lines),
             color=self.embed_color,
+            raffle_ticket_total=self.raffle_ticket_total,
+            next_raffle_draw=next_draw,
+            raffle_prize_label=TOMBOLA_PRIZE_LABEL,
+            raffle_ticket_emoji=TOMBOLA_TICKET_EMOJI,
         )
 
     async def process_guess(self, guess: Sequence[str]) -> None:
@@ -394,6 +425,35 @@ class MastermindSession:
             multiplier_label = f"x{reward_multiplier:.2f}".rstrip("0").rstrip(".")
             self.status_lines.append(
                 f"Multiplicateur de maîtrise appliqué : {multiplier_label}"
+            )
+        try:
+            new_total = await self.database.add_raffle_tickets(self.ctx.author.id)
+        except Exception:
+            self._logger.exception(
+                "Impossible d'attribuer un ticket de tombola",
+                extra={"user_id": self.ctx.author.id},
+            )
+        else:
+            self.raffle_ticket_total = new_total
+            self.status_lines.append(
+                f"{TOMBOLA_TICKET_EMOJI} Ticket de tombola obtenu ! Total : **{new_total}**"
+            )
+            self.status_lines.append(
+                f"Lot en jeu : {TOMBOLA_PRIZE_LABEL}"
+            )
+        next_draw: datetime | None = None
+        economy_cog = self.bot.get_cog("Economy")
+        getter = getattr(economy_cog, "get_next_raffle_datetime", None) if economy_cog else None
+        if callable(getter):
+            try:
+                next_draw = getter()
+            except Exception:
+                next_draw = None
+        if isinstance(next_draw, datetime):
+            if next_draw.tzinfo is None:
+                next_draw = next_draw.replace(tzinfo=timezone.utc)
+            self.status_lines.append(
+                f"Prochain tirage tombola : {discord.utils.format_dt(next_draw, style='R')}"
             )
         self._logger.debug(
             "Mastermind win",
@@ -1064,9 +1124,28 @@ class Economy(commands.Cog):
             1, MASTERMIND_CONFIG.cooldown, commands.BucketType.user
         )
         self._mastermind_cooldown_lock = asyncio.Lock()
+        self._raffle_task: asyncio.Task[None] | None = None
+        self._raffle_interval = TOMBOLA_DRAW_INTERVAL
+        self._next_raffle_draw: datetime | None = None
+        self._last_raffle_draw: datetime | None = None
 
     async def cog_load(self) -> None:
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+        now = datetime.now(timezone.utc)
+        try:
+            last_draw = await self.database.get_last_raffle_draw()
+        except Exception:
+            logger.exception("Impossible de récupérer la dernière tombola enregistrée")
+            last_draw = None
+        self._last_raffle_draw = last_draw
+        if last_draw is None:
+            self._next_raffle_draw = now + self._raffle_interval
+        else:
+            candidate = last_draw + self._raffle_interval
+            if candidate <= now:
+                candidate = now + self._raffle_interval
+            self._next_raffle_draw = candidate
+        self._raffle_task = asyncio.create_task(self._raffle_loop())
         logger.info("Cog Economy chargé")
 
     async def cog_unload(self) -> None:
@@ -1074,12 +1153,146 @@ class Economy(commands.Cog):
             self._cleanup_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._cleanup_task
+        if self._raffle_task:
+            self._raffle_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._raffle_task
 
     async def _cleanup_loop(self) -> None:
         while True:
             await asyncio.sleep(300)
             self.message_cooldown.cleanup()
 
+    def get_next_raffle_datetime(self) -> datetime | None:
+        return self._next_raffle_draw
+
+    async def _raffle_loop(self) -> None:
+        await self.bot.wait_until_ready()
+        while True:
+            if self.bot.is_closed():
+                return
+            next_draw = self._next_raffle_draw or (
+                datetime.now(timezone.utc) + self._raffle_interval
+            )
+            delay = (next_draw - datetime.now(timezone.utc)).total_seconds()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            else:
+                await asyncio.sleep(5)
+            if self.bot.is_closed():
+                return
+            await self._run_raffle_draw()
+
+    async def _run_raffle_draw(self) -> None:
+        now = datetime.now(timezone.utc)
+        self._last_raffle_draw = now
+        self._next_raffle_draw = now + self._raffle_interval
+        try:
+            result = await self.database.draw_raffle_winner()
+        except Exception:
+            logger.exception("Échec du tirage de la tombola Mastermind")
+            return
+        if result is None:
+            logger.debug("Tombola Mastermind : aucun ticket en jeu pour ce tirage.")
+            return
+        winner_id, total_tickets, winning_ticket = result
+        pet_id = await self.database.get_pet_id_by_name(HUGE_BULL_NAME)
+        if pet_id is None:
+            logger.warning("Pet %s introuvable pour la tombola", HUGE_BULL_NAME)
+        else:
+            try:
+                await self.database.add_user_pet(winner_id, pet_id, is_huge=True)
+            except DatabaseError:
+                logger.exception(
+                    "Impossible d'ajouter %s au gagnant de la tombola", HUGE_BULL_NAME
+                )
+        try:
+            best_non_huge = await self.database.get_best_non_huge_income(winner_id)
+        except DatabaseError:
+            logger.exception(
+                "Impossible de récupérer le meilleur revenu non-huge pour %s",
+                winner_id,
+            )
+            best_non_huge = 0
+        multiplier = get_huge_level_multiplier(HUGE_BULL_NAME, 1)
+        huge_income = max(HUGE_PET_MIN_INCOME, int(best_non_huge * multiplier))
+        try:
+            remaining = await self.database.get_user_raffle_tickets(winner_id)
+        except Exception:
+            logger.exception(
+                "Impossible de récupérer le stock de tickets après le tirage",
+                extra={"user_id": winner_id},
+            )
+            remaining = 0
+        user = self.bot.get_user(winner_id)
+        if user is None:
+            with contextlib.suppress(discord.HTTPException):
+                user = await self.bot.fetch_user(winner_id)
+        winner_display = user.mention if user else f"Utilisateur {winner_id}"
+        next_draw = self._next_raffle_draw
+        relative_draw = (
+            discord.utils.format_dt(next_draw, style="R")
+            if isinstance(next_draw, datetime)
+            else None
+        )
+        absolute_draw = (
+            discord.utils.format_dt(next_draw, style="f")
+            if isinstance(next_draw, datetime)
+            else None
+        )
+        lines = [
+            f"{TOMBOLA_TICKET_EMOJI} Un nouveau ticket gagnant a été tiré !",
+            f"🥳 Félicitations à {winner_display} !",
+            f"Ils remportent {TOMBOLA_PRIZE_LABEL} (jusqu'à {embeds.format_currency(huge_income)} /h).",
+            f"Tickets en lice : **{total_tickets}** — Ticket gagnant #{winning_ticket}",
+            f"Tickets restants pour le gagnant : **{remaining}**",
+            "Plus tu cumules de tickets Mastermind, plus tes chances explosent !",
+        ]
+        if relative_draw and absolute_draw:
+            lines.append(f"Prochain tirage : {relative_draw} ({absolute_draw})")
+        embed = embeds.success_embed("\n".join(lines), title="🎟️ Tombola Mastermind")
+        await self._broadcast_raffle_result(embed)
+        if user is not None:
+            personal_lines = [
+                "🎉 Tu viens de remporter la tombola Mastermind !",
+                f"Le lot **{TOMBOLA_PRIZE_LABEL}** a été ajouté à ton inventaire.",
+                f"Reviens jouer au Mastermind pour cumuler encore plus de tickets !",
+            ]
+            with contextlib.suppress(discord.HTTPException, discord.Forbidden):
+                await user.send(
+                    embed=embeds.success_embed(
+                        "\n".join(personal_lines), title="🎟️ Tombola Mastermind"
+                    )
+                )
+        logger.info(
+            "tombola_winner",
+            extra={
+                "user_id": winner_id,
+                "total_tickets": total_tickets,
+                "winning_ticket": winning_ticket,
+            },
+        )
+
+    async def _broadcast_raffle_result(self, embed: discord.Embed) -> None:
+        for guild in self.bot.guilds:
+            me = guild.me
+            if me is None:
+                continue
+            channel: discord.abc.Messageable | None = guild.system_channel
+            if (
+                channel is None
+                or not isinstance(channel, discord.TextChannel)
+                or not channel.permissions_for(me).send_messages
+            ):
+                channel = None
+                for candidate in guild.text_channels:
+                    if candidate.permissions_for(me).send_messages:
+                        channel = candidate
+                        break
+            if channel is None:
+                continue
+            with contextlib.suppress(discord.HTTPException, discord.Forbidden):
+                await channel.send(embed=embed)
     def _build_mastermind_helper(
         self, perks: MastermindMasteryPerks
     ) -> MastermindHelper:
