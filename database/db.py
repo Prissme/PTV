@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import math
+import random
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -422,6 +423,29 @@ class Database:
                 )
                 """
             )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS raffle_tickets (
+                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                    quantity BIGINT NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS raffle_draws (
+                    id SERIAL PRIMARY KEY,
+                    winner_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
+                    drawn_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    total_tickets BIGINT NOT NULL CHECK (total_tickets >= 0),
+                    winning_ticket BIGINT NOT NULL CHECK (winning_ticket >= 1)
+                )
+                """
+            )
+            await connection.execute(
+                "ALTER TABLE raffle_tickets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+            )
 
     # ------------------------------------------------------------------
     # Utilitaires généraux
@@ -443,6 +467,109 @@ class Database:
             """,
             user_id,
         )
+
+    async def add_raffle_tickets(self, user_id: int, *, amount: int = 1) -> int:
+        if amount <= 0:
+            raise ValueError("La quantité de tickets doit être positive")
+
+        await self.ensure_user(user_id)
+        row = await self.pool.fetchrow(
+            """
+            INSERT INTO raffle_tickets (user_id, quantity, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+                quantity = raffle_tickets.quantity + EXCLUDED.quantity,
+                updated_at = NOW()
+            RETURNING quantity
+            """,
+            user_id,
+            amount,
+        )
+        if row is None:
+            raise DatabaseError("Impossible de mettre à jour les tickets de tombola")
+        return int(row.get("quantity", 0) or 0)
+
+    async def get_user_raffle_tickets(self, user_id: int) -> int:
+        await self.ensure_user(user_id)
+        row = await self.pool.fetchrow(
+            "SELECT quantity FROM raffle_tickets WHERE user_id = $1",
+            user_id,
+        )
+        if row is None:
+            return 0
+        quantity = row.get("quantity")
+        if quantity is None:
+            return 0
+        return max(0, int(quantity))
+
+    async def draw_raffle_winner(self) -> tuple[int, int, int] | None:
+        async with self.transaction() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT user_id, quantity
+                FROM raffle_tickets
+                WHERE quantity > 0
+                ORDER BY user_id
+                FOR UPDATE
+                """
+            )
+            if not rows:
+                return None
+            totals: list[tuple[int, int]] = []
+            total_tickets = 0
+            for row in rows:
+                quantity = int(row.get("quantity", 0) or 0)
+                if quantity <= 0:
+                    continue
+                user_id = int(row.get("user_id"))
+                totals.append((user_id, quantity))
+                total_tickets += quantity
+            if total_tickets <= 0 or not totals:
+                return None
+            winning_ticket = random.randint(1, total_tickets)
+            cumulative = 0
+            winner_id = 0
+            for user_id, quantity in totals:
+                cumulative += quantity
+                if winning_ticket <= cumulative:
+                    winner_id = user_id
+                    break
+            if winner_id == 0:
+                return None
+            await connection.execute(
+                """
+                UPDATE raffle_tickets
+                SET quantity = GREATEST(quantity - 1, 0), updated_at = NOW()
+                WHERE user_id = $1
+                """,
+                winner_id,
+            )
+            await connection.execute(
+                "DELETE FROM raffle_tickets WHERE user_id = $1 AND quantity <= 0",
+                winner_id,
+            )
+            await connection.execute(
+                """
+                INSERT INTO raffle_draws (winner_id, total_tickets, winning_ticket)
+                VALUES ($1, $2, $3)
+                """,
+                winner_id,
+                total_tickets,
+                winning_ticket,
+            )
+            return winner_id, total_tickets, winning_ticket
+
+    async def get_last_raffle_draw(self) -> datetime | None:
+        row = await self.pool.fetchrow(
+            "SELECT drawn_at FROM raffle_draws ORDER BY drawn_at DESC LIMIT 1"
+        )
+        if row is None:
+            return None
+        drawn_at = row.get("drawn_at")
+        if isinstance(drawn_at, datetime):
+            return drawn_at
+        return None
 
     async def should_send_help_dm(self, user_id: int) -> bool:
         await self.ensure_user(user_id)

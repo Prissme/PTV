@@ -113,21 +113,21 @@ class GradeDefinition:
 BASE_PET_SLOTS: Final[int] = 4
 
 GRADE_DEFINITIONS: Tuple[GradeDefinition, ...] = (
-    GradeDefinition("Novice", 2, 3, 1, 1, 250),
-    GradeDefinition("Apprenti", 3, 5, 1, 1, 400),
-    GradeDefinition("Disciple", 4, 8, 2, 1, 550),
-    GradeDefinition("Explorateur", 6, 12, 3, 2, 700),
-    GradeDefinition("Aventurier", 8, 16, 4, 2, 900),
-    GradeDefinition("Expert", 10, 20, 5, 3, 1_100),
-    GradeDefinition("Champion", 13, 25, 6, 3, 1_400),
-    GradeDefinition("Maître", 16, 30, 7, 4, 1_700),
-    GradeDefinition("Prodige", 20, 36, 8, 4, 2_100),
-    GradeDefinition("Élite", 24, 43, 9, 5, 2_600),
-    GradeDefinition("Légende", 29, 51, 10, 5, 3_200),
-    GradeDefinition("Mythique", 35, 60, 11, 6, 3_900),
-    GradeDefinition("Cosmique", 42, 70, 13, 7, 4_700),
-    GradeDefinition("Divin", 50, 81, 15, 8, 5_600),
-    GradeDefinition("Parangon", 59, 93, 17, 9, 6_600),
+    GradeDefinition("Novice", 1, 3, 1, 1, 250),
+    GradeDefinition("Apprenti", 1, 5, 1, 1, 400),
+    GradeDefinition("Disciple", 1, 8, 2, 1, 550),
+    GradeDefinition("Explorateur", 1, 12, 3, 2, 700),
+    GradeDefinition("Aventurier", 2, 16, 4, 2, 900),
+    GradeDefinition("Expert", 2, 20, 5, 3, 1_100),
+    GradeDefinition("Champion", 2, 25, 6, 3, 1_400),
+    GradeDefinition("Maître", 3, 30, 7, 4, 1_700),
+    GradeDefinition("Prodige", 3, 36, 8, 4, 2_100),
+    GradeDefinition("Élite", 4, 43, 9, 5, 2_600),
+    GradeDefinition("Légende", 5, 51, 10, 5, 3_200),
+    GradeDefinition("Mythique", 6, 60, 11, 6, 3_900),
+    GradeDefinition("Cosmique", 7, 70, 13, 7, 4_700),
+    GradeDefinition("Divin", 8, 81, 15, 8, 5_600),
+    GradeDefinition("Parangon", 9, 93, 17, 9, 6_600),
 )
 
 GRADE_ROLE_IDS: Tuple[int, ...] = (
@@ -332,12 +332,14 @@ HUGE_PET_LEVEL_BASE_XP: Final[int] = 120
 HUGE_PET_LEVEL_EXPONENT: Final[float] = 1.5
 HUGE_GALE_NAME: Final[str] = "Huge Gale"
 HUGE_GRIFF_NAME: Final[str] = "Huge Griff"
+HUGE_BULL_NAME: Final[str] = "Huge Bull"
 TITANIC_GRIFF_NAME: Final[str] = "Titanic Griff"
 HUGE_KENJI_ONI_NAME: Final[str] = "Huge Kenji Oni"
 HUGE_GRIFF_MULTIPLIER: Final[int] = 4
 TITANIC_GRIFF_MULTIPLIER: Final[int] = 100
 HUGE_GALE_MULTIPLIER: Final[int] = 80
 HUGE_KENJI_ONI_MULTIPLIER: Final[int] = 9
+HUGE_BULL_MULTIPLIER: Final[int] = 12
 HUGE_SHADE_NAME: Final[str] = "Huge Shade"
 HUGE_SHADE_MULTIPLIER: Final[int] = 6
 HUGE_MORTIS_NAME: Final[str] = "Huge Mortis"
@@ -355,10 +357,12 @@ HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, int]] = {
     TITANIC_GRIFF_NAME: TITANIC_GRIFF_MULTIPLIER,
     HUGE_SURGE_NAME: HUGE_SURGE_MULTIPLIER,
     TITANIC_MEEPLE_NAME: TITANIC_MEEPLE_MULTIPLIER,
+    HUGE_BULL_NAME: HUGE_BULL_MULTIPLIER,
 }
 
 HUGE_PET_MIN_LEVEL_MULTIPLIERS: Final[Dict[str, float]] = {
     TITANIC_GRIFF_NAME: 12.0,
+    HUGE_BULL_NAME: 8.0,
 }
 
 
@@ -428,6 +432,7 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     TITANIC_GRIFF_NAME: "Jackpot quasi impossible du casino, 4 000× plus rare que Huge Griff.",
     HUGE_GALE_NAME: "Récompense finale du mode Millionaire Race (étape 20).",
     HUGE_KENJI_ONI_NAME: "Récompense rarissime du Mastermind pour les esprits les plus vifs.",
+    HUGE_BULL_NAME: "Tirée toutes les 2h via la tombola Mastermind (tickets garantis par victoire).",
     HUGE_SHADE_NAME: "Extrêmement rare dans l'Œuf Maudit (0.5%) - Zone Manoir Hanté.",
     HUGE_MORTIS_NAME: "Récompense exclusive pour les membres VIP du serveur.",
     HUGE_SURGE_NAME: "Apparaît dans l'Œuf métallique pour les stratèges les plus assidus.",
@@ -611,6 +616,14 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
         drop_rate=0.0,
         is_huge=True,
     ),
+    PetDefinition(
+        name=HUGE_BULL_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1433617222357487748.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
 )
 
 _ROBOT_EGG_PETS: Tuple[PetDefinition, ...] = (
@@ -778,6 +791,7 @@ PET_EMOJIS: Final[dict[str, str]] = {
     HUGE_MORTIS_NAME: os.getenv("PET_EMOJI_HUGE_MORTIS", "<:HugeMortis:1431435110590189638>"),
     HUGE_SURGE_NAME: os.getenv("PET_EMOJI_HUGE_SURGE", "<:HugeSurge:1433379423133892608>"),
     TITANIC_MEEPLE_NAME: os.getenv("PET_EMOJI_TITANIC_MEEPLE", "<:TITANICMEEPLE:1433380006557646878>"),
+    HUGE_BULL_NAME: os.getenv("PET_EMOJI_HUGE_BULL", "<:HugeBull:1433617222357487748>"),
     "Darryl": os.getenv("PET_EMOJI_DARRYL", "<:Darryl:1433376220980187177>"),
     "Rico": os.getenv("PET_EMOJI_RICO", "<:Rico:1433376959127228436>"),
     "Nani": os.getenv("PET_EMOJI_NANI", "<:Nani:1433377774122303582>"),

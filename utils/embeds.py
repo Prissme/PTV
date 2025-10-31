@@ -1,7 +1,7 @@
 """Fonctions utilitaires pour créer des embeds cohérents."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Collection, Iterable, Mapping, Optional, Sequence
 
 import discord
@@ -205,10 +205,14 @@ def mastermind_board_embed(
     current_selection: str,
     status_lines: Sequence[str] | None = None,
     color: int = Colors.INFO,
+    raffle_ticket_total: int | None = None,
+    next_raffle_draw: datetime | None = None,
+    raffle_prize_label: str | None = None,
+    raffle_ticket_emoji: str = "🎟️",
 ) -> discord.Embed:
     palette_line = ", ".join(f"{emoji} {name.capitalize()}" for name, emoji in palette)
     description_lines = [
-        f"Devine la combinaison de **{code_length}** couleurs pour décrocher des PB.",
+        f"Devine la combinaison de **{code_length}** couleurs pour décrocher des PB bonus et des tickets de tombola.",
         f"Palette : {palette_line}",
         "Les couleurs peuvent se répéter.",
         f"Tu disposes de **{max_attempts}** tentatives et de {timeout}s par interaction.",
@@ -238,6 +242,29 @@ def mastermind_board_embed(
 
     if status_lines:
         embed.add_field(name="Résultat", value="\n".join(status_lines), inline=False)
+
+    tombola_lines = [
+        "Chaque victoire t'offre **1 ticket de tombola**.",
+        "Un tirage automatique toutes les 2h désigne un gagnant.",
+    ]
+    if raffle_prize_label:
+        tombola_lines.append(
+            f"Plus tu cumules de tickets, plus tes chances d'emporter {raffle_prize_label} explosent !"
+        )
+    if raffle_ticket_total is not None:
+        tombola_lines.append(f"Tes tickets : **{max(0, int(raffle_ticket_total))}**")
+    if next_raffle_draw is not None:
+        target = next_raffle_draw
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=timezone.utc)
+        relative = discord.utils.format_dt(target, style="R")
+        absolute = discord.utils.format_dt(target, style="f")
+        tombola_lines.append(f"Prochain tirage : {relative} ({absolute})")
+    embed.add_field(
+        name=f"{raffle_ticket_emoji} Tombola Mastermind",
+        value="\n".join(tombola_lines),
+        inline=False,
+    )
 
     return _finalize_embed(embed)
 
