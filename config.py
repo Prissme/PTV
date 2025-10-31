@@ -113,7 +113,7 @@ class GradeDefinition:
 BASE_PET_SLOTS: Final[int] = 4
 
 GRADE_DEFINITIONS: Tuple[GradeDefinition, ...] = (
-    GradeDefinition("Novice", 1, 3, 1, 1, 250),
+    GradeDefinition("Novice", 0, 3, 1, 1, 250),
     GradeDefinition("Apprenti", 1, 5, 1, 1, 400),
     GradeDefinition("Disciple", 1, 8, 2, 1, 550),
     GradeDefinition("Explorateur", 1, 12, 3, 2, 700),
@@ -261,6 +261,19 @@ POTION_DEFINITION_MAP: Dict[str, PotionDefinition] = {
     potion.slug: potion for potion in POTION_DEFINITIONS
 }
 
+POTION_SELL_VALUES: Final[Dict[str, int]] = {
+    "luck_i": 600,
+    "luck_ii": 1_200,
+    "luck_iii": 2_500,
+    "fortune_i": 1_000,
+    "fortune_ii": 2_200,
+    "fortune_iii": 3_800,
+    "fortune_iv": 5_500,
+    "fortune_v": 7_500,
+}
+
+RAFFLE_TICKET_SELL_VALUE: Final[int] = 500
+
 
 # ---------------------------------------------------------------------------
 # Animaux (Pets)
@@ -339,7 +352,7 @@ HUGE_GRIFF_MULTIPLIER: Final[int] = 4
 TITANIC_GRIFF_MULTIPLIER: Final[int] = 100
 HUGE_GALE_MULTIPLIER: Final[int] = 80
 HUGE_KENJI_ONI_MULTIPLIER: Final[int] = 9
-HUGE_BULL_MULTIPLIER: Final[int] = 12
+HUGE_BULL_MULTIPLIER: Final[int] = 6
 HUGE_SHADE_NAME: Final[str] = "Huge Shade"
 HUGE_SHADE_MULTIPLIER: Final[int] = 6
 HUGE_MORTIS_NAME: Final[str] = "Huge Mortis"
@@ -362,7 +375,7 @@ HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, int]] = {
 
 HUGE_PET_MIN_LEVEL_MULTIPLIERS: Final[Dict[str, float]] = {
     TITANIC_GRIFF_NAME: 12.0,
-    HUGE_BULL_NAME: 8.0,
+    HUGE_BULL_NAME: 3.0,
 }
 
 

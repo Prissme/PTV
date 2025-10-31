@@ -31,6 +31,7 @@ from config import (
     PET_EMOJIS,
     POTION_DEFINITION_MAP,
     POTION_DEFINITIONS,
+    RAFFLE_TICKET_SELL_VALUE,
     PREFIX,
     TITANIC_GRIFF_NAME,
     VIP_ROLE_ID,
@@ -1623,6 +1624,81 @@ class Economy(commands.Cog):
         )
         embed = embeds.daily_embed(ctx.author, amount=reward)
         await ctx.send(embed=embed)
+
+    @commands.command(
+        name="selltickets",
+        aliases=("sellticket", "vendretickets", "vendreticket"),
+    )
+    async def sell_raffle_tickets(self, ctx: commands.Context, amount: int = 1) -> None:
+        """Permet de revendre des tickets de tombola contre des PB."""
+
+        try:
+            amount = int(amount)
+        except (TypeError, ValueError):
+            amount = 0
+
+        if amount <= 0:
+            await ctx.send(
+                embed=embeds.error_embed("Indique un nombre positif de tickets à vendre."),
+            )
+            return
+
+        total_value = RAFFLE_TICKET_SELL_VALUE * amount
+        await self.database.ensure_user(ctx.author.id)
+
+        async with self.database.transaction() as connection:
+            remaining = await self.database.remove_raffle_tickets(
+                ctx.author.id,
+                amount=amount,
+                connection=connection,
+            )
+            if remaining is None:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Tu n'as pas assez de tickets de tombola pour cette vente.",
+                    )
+                )
+                return
+
+            row = await connection.fetchrow(
+                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                ctx.author.id,
+            )
+            if row is None:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Impossible d'accéder à ton solde. Réessaie plus tard.",
+                    )
+                )
+                return
+
+            before_balance = int(row.get("balance") or 0)
+            after_balance = before_balance + total_value
+
+            await connection.execute(
+                "UPDATE users SET balance = $2 WHERE user_id = $1",
+                ctx.author.id,
+                after_balance,
+            )
+            await self.database.record_transaction(
+                user_id=ctx.author.id,
+                transaction_type="raffle_ticket_sale",
+                amount=total_value,
+                balance_before=before_balance,
+                balance_after=after_balance,
+                description=f"Vente de {amount} ticket(s) de tombola",
+                connection=connection,
+            )
+
+        lines = [
+            f"Tickets vendus : **{amount}**",
+            f"Gain : {embeds.format_currency(total_value)}",
+            f"Solde actuel : {embeds.format_currency(after_balance)}",
+            f"Tickets restants : **{max(0, remaining)}**",
+        ]
+        await ctx.send(
+            embed=embeds.success_embed("\n".join(lines), title="Tickets revendus"),
+        )
 
     @staticmethod
     def _validate_give_request(author: discord.Member, target: discord.Member, amount: int) -> str | None:
