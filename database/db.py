@@ -503,6 +503,51 @@ class Database:
             return 0
         return max(0, int(quantity))
 
+    async def remove_raffle_tickets(
+        self,
+        user_id: int,
+        *,
+        amount: int,
+        connection: asyncpg.Connection | None = None,
+    ) -> int | None:
+        if amount <= 0:
+            raise ValueError("La quantité à retirer doit être positive")
+
+        if connection is None:
+            await self.ensure_user(user_id)
+            async with self.transaction() as txn_connection:
+                return await self.remove_raffle_tickets(
+                    user_id,
+                    amount=amount,
+                    connection=txn_connection,
+                )
+
+        row = await connection.fetchrow(
+            "SELECT quantity FROM raffle_tickets WHERE user_id = $1 FOR UPDATE",
+            user_id,
+        )
+        if row is None:
+            return None
+
+        current_quantity = int(row.get("quantity") or 0)
+        if current_quantity < amount:
+            return None
+
+        new_quantity = current_quantity - amount
+        if new_quantity > 0:
+            await connection.execute(
+                "UPDATE raffle_tickets SET quantity = $2, updated_at = NOW() WHERE user_id = $1",
+                user_id,
+                new_quantity,
+            )
+        else:
+            await connection.execute(
+                "DELETE FROM raffle_tickets WHERE user_id = $1",
+                user_id,
+            )
+
+        return new_quantity
+
     async def draw_raffle_winner(self) -> tuple[int, int, int] | None:
         async with self.transaction() as connection:
             rows = await connection.fetch(

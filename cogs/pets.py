@@ -2162,7 +2162,8 @@ class Pets(commands.Cog):
         if len(unique_ids) < 10:
             await ctx.send(
                 embed=embeds.error_embed(
-                    "Tu dois fournir au moins **10 identifiants** de pets libres (utilise `e!pets` pour les trouver)."
+                    "La machine a besoin de **10 pets différents**."
+                    " Utilise `e!pets` puis repère la colonne `ID` pour noter ceux qui sont libres.",
                 )
             )
             return
@@ -2176,6 +2177,7 @@ class Pets(commands.Cog):
             await ctx.send(
                 embed=embeds.error_embed(
                     "Atteins le niveau 5 de Maîtrise des pets pour débloquer la machine de fusion."
+                    f" (Niveau actuel : {pet_mastery_level}).",
                 )
             )
             return
