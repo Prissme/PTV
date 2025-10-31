@@ -407,6 +407,13 @@ class MastermindSession:
                 "reward_multiplier": reward_multiplier,
             },
         )
+        self.bot.dispatch(
+            "grade_quest_progress",
+            self.ctx.author,
+            "mastermind",
+            1,
+            self.ctx.channel,
+        )
         await self._maybe_award_mastermind_huge()
         await self._award_mastery_xp(MASTERMIND_VICTORY_XP, "victory")
 

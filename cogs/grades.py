@@ -40,14 +40,6 @@ class GradeSystem(commands.Cog):
     # Listeners de progression
     # ------------------------------------------------------------------
     @commands.Cog.listener()
-    async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot or not isinstance(message.author, discord.Member):
-            return
-        if message.guild is None or not message.content.strip():
-            return
-        await self._apply_progress(message.author, "message", 1, message.channel)
-
-    @commands.Cog.listener()
     async def on_grade_quest_progress(
         self,
         member: discord.abc.User,
@@ -106,18 +98,21 @@ class GradeSystem(commands.Cog):
 
         definition = GRADE_DEFINITIONS[grade_level]
         progress_kwargs = {
-            "message_cap": definition.message_goal,
+            "mastermind_cap": definition.mastermind_goal,
             "egg_cap": definition.egg_goal,
-            "gold_cap": definition.gold_goal,
+            "sale_cap": definition.sale_goal,
+            "potion_cap": definition.potion_goal,
         }
 
         quest_type = quest_type.lower()
-        if quest_type in {"message", "messages"}:
-            progress_kwargs["message_delta"] = amount
+        if quest_type in {"mastermind", "mm"}:
+            progress_kwargs["mastermind_delta"] = amount
         elif quest_type in {"egg", "eggs", "oeuf", "oeufs"}:
             progress_kwargs["egg_delta"] = amount
-        elif quest_type in {"gold", "golden", "fusion", "fusions", "goldify"}:
-            progress_kwargs["gold_delta"] = amount
+        elif quest_type in {"sale", "sell", "vente", "vendre"}:
+            progress_kwargs["sale_delta"] = amount
+        elif quest_type in {"potion", "potions", "boire", "drink"}:
+            progress_kwargs["potion_delta"] = amount
         else:
             logger.warning("Type de quête inconnu: %s", quest_type)
             return
@@ -136,10 +131,10 @@ class GradeSystem(commands.Cog):
         try:
             completed, new_row = await self.database.complete_grade_if_ready(
                 member.id,
-                message_goal=definition.message_goal,
-                invite_goal=definition.invite_goal,
+                mastermind_goal=definition.mastermind_goal,
                 egg_goal=definition.egg_goal,
-                gold_goal=definition.gold_goal,
+                sale_goal=definition.sale_goal,
+                potion_goal=definition.potion_goal,
                 max_grade=self.total_grades,
             )
         except Exception:
@@ -158,9 +153,10 @@ class GradeSystem(commands.Cog):
     @staticmethod
     def _is_grade_ready(row: Mapping[str, object], definition: GradeDefinition) -> bool:
         return (
-            int(row["message_progress"]) >= definition.message_goal
+            int(row["mastermind_progress"]) >= definition.mastermind_goal
             and int(row["egg_progress"]) >= definition.egg_goal
-            and int(row["gold_progress"]) >= definition.gold_goal
+            and int(row["sale_progress"]) >= definition.sale_goal
+            and int(row["potion_progress"]) >= definition.potion_goal
         )
 
     async def _handle_grade_completion(
@@ -267,9 +263,10 @@ class GradeSystem(commands.Cog):
             current_grade=current_grade,
             next_grade=next_grade,
             progress={
-                "messages": int(row["message_progress"]),
+                "mastermind": int(row["mastermind_progress"]),
                 "eggs": int(row["egg_progress"]),
-                "gold": int(row["gold_progress"]),
+                "sales": int(row["sale_progress"]),
+                "potions": int(row["potion_progress"]),
             },
             pet_slots=BASE_PET_SLOTS + grade_level,
         )

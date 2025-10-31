@@ -16,6 +16,7 @@ from config import (
     PREFIX,
     GradeDefinition,
     PetDefinition,
+    PetEggDefinition,
     RAINBOW_PET_MULTIPLIER,
 )
 
@@ -87,6 +88,7 @@ __all__ = [
     "pet_index_embed",
     "pet_equip_embed",
     "pet_claim_embed",
+    "egg_index_embed",
     "clan_overview_embed",
 ]
 
@@ -361,12 +363,25 @@ def grade_profile_embed(
             f"Prochaine récompense : **{format_currency(next_grade.reward_pb)}** + 1 slot"
         )
         quest_lines = [
-            _quest_progress_line("Envoyer des messages", progress.get("messages", 0), next_grade.message_goal),
-            _quest_progress_line("Ouvrir des œufs", progress.get("eggs", 0), next_grade.egg_goal),
             _quest_progress_line(
-                "Fusionner des pets en or",
-                progress.get("gold", 0),
-                next_grade.gold_goal,
+                "Gagner des parties de Mastermind",
+                progress.get("mastermind", 0),
+                next_grade.mastermind_goal,
+            ),
+            _quest_progress_line(
+                "Ouvrir des œufs",
+                progress.get("eggs", 0),
+                next_grade.egg_goal,
+            ),
+            _quest_progress_line(
+                "Vendre des pets",
+                progress.get("sales", 0),
+                next_grade.sale_goal,
+            ),
+            _quest_progress_line(
+                "Boire des potions",
+                progress.get("potions", 0),
+                next_grade.potion_goal,
             ),
         ]
 
@@ -398,11 +413,10 @@ def grade_completed_embed(
 
 
 def pet_animation_embed(
-    *, title: str, description: str, image_url: str | None = None
+    *, title: str, description: str, emoji: str | None = None
 ) -> discord.Embed:
-    embed = _base_embed(title, description, color=Colors.INFO)
-    if image_url:
-        embed.set_image(url=image_url)
+    prefix = f"{emoji} " if emoji else ""
+    embed = _base_embed(f"{prefix}{title}".strip(), description, color=Colors.INFO)
     return embed
 
 
@@ -634,6 +648,53 @@ def pet_index_embed(
             "Les pets dorés comptent également pour l'index. Ouvre un œuf avec e!openbox ou fusionne avec e!goldify !"
         )
     )
+    return _finalize_embed(embed)
+
+
+def egg_index_embed(*, eggs: Sequence[PetEggDefinition]) -> discord.Embed:
+    embed = _base_embed(
+        "Index des œufs",
+        "Probabilités de drop connues pour chaque œuf.",
+        color=Colors.INFO,
+    )
+
+    for egg in eggs:
+        if not egg.pets:
+            continue
+        lines: list[str] = []
+        for pet in egg.pets:
+            name = pet.name
+            if not name:
+                continue
+            emoji = _pet_emoji(name)
+            rarity = pet.rarity
+            if pet.is_huge:
+                chance_text = "???"
+            else:
+                rate = max(0.0, float(getattr(pet, "drop_rate", 0.0)))
+                if rate <= 0:
+                    chance_text = "???"
+                else:
+                    chance_value = rate * 100
+                    formatted = f"{chance_value:.2f}".rstrip("0").rstrip(".")
+                    chance_text = f"{formatted}%"
+            emoji_prefix = f"{emoji} " if emoji else ""
+            marker = " ✨" if pet.is_huge else ""
+            lines.append(
+                f"{emoji_prefix}**{name}** ({rarity}) — {chance_text}{marker}"
+            )
+
+        if not lines:
+            continue
+
+        chunks = list(_chunk_field_values(lines, limit=900))
+        for index, value in enumerate(chunks, start=1):
+            field_name = f"{egg.name} — {format_currency(egg.price)}"
+            if len(chunks) > 1:
+                field_name = f"{field_name} ({index})"
+            embed.add_field(name=field_name, value=value, inline=False)
+
+    embed.set_footer(text="Les chances indiquées sont susceptibles de changer avec les mises à jour.")
     return _finalize_embed(embed)
 
 

@@ -167,6 +167,7 @@ class Potions(commands.Cog):
 
         embed = embeds.success_embed("\n".join(lines), title="Potion activée")
         await ctx.send(embed=embed)
+        self.bot.dispatch("grade_quest_progress", ctx.author, "potion", 1, ctx.channel)
 
     @commands.command(name="potiontime")
     async def potion_time(self, ctx: commands.Context) -> None:
