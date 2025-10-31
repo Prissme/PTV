@@ -262,6 +262,16 @@ class Database:
 
             await connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS user_pet_preferences (
+                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                    auto_goldify_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    auto_rainbowify_enabled BOOLEAN NOT NULL DEFAULT TRUE
+                )
+                """
+            )
+
+            await connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS transactions (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
@@ -1904,6 +1914,66 @@ class Database:
                     raise DatabaseError(f"Échec de l'insertion du pet {name}")
                 pet_ids[str(name)] = int(row["pet_id"])
         return pet_ids
+
+    async def get_pet_auto_settings(self, user_id: int) -> Dict[str, bool]:
+        await self.ensure_user(user_id)
+        row = await self.pool.fetchrow(
+            """
+            SELECT auto_goldify_enabled, auto_rainbowify_enabled
+            FROM user_pet_preferences
+            WHERE user_id = $1
+            """,
+            user_id,
+        )
+        if row is None:
+            row = await self.pool.fetchrow(
+                """
+                INSERT INTO user_pet_preferences (user_id)
+                VALUES ($1)
+                RETURNING auto_goldify_enabled, auto_rainbowify_enabled
+                """,
+                user_id,
+            )
+        if row is None:
+            raise DatabaseError("Impossible de récupérer les préférences de pets")
+        return {
+            "auto_goldify": bool(row["auto_goldify_enabled"]),
+            "auto_rainbowify": bool(row["auto_rainbowify_enabled"]),
+        }
+
+    async def set_pet_auto_settings(
+        self,
+        user_id: int,
+        *,
+        auto_goldify: bool | None = None,
+        auto_rainbowify: bool | None = None,
+    ) -> Dict[str, bool]:
+        if auto_goldify is None and auto_rainbowify is None:
+            return await self.get_pet_auto_settings(user_id)
+        await self.ensure_user(user_id)
+        row = await self.pool.fetchrow(
+            """
+            INSERT INTO user_pet_preferences (
+                user_id,
+                auto_goldify_enabled,
+                auto_rainbowify_enabled
+            )
+            VALUES ($1, COALESCE($2, TRUE), COALESCE($3, TRUE))
+            ON CONFLICT (user_id) DO UPDATE
+            SET auto_goldify_enabled = COALESCE($2, user_pet_preferences.auto_goldify_enabled),
+                auto_rainbowify_enabled = COALESCE($3, user_pet_preferences.auto_rainbowify_enabled)
+            RETURNING auto_goldify_enabled, auto_rainbowify_enabled
+            """,
+            user_id,
+            auto_goldify,
+            auto_rainbowify,
+        )
+        if row is None:
+            raise DatabaseError("Impossible de mettre à jour les préférences de pets")
+        return {
+            "auto_goldify": bool(row["auto_goldify_enabled"]),
+            "auto_rainbowify": bool(row["auto_rainbowify_enabled"]),
+        }
 
     async def get_all_pets(self) -> Sequence[asyncpg.Record]:
         return await self.pool.fetch(
