@@ -151,20 +151,22 @@ class Database:
                 CREATE TABLE IF NOT EXISTS user_grades (
                     user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
                     grade_level INTEGER NOT NULL DEFAULT 0 CHECK (grade_level >= 0),
-                    message_progress INTEGER NOT NULL DEFAULT 0 CHECK (message_progress >= 0),
-                    invite_progress INTEGER NOT NULL DEFAULT 0 CHECK (invite_progress >= 0),
+                    mastermind_progress INTEGER NOT NULL DEFAULT 0 CHECK (mastermind_progress >= 0),
                     egg_progress INTEGER NOT NULL DEFAULT 0 CHECK (egg_progress >= 0),
-                    gold_progress INTEGER NOT NULL DEFAULT 0 CHECK (gold_progress >= 0),
+                    sale_progress INTEGER NOT NULL DEFAULT 0 CHECK (sale_progress >= 0),
+                    potion_progress INTEGER NOT NULL DEFAULT 0 CHECK (potion_progress >= 0),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
             )
             await connection.execute(
-                """
-                ALTER TABLE user_grades
-                ADD COLUMN IF NOT EXISTS gold_progress INTEGER NOT NULL DEFAULT 0
-                    CHECK (gold_progress >= 0)
-                """
+                "ALTER TABLE user_grades ADD COLUMN IF NOT EXISTS mastermind_progress INTEGER NOT NULL DEFAULT 0 CHECK (mastermind_progress >= 0)"
+            )
+            await connection.execute(
+                "ALTER TABLE user_grades ADD COLUMN IF NOT EXISTS sale_progress INTEGER NOT NULL DEFAULT 0 CHECK (sale_progress >= 0)"
+            )
+            await connection.execute(
+                "ALTER TABLE user_grades ADD COLUMN IF NOT EXISTS potion_progress INTEGER NOT NULL DEFAULT 0 CHECK (potion_progress >= 0)"
             )
             await connection.execute(
                 """
@@ -1274,7 +1276,13 @@ class Database:
         await self.ensure_user(user_id)
         row = await self.pool.fetchrow(
             """
-            SELECT grade_level, message_progress, invite_progress, egg_progress, gold_progress, updated_at
+            SELECT
+                grade_level,
+                mastermind_progress,
+                egg_progress,
+                sale_progress,
+                potion_progress,
+                updated_at
             FROM user_grades
             WHERE user_id = $1
             """,
@@ -1288,20 +1296,20 @@ class Database:
         self,
         user_id: int,
         *,
-        message_delta: int = 0,
-        invite_delta: int = 0,
+        mastermind_delta: int = 0,
         egg_delta: int = 0,
-        gold_delta: int = 0,
-        message_cap: int | None = None,
-        invite_cap: int | None = None,
+        sale_delta: int = 0,
+        potion_delta: int = 0,
+        mastermind_cap: int | None = None,
         egg_cap: int | None = None,
-        gold_cap: int | None = None,
+        sale_cap: int | None = None,
+        potion_cap: int | None = None,
     ) -> asyncpg.Record:
         if (
-            message_delta <= 0
-            and invite_delta <= 0
+            mastermind_delta <= 0
             and egg_delta <= 0
-            and gold_delta <= 0
+            and sale_delta <= 0
+            and potion_delta <= 0
         ):
             return await self.get_user_grade(user_id)
 
@@ -1309,7 +1317,7 @@ class Database:
         async with self.transaction() as connection:
             row = await connection.fetchrow(
                 """
-                SELECT grade_level, message_progress, invite_progress, egg_progress, gold_progress
+                SELECT grade_level, mastermind_progress, egg_progress, sale_progress, potion_progress
                 FROM user_grades
                 WHERE user_id = $1
                 FOR UPDATE
@@ -1319,40 +1327,40 @@ class Database:
             if row is None:
                 raise DatabaseError("Utilisateur introuvable lors de la mise à jour des grades")
 
-            current_messages = int(row["message_progress"])
-            current_invites = int(row["invite_progress"])
+            current_mastermind = int(row["mastermind_progress"])
             current_eggs = int(row["egg_progress"])
-            current_gold = int(row["gold_progress"])
+            current_sales = int(row["sale_progress"])
+            current_potions = int(row["potion_progress"])
 
-            new_messages = max(0, current_messages + max(message_delta, 0))
-            new_invites = max(0, current_invites + max(invite_delta, 0))
+            new_mastermind = max(0, current_mastermind + max(mastermind_delta, 0))
             new_eggs = max(0, current_eggs + max(egg_delta, 0))
-            new_gold = max(0, current_gold + max(gold_delta, 0))
+            new_sales = max(0, current_sales + max(sale_delta, 0))
+            new_potions = max(0, current_potions + max(potion_delta, 0))
 
-            if message_cap is not None:
-                new_messages = min(new_messages, message_cap)
-            if invite_cap is not None:
-                new_invites = min(new_invites, invite_cap)
+            if mastermind_cap is not None:
+                new_mastermind = min(new_mastermind, mastermind_cap)
             if egg_cap is not None:
                 new_eggs = min(new_eggs, egg_cap)
-            if gold_cap is not None:
-                new_gold = min(new_gold, gold_cap)
+            if sale_cap is not None:
+                new_sales = min(new_sales, sale_cap)
+            if potion_cap is not None:
+                new_potions = min(new_potions, potion_cap)
 
             updated = await connection.fetchrow(
                 """
                 UPDATE user_grades
-                SET message_progress = $1,
-                    invite_progress = $2,
-                    egg_progress = $3,
-                    gold_progress = $4,
+                SET mastermind_progress = $1,
+                    egg_progress = $2,
+                    sale_progress = $3,
+                    potion_progress = $4,
                     updated_at = NOW()
                 WHERE user_id = $5
                 RETURNING *
                 """,
-                new_messages,
-                new_invites,
+                new_mastermind,
                 new_eggs,
-                new_gold,
+                new_sales,
+                new_potions,
                 user_id,
             )
 
@@ -1364,10 +1372,10 @@ class Database:
         self,
         user_id: int,
         *,
-        message_goal: int,
-        invite_goal: int,
+        mastermind_goal: int,
         egg_goal: int,
-        gold_goal: int,
+        sale_goal: int,
+        potion_goal: int,
         max_grade: int,
     ) -> tuple[bool, asyncpg.Record]:
         await self.ensure_user(user_id)
@@ -1384,10 +1392,10 @@ class Database:
                 return False, row
 
             if (
-                int(row["message_progress"]) < message_goal
-                or int(row["invite_progress"]) < invite_goal
+                int(row["mastermind_progress"]) < mastermind_goal
                 or int(row["egg_progress"]) < egg_goal
-                or int(row["gold_progress"]) < gold_goal
+                or int(row["sale_progress"]) < sale_goal
+                or int(row["potion_progress"]) < potion_goal
             ):
                 return False, row
 
@@ -1395,10 +1403,10 @@ class Database:
                 """
                 UPDATE user_grades
                 SET grade_level = $1,
-                    message_progress = 0,
-                    invite_progress = 0,
+                    mastermind_progress = 0,
                     egg_progress = 0,
-                    gold_progress = 0,
+                    sale_progress = 0,
+                    potion_progress = 0,
                     updated_at = NOW()
                 WHERE user_id = $2
                 RETURNING *
@@ -1541,10 +1549,10 @@ class Database:
             """
             UPDATE user_grades
             SET grade_level = 0,
-                message_progress = 0,
-                invite_progress = 0,
+                mastermind_progress = 0,
                 egg_progress = 0,
-                gold_progress = 0,
+                sale_progress = 0,
+                potion_progress = 0,
                 updated_at = NOW()
             WHERE user_id = $1
             """,

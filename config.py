@@ -103,31 +103,31 @@ STATS_TOP_LIMIT = _get_int_env("STATS_TOP_LIMIT", 10, minimum=1)
 @dataclass(frozen=True)
 class GradeDefinition:
     name: str
-    message_goal: int
-    invite_goal: int
+    mastermind_goal: int
     egg_goal: int
-    gold_goal: int
+    sale_goal: int
+    potion_goal: int
     reward_pb: int
 
 
 BASE_PET_SLOTS: Final[int] = 4
 
 GRADE_DEFINITIONS: Tuple[GradeDefinition, ...] = (
-    GradeDefinition("Novice", 15, 0, 3, 0, 250),
-    GradeDefinition("Apprenti", 30, 0, 5, 0, 400),
-    GradeDefinition("Disciple", 60, 0, 8, 1, 550),
-    GradeDefinition("Explorateur", 90, 0, 12, 2, 700),
-    GradeDefinition("Aventurier", 140, 0, 16, 3, 900),
-    GradeDefinition("Expert", 200, 0, 20, 4, 1_100),
-    GradeDefinition("Champion", 280, 0, 25, 5, 1_400),
-    GradeDefinition("Maître", 360, 0, 30, 6, 1_700),
-    GradeDefinition("Prodige", 460, 0, 36, 7, 2_100),
-    GradeDefinition("Élite", 580, 0, 43, 8, 2_600),
-    GradeDefinition("Légende", 720, 0, 51, 9, 3_200),
-    GradeDefinition("Mythique", 880, 0, 60, 10, 3_900),
-    GradeDefinition("Cosmique", 1_060, 0, 70, 12, 4_700),
-    GradeDefinition("Divin", 1_260, 0, 81, 14, 5_600),
-    GradeDefinition("Parangon", 1_500, 0, 93, 16, 6_600),
+    GradeDefinition("Novice", 2, 3, 1, 1, 250),
+    GradeDefinition("Apprenti", 3, 5, 1, 1, 400),
+    GradeDefinition("Disciple", 4, 8, 2, 1, 550),
+    GradeDefinition("Explorateur", 6, 12, 3, 2, 700),
+    GradeDefinition("Aventurier", 8, 16, 4, 2, 900),
+    GradeDefinition("Expert", 10, 20, 5, 3, 1_100),
+    GradeDefinition("Champion", 13, 25, 6, 3, 1_400),
+    GradeDefinition("Maître", 16, 30, 7, 4, 1_700),
+    GradeDefinition("Prodige", 20, 36, 8, 4, 2_100),
+    GradeDefinition("Élite", 24, 43, 9, 5, 2_600),
+    GradeDefinition("Légende", 29, 51, 10, 5, 3_200),
+    GradeDefinition("Mythique", 35, 60, 11, 6, 3_900),
+    GradeDefinition("Cosmique", 42, 70, 13, 7, 4_700),
+    GradeDefinition("Divin", 50, 81, 15, 8, 5_600),
+    GradeDefinition("Parangon", 59, 93, 17, 9, 6_600),
 )
 
 GRADE_ROLE_IDS: Tuple[int, ...] = (

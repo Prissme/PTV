@@ -473,6 +473,19 @@ class Plaza(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+        seller_user: Optional[discord.abc.User]
+        if seller is not None:
+            seller_user = seller
+        else:
+            try:
+                seller_user = await self.bot.fetch_user(seller_id)
+            except discord.HTTPException:
+                seller_user = None
+        if seller_user is not None:
+            self.bot.dispatch(
+                "grade_quest_progress", seller_user, "sale", 1, ctx.channel
+            )
+
     @stand.command(name="history")
     async def stand_history(self, ctx: commands.Context, limit: int = 10) -> None:
         limit = max(1, min(limit, 25))

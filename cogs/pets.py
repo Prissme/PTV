@@ -565,6 +565,16 @@ class Pets(commands.Cog):
                 return member
         return None
 
+    @staticmethod
+    def _embed_length(embed: discord.Embed) -> int:
+        total = len(embed.title or "") + len(embed.description or "")
+        for field in embed.fields:
+            total += len(field.name or "") + len(field.value or "")
+        footer = embed.footer
+        if footer and footer.text:
+            total += len(footer.text)
+        return total
+
     def _dispatch_grade_progress(
         self, ctx: commands.Context, quest_type: str, amount: int
     ) -> None:
@@ -1275,7 +1285,6 @@ class Pets(commands.Cog):
             (egg_title, "Des fissures apparaissent !"),
             (egg_title, "Ça y est, il est sur le point d'éclore !"),
         )
-        showcase_image = self._egg_showcase_image(egg)
         speed_factor = 1.0
         if mastery_perks is not None:
             speed_factor = max(0.5, min(5.0, float(mastery_perks.animation_speed)))
@@ -1286,7 +1295,7 @@ class Pets(commands.Cog):
             embed=embeds.pet_animation_embed(
                 title=animation_steps[0][0],
                 description=animation_steps[0][1],
-                image_url=showcase_image,
+                emoji=EGG_OPEN_EMOJI,
             )
         )
         for title, description in animation_steps[1:]:
@@ -1296,7 +1305,7 @@ class Pets(commands.Cog):
                 embed=embeds.pet_animation_embed(
                     title=title,
                     description=description,
-                    image_url=showcase_image,
+                    emoji=EGG_OPEN_EMOJI,
                 )
             )
 
@@ -1518,6 +1527,33 @@ class Pets(commands.Cog):
     @commands.command(name="eggs", aliases=("zones", "zone"))
     async def eggs(self, ctx: commands.Context) -> None:
         await self._send_egg_overview(ctx)
+
+    @commands.command(name="eggindex", aliases=("eggdex", "oeufsdex", "oeufindex"))
+    async def egg_index(self, ctx: commands.Context) -> None:
+        embed = embeds.egg_index_embed(eggs=PET_EGG_DEFINITIONS)
+        embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+
+        if self._embed_length(embed) > 5_500:
+            try:
+                dm = await ctx.author.create_dm()
+                await dm.send(embed=embed)
+            except (discord.Forbidden, discord.HTTPException):
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Impossible de t'envoyer l'index des œufs en message privé. Active tes MP et réessaie."
+                    )
+                )
+                return
+
+            await ctx.send(
+                embed=embeds.info_embed(
+                    "L'index complet est un peu long, je te l'ai envoyé en message privé.",
+                    title="Index des œufs",
+                )
+            )
+            return
+
+        await ctx.send(embed=embed)
 
     @commands.command(name="pets", aliases=("collection", "inventory"))
     async def pets_command(self, ctx: commands.Context) -> None:
@@ -2328,7 +2364,6 @@ class Pets(commands.Cog):
         await self._handle_mastery_notifications(
             ctx, mastery_update, mastery=PET_MASTERY
         )
-        self._dispatch_grade_progress(ctx, "gold", 1)
 
     @commands.command(name="rainbow", aliases=("rainbowify", "rb"))
     async def rainbow(self, ctx: commands.Context, *, pet_name: str) -> None:
@@ -2410,7 +2445,6 @@ class Pets(commands.Cog):
         await self._handle_mastery_notifications(
             ctx, mastery_update, mastery=PET_MASTERY
         )
-        self._dispatch_grade_progress(ctx, "gold", 1)
 
     @commands.command(name="tradepet", aliases=("trade",))
     async def trade_pet(
