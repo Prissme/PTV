@@ -778,6 +778,11 @@ PET_DEFINITIONS: Tuple[PetDefinition, ...] = tuple(
     pet for egg in PET_EGG_DEFINITIONS for pet in egg.pets
 ) + _EXCLUSIVE_PETS
 
+# Ensemble utilitaire pour identifier rapidement les pets considérés comme "Huge".
+HUGE_PET_NAMES: Final[frozenset[str]] = frozenset(
+    pet.name for pet in PET_DEFINITIONS if getattr(pet, "is_huge", False)
+)
+
 PET_EMOJIS: Final[dict[str, str]] = {
     "Shelly": os.getenv("PET_EMOJI_SHELLY", "<:Shelly:1430584949215596654>"),
     "Colt": os.getenv("PET_EMOJI_COLT", "<:Colt:1430585480394838196>"),

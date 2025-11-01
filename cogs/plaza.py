@@ -600,6 +600,26 @@ class Plaza(commands.Cog):
             return False, False
         return None, None
 
+    @staticmethod
+    def _pick_preferred_listing_index(rows: Sequence[Mapping[str, object]]) -> int:
+        normal_candidates: list[int] = []
+        fallback_inactive: list[int] = []
+        for index, record in enumerate(rows):
+            is_active = bool(record.get("is_active"))
+            is_gold = bool(record.get("is_gold"))
+            is_rainbow = bool(record.get("is_rainbow"))
+            if not is_gold and not is_rainbow:
+                if not is_active:
+                    return index
+                normal_candidates.append(index)
+            if not is_active:
+                fallback_inactive.append(index)
+        if fallback_inactive:
+            return fallback_inactive[0]
+        if normal_candidates:
+            return normal_candidates[0]
+        return 0
+
     def _parse_pet_query(self, raw: str) -> tuple[str, Optional[int], Optional[str]]:
         tokens = [token for token in raw.replace(",", " ").split() if token]
         if not tokens:
@@ -708,12 +728,14 @@ class Plaza(commands.Cog):
             return None, None, "Ce pet est introuvable dans ton inventaire."
 
         is_gold, is_rainbow = self._variant_flags(variant)
-        rows = await self.database.get_user_pet_by_name(
-            user_id,
-            definition.name,
-            is_gold=is_gold,
-            is_rainbow=is_rainbow,
-            include_on_market=True,
+        rows = list(
+            await self.database.get_user_pet_by_name(
+                user_id,
+                definition.name,
+                is_gold=is_gold,
+                is_rainbow=is_rainbow,
+                include_on_market=True,
+            )
         )
         if not rows:
             label = definition.name if variant is None else f"{definition.name} ({variant})"
@@ -724,11 +746,7 @@ class Plaza(commands.Cog):
             if index < 0 or index >= len(rows):
                 return None, None, f"Impossible de trouver ce pet numéro {ordinal}."
         else:
-            index = 0
-            for idx, candidate in enumerate(rows):
-                if not bool(candidate.get("is_active")):
-                    index = idx
-                    break
+            index = self._pick_preferred_listing_index(rows)
 
         record = rows[index]
         display = self._format_pet_record(record)
