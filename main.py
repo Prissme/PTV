@@ -9,7 +9,7 @@ import signal
 import sys
 import time
 from contextlib import suppress
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 sys.path.append(os.path.expanduser("~/.local/lib/python3.12/site-packages"))
 
@@ -131,6 +131,31 @@ class EcoBot(commands.Bot):
             "Le MP c’est la base pour gérer tranquille, mais les vraies affaires se concluent ici dans le marché 💼",
             "Optimise tes commandes en privé et garde ce salon pour décrocher tes partenaires de trade 🔄",
         )
+        # Autorise certains raccourcis sans préfixe pour les commandes les plus utilisées.
+        self._prefixless_aliases: Dict[str, str] = {
+            "pets": "pets",
+            "eggs": "eggs",
+            "claim": "claim",
+        }
+
+    async def get_prefix(self, message: discord.Message) -> str | Sequence[str]:
+        prefixes = await super().get_prefix(message)
+        if isinstance(prefixes, str):
+            prefixes = [prefixes]
+
+        content = (message.content or "").strip()
+        if content:
+            first_token = content.split(maxsplit=1)[0].casefold()
+            command_name = self._prefixless_aliases.get(first_token)
+            if command_name and self.get_command(command_name) is not None:
+                augmented = list(prefixes)
+                augmented.append("")
+                # Supprime les doublons en préservant l'ordre pour la stabilité.
+                seen: set[str] = set()
+                unique = [prefix for prefix in augmented if not (prefix in seen or seen.add(prefix))]
+                return tuple(unique)
+
+        return prefixes
 
     async def setup_hook(self) -> None:  # pragma: no cover - cycle de vie discord.py
         await super().setup_hook()
@@ -174,7 +199,6 @@ class EcoBot(commands.Bot):
         await ErrorHandler.handle_command_error(context, exception)
 
     async def on_command_completion(self, ctx: commands.Context) -> None:
-        await super().on_command_completion(ctx)
         await self._maybe_notify_private_usage(ctx)
         await self._maybe_send_first_command_help(ctx)
 
