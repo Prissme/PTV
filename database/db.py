@@ -34,6 +34,7 @@ from config import (
     huge_level_required_xp,
 )
 from utils.mastery import get_mastery_definition
+from utils.localization import DEFAULT_LANGUAGE, normalize_language
 
 __all__ = [
     "Database",
@@ -128,6 +129,12 @@ class Database:
             )
             await connection.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS help_dm_sent_at TIMESTAMPTZ"
+            )
+            await connection.execute(
+                f"""
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS language TEXT NOT NULL
+                DEFAULT '{DEFAULT_LANGUAGE}'
+                """
             )
             await connection.execute(
                 """
@@ -518,6 +525,26 @@ class Database:
             """,
             user_id,
         )
+
+    async def get_user_language(self, user_id: int) -> str:
+        await self.ensure_user(user_id)
+        row = await self.pool.fetchrow(
+            "SELECT language FROM users WHERE user_id = $1",
+            user_id,
+        )
+        if row is None:
+            return DEFAULT_LANGUAGE
+        return normalize_language(row.get("language"))
+
+    async def set_user_language(self, user_id: int, language: str) -> str:
+        normalized = normalize_language(language)
+        await self.ensure_user(user_id)
+        await self.pool.execute(
+            "UPDATE users SET language = $2 WHERE user_id = $1",
+            user_id,
+            normalized,
+        )
+        return normalized
 
     async def add_raffle_tickets(
         self,
