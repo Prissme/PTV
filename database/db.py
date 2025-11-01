@@ -2784,6 +2784,7 @@ class Database:
         dict[str, float],
         dict[str, object],
         Dict[int, tuple[int, int]],
+        dict[str, object],
     ]:
         await self.ensure_user(user_id)
         # FIX: Fetch best non-huge income outside of the critical transaction to limit lock duration.
@@ -2834,7 +2835,7 @@ class Database:
             )
 
             if not rows:
-                return 0, [], 0.0, {}, {}, {}
+                return 0, [], 0.0, {}, {}, {}, {}
 
             first_row = rows[0]
             now = datetime.now(timezone.utc)
@@ -2846,7 +2847,7 @@ class Database:
                     now,
                     user_id,
                 )
-                return 0, rows, 0.0, {}, {}, {}
+                return 0, rows, 0.0, {}, {}, {}, {}
 
             booster_multiplier = float(first_row.get("pet_booster_multiplier") or 1.0)
             booster_expires = first_row.get("pet_booster_expires_at")
@@ -2919,7 +2920,7 @@ class Database:
                     now,
                     user_id,
                 )
-                return 0, rows, elapsed_seconds, {}, {}, {}
+                return 0, rows, elapsed_seconds, {}, {}, {}, {}
 
             elapsed_hours = elapsed_seconds / 3600
             base_amount = hourly_income * elapsed_hours
@@ -2931,7 +2932,7 @@ class Database:
 
             raw_income = base_income_int + booster_extra_amount
             if raw_income <= 0:
-                return 0, rows, elapsed_seconds, {}, {}, {}
+                return 0, rows, elapsed_seconds, {}, {}, {}, {}
 
             if potion_multiplier > 1.0:
                 boosted_by_potion = int(round(raw_income * potion_multiplier))
