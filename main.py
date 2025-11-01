@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import random
@@ -9,11 +10,13 @@ import signal
 import sys
 import time
 from contextlib import suppress
+from pathlib import Path
 from typing import Dict, Optional, Sequence
 
 sys.path.append(os.path.expanduser("~/.local/lib/python3.12/site-packages"))
 
 import discord
+
 from aiohttp import web
 from discord.ext import commands
 
@@ -30,7 +33,13 @@ logger = logging.getLogger(__name__)
 class HealthCheckServer:
     """Expose un endpoint HTTP minimal utilisé par Koyeb pour le health check."""
 
-    def __init__(self, *, host: str = "0.0.0.0", port: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        host: str = "0.0.0.0",
+        port: int | None = None,
+        index_template_path: str | None = None,
+    ) -> None:
         self._host = host
         self._logger = logging.getLogger(f"{__name__}.HealthCheckServer")
         resolved_port: Optional[int]
@@ -51,12 +60,50 @@ class HealthCheckServer:
                 resolved_port = 8000
         self._port = resolved_port
         self._app = web.Application()
-        self._app.router.add_get("/", self.health_check)
+        self._app.router.add_get("/", self.root)
+        self._app.router.add_get("/health", self.health_check)
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
+        self._index_template_path = index_template_path
+        self._index_template: str | None = None
+        if index_template_path:
+            try:
+                self._index_template = Path(index_template_path).read_text(encoding="utf-8")
+            except FileNotFoundError:
+                self._logger.warning(
+                    "Impossible de charger le template HTML %s", index_template_path
+                )
 
     async def health_check(self, request: web.Request) -> web.Response:
         return web.Response(text="Bot is alive", status=200)
+
+    def _build_config_script(self, request: web.Request) -> str:
+        config = {
+            "supabaseUrl": os.getenv("SUPABASE_URL", ""),
+            "supabaseAnonKey": os.getenv("SUPABASE_ANON_KEY", ""),
+            "apiBase": os.getenv("PUBLIC_API_BASE_URL")
+            or f"{request.scheme}://{request.host}/api",
+        }
+        serialized = json.dumps(config, ensure_ascii=False).replace("</", "<\\/")
+        return f"<script>window.APP_CONFIG = {serialized};</script>"
+
+    def _render_index(self, request: web.Request) -> str | None:
+        if self._index_template is None:
+            return None
+
+        script_tag = self._build_config_script(request)
+        placeholder = "<!--APP_CONFIG-->"
+        if placeholder in self._index_template:
+            return self._index_template.replace(placeholder, script_tag)
+
+        return self._index_template + script_tag
+
+    async def root(self, request: web.Request) -> web.Response:
+        rendered = self._render_index(request)
+        if rendered is None:
+            return await self.health_check(request)
+
+        return web.Response(text=rendered, content_type="text/html", status=200)
 
     async def start(self) -> None:
         if self._runner is not None:
@@ -363,7 +410,10 @@ async def start_bot() -> None:
     intents.message_content = True
     intents.members = True
 
-    health_server = HealthCheckServer()
+    index_template = Path(__file__).parent / "static" / "index.html"
+    health_server = HealthCheckServer(
+        index_template_path=str(index_template) if index_template.exists() else None
+    )
     bot = EcoBot(database, prefix=PREFIX, intents=intents, health_server=health_server)
 
     if OWNER_ID:

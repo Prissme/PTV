@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EcoBot — Connexion</title>
+    <style>
+      :root {
+        color-scheme: dark light;
+        font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: radial-gradient(circle at top, #1f2937, #0f172a 60%);
+        color: #e2e8f0;
+        min-height: 100%;
+      }
+
+      body {
+        margin: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+      }
+
+      main {
+        backdrop-filter: blur(10px);
+        background: rgba(15, 23, 42, 0.8);
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        border-radius: 18px;
+        padding: 48px 56px;
+        box-shadow: 0 20px 45px rgba(8, 11, 20, 0.45);
+        max-width: 520px;
+        text-align: center;
+      }
+
+      h1 {
+        font-size: clamp(1.8rem, 2.4vw, 2.4rem);
+        margin-bottom: 12px;
+        color: #f8fafc;
+      }
+
+      p {
+        margin-top: 0;
+        margin-bottom: 24px;
+        color: #cbd5f5;
+        line-height: 1.5;
+      }
+
+      button {
+        cursor: pointer;
+        background: linear-gradient(135deg, #5b21b6, #8b5cf6);
+        border: none;
+        color: #f9fafb;
+        font-weight: 600;
+        padding: 14px 28px;
+        font-size: 1rem;
+        border-radius: 999px;
+        transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+      }
+
+      button:hover:not([disabled]) {
+        transform: translateY(-2px);
+        box-shadow: 0 12px 24px rgba(91, 33, 182, 0.45);
+        background: linear-gradient(135deg, #6d28d9, #a855f7);
+      }
+
+      button[disabled] {
+        cursor: not-allowed;
+        opacity: 0.6;
+        box-shadow: none;
+        background: linear-gradient(135deg, #4c1d95, #6d28d9);
+      }
+
+      footer {
+        margin-top: 32px;
+        font-size: 0.875rem;
+        color: rgba(226, 232, 240, 0.7);
+      }
+
+      a {
+        color: inherit;
+        text-decoration: underline;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Bienvenue sur EcoBot</h1>
+      <p id="auth-status">
+        Chargement de la configuration...
+      </p>
+      <button id="login-button" type="button" disabled aria-disabled="true">
+        Se connecter avec Discord
+      </button>
+      <footer>
+        Besoin d'aide ? Consultez la documentation ou contactez un administrateur.
+      </footer>
+    </main>
+
+    <!--APP_CONFIG-->
+    <script>
+      const authStatus = document.getElementById('auth-status');
+      const loginButton = document.getElementById('login-button');
+
+      const config = window.APP_CONFIG ?? {};
+      const SUPABASE_URL = config.supabaseUrl ?? '';
+      const SUPABASE_ANON_KEY = config.supabaseAnonKey ?? '';
+      const API_BASE = config.apiBase ?? window.location.origin + '/api';
+
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        authStatus.textContent = 'Configuration Supabase manquante...';
+        loginButton.disabled = true;
+        loginButton.setAttribute('aria-disabled', 'true');
+      } else {
+        authStatus.textContent = 'Connectez-vous pour accéder à votre tableau de bord.';
+        loginButton.disabled = false;
+        loginButton.removeAttribute('aria-disabled');
+      }
+
+      loginButton.addEventListener('click', () => {
+        if (loginButton.disabled) {
+          return;
+        }
+
+        authStatus.textContent = 'Redirection vers Discord...';
+        const redirectTarget = `${API_BASE.replace(/\/$/, '')}/auth/discord/login`;
+        window.location.href = redirectTarget;
+      });
+    </script>
+  </body>
+</html>
