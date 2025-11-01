@@ -69,6 +69,7 @@ HUGE_SHELLY_ALERT_CHANNEL_ID = 1236724293631611022
 EGG_OPEN_EMOJI = "<:Egg:1433411763944296518>"
 
 
+
 @dataclass(frozen=True)
 class EggMasteryPerks:
     """Regroupe les bonus associés à la maîtrise des œufs."""
@@ -1559,454 +1560,6 @@ class Pets(commands.Cog):
         return converted
 
 
-@dataclass
-class TradeOffer:
-    pb: int = 0
-    pets: list[dict[str, Any]] = field(default_factory=list)
-
-class TradeSession:
-    """Orchestre un échange interactif entre deux joueurs."""
-
-    def __init__(
-        self,
-        cog: "Pets",
-        thread: discord.Thread,
-        initiator: discord.Member,
-        partner: discord.Member,
-    ) -> None:
-        self.cog = cog
-        self.thread = thread
-        self.initiator = initiator
-        self.partner = partner
-        self.offers: dict[int, TradeOffer] = {
-            initiator.id: TradeOffer(),
-            partner.id: TradeOffer(),
-        }
-        self.ready: set[int] = set()
-        self.lock = asyncio.Lock()
-        self.message: discord.Message | None = None
-        self.view: TradeView | None = None
-        self.completed = False
-
-    @property
-    def participants(self) -> tuple[discord.Member, discord.Member]:
-        return self.initiator, self.partner
-
-    def other_user(self, user_id: int) -> discord.Member:
-        return self.partner if user_id == self.initiator.id else self.initiator
-
-    def toggle_ready(self, user_id: int) -> bool:
-        if user_id in self.ready:
-            self.ready.discard(user_id)
-            return False
-        self.ready.add(user_id)
-        return True
-
-    def both_ready(self) -> bool:
-        return len(self.ready) == 2
-
-    def has_trade_value(self) -> bool:
-        for offer in self.offers.values():
-            if offer.pb > 0 or offer.pets:
-                return True
-        return False
-
-    async def add_pet(
-        self, user: discord.abc.User, user_pet_id: int, price: int
-    ) -> None:
-        async with self.lock:
-            offer = self.offers.setdefault(user.id, TradeOffer())
-            if any(pet["user_pet_id"] == user_pet_id for pet in offer.pets):
-                raise DatabaseError("Ce pet est déjà dans ton offre.")
-            record = await self.cog.database.get_user_pet(user.id, user_pet_id)
-            if record is None:
-                raise DatabaseError("Impossible de trouver ce pet dans ton inventaire.")
-            if bool(record.get("is_active")):
-                raise DatabaseError("Ce pet est actuellement équipé.")
-            if bool(record.get("on_market")):
-                raise DatabaseError("Ce pet est listé sur un stand.")
-
-            pet_data = self.cog._convert_record(record, best_non_huge_income=None)
-            offer.pets.append(
-                {
-                    "user_pet_id": user_pet_id,
-                    "pet_id": int(pet_data.get("pet_id", 0)),
-                    "name": str(pet_data.get("name", "Pet")),
-                    "is_gold": bool(pet_data.get("is_gold")),
-                    "is_rainbow": bool(pet_data.get("is_rainbow")),
-                    "is_shiny": bool(pet_data.get("is_shiny")),
-                    "price": max(0, price),
-                }
-            )
-            self.ready.discard(user.id)
-
-    async def set_pb(self, user_id: int, amount: int) -> None:
-        if amount < 0:
-            raise DatabaseError("Le montant en PB doit être positif.")
-        async with self.lock:
-            self.offers.setdefault(user_id, TradeOffer()).pb = amount
-            self.ready.discard(user_id)
-
-    async def clear_offer(self, user_id: int) -> None:
-        async with self.lock:
-            self.offers[user_id] = TradeOffer()
-            self.ready.discard(user_id)
-
-    def _format_pet_line(self, data: Mapping[str, Any], price: int) -> str:
-        markers: list[str] = []
-        if bool(data.get("is_rainbow")):
-            markers.append("🌈")
-        elif bool(data.get("is_gold")):
-            markers.append("🥇")
-        if bool(data.get("is_shiny")):
-            markers.append("✨")
-        suffix = f" {' '.join(markers)}" if markers else ""
-        return (
-            f"#{data.get('user_pet_id', 0)} • {data.get('name', 'Pet')}{suffix}"
-            f" — {embeds.format_currency(price)}"
-        )
-
-    def build_embed(self) -> discord.Embed:
-        embed = embeds.info_embed(
-            "Ajoute des pets ou des PB à ton offre, puis valide avec Prêt lorsque tout te convient.",
-            title="💱 Trade interactif",
-        )
-        for member in self.participants:
-            offer = self.offers.get(member.id) or TradeOffer()
-            lines: list[str] = []
-            if offer.pb:
-                lines.append(f"PB : {embeds.format_currency(offer.pb)}")
-            for pet in offer.pets:
-                lines.append(self._format_pet_line(pet, int(pet.get("price", 0))))
-            if not lines:
-                lines.append("Aucune offre")
-            status = "✅" if member.id in self.ready else "⏳"
-            embed.add_field(
-                name=f"{status} {member.display_name}",
-                value="\n".join(lines),
-                inline=False,
-            )
-        embed.set_footer(
-            text="Le trade se finalise automatiquement lorsque vous êtes deux à être prêts."
-        )
-        return embed
-
-    def _serialize_offer(self, user_id: int) -> dict[str, object]:
-        offer = self.offers.get(user_id) or TradeOffer()
-        return {
-            "pb": int(offer.pb),
-            "pets": [
-                {"id": int(pet["user_pet_id"]), "price": int(pet.get("price", 0))}
-                for pet in offer.pets
-            ],
-        }
-
-    async def refresh(self) -> None:
-        if self.message is None or self.view is None:
-            return
-        await self.message.edit(embed=self.build_embed(), view=self.view)
-
-    async def complete_trade(
-        self, interaction: discord.Interaction, view: "TradeView"
-    ) -> None:
-        async with self.lock:
-            if self.completed:
-                return
-            initiator_offer = self._serialize_offer(self.initiator.id)
-            partner_offer = self._serialize_offer(self.partner.id)
-
-        if not self.has_trade_value():
-            self.ready.clear()
-            await interaction.followup.send(
-                embed=embeds.error_embed(
-                    "Ajoute au moins un pet ou des PB avant de finaliser le trade."
-                ),
-                ephemeral=True,
-            )
-            await self.refresh()
-            return
-
-        try:
-            result = await self.cog.database.execute_trade(
-                self.initiator.id,
-                self.partner.id,
-                initiator_offer,
-                partner_offer,
-            )
-        except InsufficientBalanceError as exc:
-            self.ready.clear()
-            await interaction.followup.send(
-                embed=embeds.error_embed(str(exc)), ephemeral=True
-            )
-            await self.refresh()
-            return
-        except DatabaseError as exc:
-            self.ready.clear()
-            await interaction.followup.send(
-                embed=embeds.error_embed(str(exc)), ephemeral=True
-            )
-            await self.refresh()
-            return
-
-        self.completed = True
-        view.disable_all_items()
-        if self.message is not None:
-            await interaction.followup.edit_message(
-                self.message.id,
-                embed=self._build_result_embed(result),
-                view=view,
-            )
-        await interaction.followup.send(
-            embed=embeds.success_embed(
-                "Le trade est terminé ! Ce fil sera supprimé dans 60 secondes."
-            ),
-            ephemeral=True,
-        )
-        view.stop()
-        await self._schedule_thread_close()
-
-    def _build_result_embed(self, result: Mapping[str, Any]) -> discord.Embed:
-        embed = embeds.success_embed(
-            "Les échanges ont été effectués avec succès.", title="✅ Trade finalisé"
-        )
-        initiator_lines = self._result_lines(
-            outgoing=self.offers[self.initiator.id],
-            incoming=result.get("partner_pets", []),
-            received_pb=int(result.get("partner_pb_out", 0)),
-            given_pb=int(result.get("initiator_pb_out", 0)),
-        )
-        partner_lines = self._result_lines(
-            outgoing=self.offers[self.partner.id],
-            incoming=result.get("initiator_pets", []),
-            received_pb=int(result.get("initiator_pb_out", 0)),
-            given_pb=int(result.get("partner_pb_out", 0)),
-        )
-        embed.add_field(
-            name=self.initiator.display_name,
-            value="\n".join(initiator_lines),
-            inline=False,
-        )
-        embed.add_field(
-            name=self.partner.display_name,
-            value="\n".join(partner_lines),
-            inline=False,
-        )
-        return embed
-
-    def _result_lines(
-        self,
-        *,
-        outgoing: TradeOffer,
-        incoming: Sequence[Mapping[str, Any]],
-        received_pb: int,
-        given_pb: int,
-    ) -> list[str]:
-        lines: list[str] = []
-        if given_pb:
-            lines.append(f"PB donnés : {embeds.format_currency(given_pb)}")
-        if outgoing.pets:
-            lines.append(
-                "Pets donnés : "
-                + ", ".join(pet["name"] for pet in outgoing.pets)
-            )
-        if received_pb:
-            lines.append(f"PB reçus : {embeds.format_currency(received_pb)}")
-        if incoming:
-            received_names: list[str] = []
-            for pet in incoming:
-                definition = self.cog._definition_by_id.get(int(pet.get("pet_id", 0)))
-                name = definition.name if definition else "Pet"
-                markers: list[str] = []
-                if bool(pet.get("is_rainbow")):
-                    markers.append("🌈")
-                elif bool(pet.get("is_gold")):
-                    markers.append("🥇")
-                if bool(pet.get("is_shiny")):
-                    markers.append("✨")
-                label = " ".join(markers)
-                if label:
-                    name = f"{name} {label}"
-                received_names.append(name)
-            lines.append("Pets reçus : " + ", ".join(received_names))
-        if not lines:
-            lines.append("Aucun changement")
-        return lines
-
-    async def _schedule_thread_close(self) -> None:
-        async def _closer() -> None:
-            await asyncio.sleep(60)
-            with contextlib.suppress(discord.Forbidden, discord.HTTPException):
-                await self.thread.delete(reason="Trade finalisé")
-
-        asyncio.create_task(_closer())
-
-    async def cancel(self, reason: str) -> None:
-        if self.completed:
-            return
-        self.completed = True
-        if self.view is not None:
-            self.view.disable_all_items()
-        if self.message is not None:
-            await self.message.edit(
-                embed=embeds.warning_embed(reason, title="Trade annulé"),
-                view=self.view,
-            )
-        await self._schedule_thread_close()
-        if self.view is not None:
-            self.view.stop()
-
-
-class TradeAddPetModal(discord.ui.Modal):
-    def __init__(self, view: "TradeView", user_id: int) -> None:
-        super().__init__(title="Ajouter un pet au trade")
-        self.view = view
-        self.user_id = user_id
-        self.pet_id_input = discord.ui.TextInput(
-            label="Identifiant du pet",
-            placeholder="Ex: 42",
-            min_length=1,
-            max_length=10,
-        )
-        self.price_input = discord.ui.TextInput(
-            label="Valeur estimée en PB",
-            placeholder="Ex: 150000",
-            min_length=1,
-            max_length=18,
-        )
-        self.add_item(self.pet_id_input)
-        self.add_item(self.price_input)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        try:
-            pet_id = int(self.pet_id_input.value)
-            price = max(0, int(self.price_input.value))
-        except ValueError:
-            await interaction.response.send_message(
-                embed=embeds.error_embed("Merci d'indiquer un identifiant et un prix valides."),
-                ephemeral=True,
-            )
-            return
-        try:
-            await self.view.session.add_pet(interaction.user, pet_id, price)
-        except DatabaseError as exc:
-            await interaction.response.send_message(
-                embed=embeds.error_embed(str(exc)), ephemeral=True
-            )
-            return
-        await interaction.response.send_message(
-            embed=embeds.success_embed("Pet ajouté à ton offre."), ephemeral=True
-        )
-        await self.view.session.refresh()
-
-
-class TradePBModal(discord.ui.Modal):
-    def __init__(self, view: "TradeView", user_id: int) -> None:
-        super().__init__(title="Définir les PB offerts")
-        self.view = view
-        self.user_id = user_id
-        self.amount_input = discord.ui.TextInput(
-            label="Montant en PB",
-            placeholder="Ex: 250000",
-            min_length=1,
-            max_length=18,
-        )
-        self.add_item(self.amount_input)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        try:
-            amount = max(0, int(self.amount_input.value))
-        except ValueError:
-            await interaction.response.send_message(
-                embed=embeds.error_embed("Montant invalide."), ephemeral=True
-            )
-            return
-        try:
-            await self.view.session.set_pb(interaction.user.id, amount)
-        except DatabaseError as exc:
-            await interaction.response.send_message(
-                embed=embeds.error_embed(str(exc)), ephemeral=True
-            )
-            return
-        await interaction.response.send_message(
-            embed=embeds.success_embed("Montant mis à jour."), ephemeral=True
-        )
-        await self.view.session.refresh()
-
-
-class TradeView(discord.ui.View):
-    def __init__(self, session: TradeSession) -> None:
-        super().__init__(timeout=900)
-        self.session = session
-        session.view = self
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id not in (self.session.initiator.id, self.session.partner.id):
-            await interaction.response.send_message(
-                "Seuls les participants au trade peuvent utiliser ces boutons.",
-                ephemeral=True,
-            )
-            return False
-        return True
-
-    def disable_all_items(self) -> None:
-        for item in self.children:
-            item.disabled = True
-
-    async def on_timeout(self) -> None:
-        await self.session.cancel("Le trade a expiré par inactivité.")
-
-    @discord.ui.button(label="Ajouter un pet", style=discord.ButtonStyle.primary)
-    async def add_pet_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        modal = TradeAddPetModal(self, interaction.user.id)
-        await interaction.response.send_modal(modal)
-
-    @discord.ui.button(label="Ajouter des PB", style=discord.ButtonStyle.secondary)
-    async def add_pb_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        modal = TradePBModal(self, interaction.user.id)
-        await interaction.response.send_modal(modal)
-
-    @discord.ui.button(label="Réinitialiser", style=discord.ButtonStyle.secondary)
-    async def reset_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self.session.clear_offer(interaction.user.id)
-        await interaction.response.send_message(
-            embed=embeds.warning_embed("Ton offre a été réinitialisée."),
-            ephemeral=True,
-        )
-        await self.session.refresh()
-
-    @discord.ui.button(label="Prêt", style=discord.ButtonStyle.success)
-    async def ready_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        is_ready = self.session.toggle_ready(interaction.user.id)
-        if self.session.both_ready():
-            await interaction.response.defer()
-            await self.session.complete_trade(interaction, self)
-            return
-
-        await interaction.response.edit_message(
-            embed=self.session.build_embed(), view=self
-        )
-        message = "Tu es prêt pour le trade." if is_ready else "Tu n'es plus prêt."
-        await interaction.followup.send(message, ephemeral=True)
-
-    @discord.ui.button(label="Annuler", style=discord.ButtonStyle.danger)
-    async def cancel_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self.session.cancel(
-            f"Trade annulé par {interaction.user.display_name}."
-        )
-        await interaction.response.send_message(
-            embed=embeds.warning_embed("Trade annulé."), ephemeral=True
-        )
-
     # ------------------------------------------------------------------
     # Commandes
     # ------------------------------------------------------------------
@@ -3447,6 +3000,457 @@ class TradeView(discord.ui.View):
 
         if level_up_lines:
             await ctx.send("\n".join(level_up_lines))
+
+
+
+@dataclass
+class TradeOffer:
+    pb: int = 0
+    pets: list[dict[str, Any]] = field(default_factory=list)
+
+class TradeSession:
+    """Orchestre un échange interactif entre deux joueurs."""
+
+    def __init__(
+        self,
+        cog: "Pets",
+        thread: discord.Thread,
+        initiator: discord.Member,
+        partner: discord.Member,
+    ) -> None:
+        self.cog = cog
+        self.thread = thread
+        self.initiator = initiator
+        self.partner = partner
+        self.offers: dict[int, TradeOffer] = {
+            initiator.id: TradeOffer(),
+            partner.id: TradeOffer(),
+        }
+        self.ready: set[int] = set()
+        self.lock = asyncio.Lock()
+        self.message: discord.Message | None = None
+        self.view: TradeView | None = None
+        self.completed = False
+
+    @property
+    def participants(self) -> tuple[discord.Member, discord.Member]:
+        return self.initiator, self.partner
+
+    def other_user(self, user_id: int) -> discord.Member:
+        return self.partner if user_id == self.initiator.id else self.initiator
+
+    def toggle_ready(self, user_id: int) -> bool:
+        if user_id in self.ready:
+            self.ready.discard(user_id)
+            return False
+        self.ready.add(user_id)
+        return True
+
+    def both_ready(self) -> bool:
+        return len(self.ready) == 2
+
+    def has_trade_value(self) -> bool:
+        for offer in self.offers.values():
+            if offer.pb > 0 or offer.pets:
+                return True
+        return False
+
+    async def add_pet(
+        self, user: discord.abc.User, user_pet_id: int, price: int
+    ) -> None:
+        async with self.lock:
+            offer = self.offers.setdefault(user.id, TradeOffer())
+            if any(pet["user_pet_id"] == user_pet_id for pet in offer.pets):
+                raise DatabaseError("Ce pet est déjà dans ton offre.")
+            record = await self.cog.database.get_user_pet(user.id, user_pet_id)
+            if record is None:
+                raise DatabaseError("Impossible de trouver ce pet dans ton inventaire.")
+            if bool(record.get("is_active")):
+                raise DatabaseError("Ce pet est actuellement équipé.")
+            if bool(record.get("on_market")):
+                raise DatabaseError("Ce pet est listé sur un stand.")
+
+            pet_data = self.cog._convert_record(record, best_non_huge_income=None)
+            offer.pets.append(
+                {
+                    "user_pet_id": user_pet_id,
+                    "pet_id": int(pet_data.get("pet_id", 0)),
+                    "name": str(pet_data.get("name", "Pet")),
+                    "is_gold": bool(pet_data.get("is_gold")),
+                    "is_rainbow": bool(pet_data.get("is_rainbow")),
+                    "is_shiny": bool(pet_data.get("is_shiny")),
+                    "price": max(0, price),
+                }
+            )
+            self.ready.discard(user.id)
+
+    async def set_pb(self, user_id: int, amount: int) -> None:
+        if amount < 0:
+            raise DatabaseError("Le montant en PB doit être positif.")
+        async with self.lock:
+            self.offers.setdefault(user_id, TradeOffer()).pb = amount
+            self.ready.discard(user_id)
+
+    async def clear_offer(self, user_id: int) -> None:
+        async with self.lock:
+            self.offers[user_id] = TradeOffer()
+            self.ready.discard(user_id)
+
+    def _format_pet_line(self, data: Mapping[str, Any], price: int) -> str:
+        markers: list[str] = []
+        if bool(data.get("is_rainbow")):
+            markers.append("🌈")
+        elif bool(data.get("is_gold")):
+            markers.append("🥇")
+        if bool(data.get("is_shiny")):
+            markers.append("✨")
+        suffix = f" {' '.join(markers)}" if markers else ""
+        return (
+            f"#{data.get('user_pet_id', 0)} • {data.get('name', 'Pet')}{suffix}"
+            f" — {embeds.format_currency(price)}"
+        )
+
+    def build_embed(self) -> discord.Embed:
+        embed = embeds.info_embed(
+            "Ajoute des pets ou des PB à ton offre, puis valide avec Prêt lorsque tout te convient.",
+            title="💱 Trade interactif",
+        )
+        for member in self.participants:
+            offer = self.offers.get(member.id) or TradeOffer()
+            lines: list[str] = []
+            if offer.pb:
+                lines.append(f"PB : {embeds.format_currency(offer.pb)}")
+            for pet in offer.pets:
+                lines.append(self._format_pet_line(pet, int(pet.get("price", 0))))
+            if not lines:
+                lines.append("Aucune offre")
+            status = "✅" if member.id in self.ready else "⏳"
+            embed.add_field(
+                name=f"{status} {member.display_name}",
+                value="\n".join(lines),
+                inline=False,
+            )
+        embed.set_footer(
+            text="Le trade se finalise automatiquement lorsque vous êtes deux à être prêts."
+        )
+        return embed
+
+    def _serialize_offer(self, user_id: int) -> dict[str, object]:
+        offer = self.offers.get(user_id) or TradeOffer()
+        return {
+            "pb": int(offer.pb),
+            "pets": [
+                {"id": int(pet["user_pet_id"]), "price": int(pet.get("price", 0))}
+                for pet in offer.pets
+            ],
+        }
+
+    async def refresh(self) -> None:
+        if self.message is None or self.view is None:
+            return
+        await self.message.edit(embed=self.build_embed(), view=self.view)
+
+    async def complete_trade(
+        self, interaction: discord.Interaction, view: "TradeView"
+    ) -> None:
+        async with self.lock:
+            if self.completed:
+                return
+            initiator_offer = self._serialize_offer(self.initiator.id)
+            partner_offer = self._serialize_offer(self.partner.id)
+
+        if not self.has_trade_value():
+            self.ready.clear()
+            await interaction.followup.send(
+                embed=embeds.error_embed(
+                    "Ajoute au moins un pet ou des PB avant de finaliser le trade."
+                ),
+                ephemeral=True,
+            )
+            await self.refresh()
+            return
+
+        try:
+            result = await self.cog.database.execute_trade(
+                self.initiator.id,
+                self.partner.id,
+                initiator_offer,
+                partner_offer,
+            )
+        except InsufficientBalanceError as exc:
+            self.ready.clear()
+            await interaction.followup.send(
+                embed=embeds.error_embed(str(exc)), ephemeral=True
+            )
+            await self.refresh()
+            return
+        except DatabaseError as exc:
+            self.ready.clear()
+            await interaction.followup.send(
+                embed=embeds.error_embed(str(exc)), ephemeral=True
+            )
+            await self.refresh()
+            return
+
+        self.completed = True
+        view.disable_all_items()
+        if self.message is not None:
+            await interaction.followup.edit_message(
+                self.message.id,
+                embed=self._build_result_embed(result),
+                view=view,
+            )
+        await interaction.followup.send(
+            embed=embeds.success_embed(
+                "Le trade est terminé ! Ce fil sera supprimé dans 60 secondes."
+            ),
+            ephemeral=True,
+        )
+        view.stop()
+        await self._schedule_thread_close()
+
+    def _build_result_embed(self, result: Mapping[str, Any]) -> discord.Embed:
+        embed = embeds.success_embed(
+            "Les échanges ont été effectués avec succès.", title="✅ Trade finalisé"
+        )
+        initiator_lines = self._result_lines(
+            outgoing=self.offers[self.initiator.id],
+            incoming=result.get("partner_pets", []),
+            received_pb=int(result.get("partner_pb_out", 0)),
+            given_pb=int(result.get("initiator_pb_out", 0)),
+        )
+        partner_lines = self._result_lines(
+            outgoing=self.offers[self.partner.id],
+            incoming=result.get("initiator_pets", []),
+            received_pb=int(result.get("initiator_pb_out", 0)),
+            given_pb=int(result.get("partner_pb_out", 0)),
+        )
+        embed.add_field(
+            name=self.initiator.display_name,
+            value="\n".join(initiator_lines),
+            inline=False,
+        )
+        embed.add_field(
+            name=self.partner.display_name,
+            value="\n".join(partner_lines),
+            inline=False,
+        )
+        return embed
+
+    def _result_lines(
+        self,
+        *,
+        outgoing: TradeOffer,
+        incoming: Sequence[Mapping[str, Any]],
+        received_pb: int,
+        given_pb: int,
+    ) -> list[str]:
+        lines: list[str] = []
+        if given_pb:
+            lines.append(f"PB donnés : {embeds.format_currency(given_pb)}")
+        if outgoing.pets:
+            lines.append(
+                "Pets donnés : "
+                + ", ".join(pet["name"] for pet in outgoing.pets)
+            )
+        if received_pb:
+            lines.append(f"PB reçus : {embeds.format_currency(received_pb)}")
+        if incoming:
+            received_names: list[str] = []
+            for pet in incoming:
+                definition = self.cog._definition_by_id.get(int(pet.get("pet_id", 0)))
+                name = definition.name if definition else "Pet"
+                markers: list[str] = []
+                if bool(pet.get("is_rainbow")):
+                    markers.append("🌈")
+                elif bool(pet.get("is_gold")):
+                    markers.append("🥇")
+                if bool(pet.get("is_shiny")):
+                    markers.append("✨")
+                label = " ".join(markers)
+                if label:
+                    name = f"{name} {label}"
+                received_names.append(name)
+            lines.append("Pets reçus : " + ", ".join(received_names))
+        if not lines:
+            lines.append("Aucun changement")
+        return lines
+
+    async def _schedule_thread_close(self) -> None:
+        async def _closer() -> None:
+            await asyncio.sleep(60)
+            with contextlib.suppress(discord.Forbidden, discord.HTTPException):
+                await self.thread.delete(reason="Trade finalisé")
+
+        asyncio.create_task(_closer())
+
+    async def cancel(self, reason: str) -> None:
+        if self.completed:
+            return
+        self.completed = True
+        if self.view is not None:
+            self.view.disable_all_items()
+        if self.message is not None:
+            await self.message.edit(
+                embed=embeds.warning_embed(reason, title="Trade annulé"),
+                view=self.view,
+            )
+        await self._schedule_thread_close()
+        if self.view is not None:
+            self.view.stop()
+
+
+class TradeAddPetModal(discord.ui.Modal):
+    def __init__(self, view: "TradeView", user_id: int) -> None:
+        super().__init__(title="Ajouter un pet au trade")
+        self.view = view
+        self.user_id = user_id
+        self.pet_id_input = discord.ui.TextInput(
+            label="Identifiant du pet",
+            placeholder="Ex: 42",
+            min_length=1,
+            max_length=10,
+        )
+        self.price_input = discord.ui.TextInput(
+            label="Valeur estimée en PB",
+            placeholder="Ex: 150000",
+            min_length=1,
+            max_length=18,
+        )
+        self.add_item(self.pet_id_input)
+        self.add_item(self.price_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            pet_id = int(self.pet_id_input.value)
+            price = max(0, int(self.price_input.value))
+        except ValueError:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Merci d'indiquer un identifiant et un prix valides."),
+                ephemeral=True,
+            )
+            return
+        try:
+            await self.view.session.add_pet(interaction.user, pet_id, price)
+        except DatabaseError as exc:
+            await interaction.response.send_message(
+                embed=embeds.error_embed(str(exc)), ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            embed=embeds.success_embed("Pet ajouté à ton offre."), ephemeral=True
+        )
+        await self.view.session.refresh()
+
+
+class TradePBModal(discord.ui.Modal):
+    def __init__(self, view: "TradeView", user_id: int) -> None:
+        super().__init__(title="Définir les PB offerts")
+        self.view = view
+        self.user_id = user_id
+        self.amount_input = discord.ui.TextInput(
+            label="Montant en PB",
+            placeholder="Ex: 250000",
+            min_length=1,
+            max_length=18,
+        )
+        self.add_item(self.amount_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            amount = max(0, int(self.amount_input.value))
+        except ValueError:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Montant invalide."), ephemeral=True
+            )
+            return
+        try:
+            await self.view.session.set_pb(interaction.user.id, amount)
+        except DatabaseError as exc:
+            await interaction.response.send_message(
+                embed=embeds.error_embed(str(exc)), ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            embed=embeds.success_embed("Montant mis à jour."), ephemeral=True
+        )
+        await self.view.session.refresh()
+
+
+class TradeView(discord.ui.View):
+    def __init__(self, session: TradeSession) -> None:
+        super().__init__(timeout=900)
+        self.session = session
+        session.view = self
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id not in (self.session.initiator.id, self.session.partner.id):
+            await interaction.response.send_message(
+                "Seuls les participants au trade peuvent utiliser ces boutons.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    def disable_all_items(self) -> None:
+        for item in self.children:
+            item.disabled = True
+
+    async def on_timeout(self) -> None:
+        await self.session.cancel("Le trade a expiré par inactivité.")
+
+    @discord.ui.button(label="Ajouter un pet", style=discord.ButtonStyle.primary)
+    async def add_pet_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        modal = TradeAddPetModal(self, interaction.user.id)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Ajouter des PB", style=discord.ButtonStyle.secondary)
+    async def add_pb_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        modal = TradePBModal(self, interaction.user.id)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Réinitialiser", style=discord.ButtonStyle.secondary)
+    async def reset_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self.session.clear_offer(interaction.user.id)
+        await interaction.response.send_message(
+            embed=embeds.warning_embed("Ton offre a été réinitialisée."),
+            ephemeral=True,
+        )
+        await self.session.refresh()
+
+    @discord.ui.button(label="Prêt", style=discord.ButtonStyle.success)
+    async def ready_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        is_ready = self.session.toggle_ready(interaction.user.id)
+        if self.session.both_ready():
+            await interaction.response.defer()
+            await self.session.complete_trade(interaction, self)
+            return
+
+        await interaction.response.edit_message(
+            embed=self.session.build_embed(), view=self
+        )
+        message = "Tu es prêt pour le trade." if is_ready else "Tu n'es plus prêt."
+        await interaction.followup.send(message, ephemeral=True)
+
+    @discord.ui.button(label="Annuler", style=discord.ButtonStyle.danger)
+    async def cancel_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self.session.cancel(
+            f"Trade annulé par {interaction.user.display_name}."
+        )
+        await interaction.response.send_message(
+            embed=embeds.warning_embed("Trade annulé."), ephemeral=True
+        )
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Pets(bot))
