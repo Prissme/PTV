@@ -24,6 +24,7 @@ from config import (
     HUGE_PET_LEVEL_CAP,
     HUGE_PET_MIN_INCOME,
     HUGE_GRIFF_NAME,
+    HUGE_PET_NAMES,
     RAINBOW_PET_COMBINE_REQUIRED,
     RAINBOW_PET_MULTIPLIER,
     SHINY_PET_MULTIPLIER,
@@ -44,6 +45,8 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+_HUGE_PET_NAME_LOOKUP = {name.lower() for name in HUGE_PET_NAMES}
 
 
 class DatabaseError(RuntimeError):
@@ -2216,6 +2219,7 @@ class Database:
         *,
         make_shiny: bool = False,
         allow_huge: bool = False,
+        result_is_huge: bool | None = None,
     ) -> asyncpg.Record:
         await self.ensure_user(user_id)
         unique_ids = {int(pet_id) for pet_id in user_pet_ids if int(pet_id) > 0}
@@ -2223,6 +2227,21 @@ class Database:
             raise DatabaseError("La machine de fusion nécessite 10 pets distincts.")
 
         async with self.transaction() as connection:
+            pet_row = await connection.fetchrow(
+                "SELECT name FROM pets WHERE pet_id = $1",
+                result_pet_id,
+            )
+            if pet_row is None:
+                raise DatabaseError("Pet de résultat introuvable.")
+            pet_name = str(pet_row.get("name") or "")
+            resolved_is_huge = bool(result_is_huge)
+            if result_is_huge is None:
+                resolved_is_huge = pet_name.lower() in _HUGE_PET_NAME_LOOKUP
+            if resolved_is_huge and not allow_huge:
+                raise DatabaseError(
+                    "La fusion ne permet pas de créer ce pet titanesque pour le moment."
+                )
+
             rows = await connection.fetch(
                 """
                 SELECT id, is_active, is_huge, on_market
@@ -2249,12 +2268,13 @@ class Database:
 
             inserted = await connection.fetchrow(
                 """
-                INSERT INTO user_pets (user_id, pet_id, is_shiny)
-                VALUES ($1, $2, $3)
+                INSERT INTO user_pets (user_id, pet_id, is_huge, is_shiny)
+                VALUES ($1, $2, $3, $4)
                 RETURNING id
                 """,
                 user_id,
                 result_pet_id,
+                resolved_is_huge,
                 make_shiny,
             )
             if inserted is None:

@@ -405,6 +405,7 @@ class Pets(commands.Cog):
                     self._egg_lookup[variant] = egg.slug
         if self._default_egg_slug:
             self._egg_lookup.setdefault(self._default_egg_slug, self._default_egg_slug)
+        self._egg_open_locks: Dict[int, asyncio.Lock] = {}
 
     @staticmethod
     def _normalize_pet_key(value: str) -> str:
@@ -452,6 +453,13 @@ class Pets(commands.Cog):
         if normalized in {"off", "disable", "disabled", "false", "0", "non", "desactiver", "désactiver", "desactive", "désactivé"}:
             return False
         return None
+
+    def _get_open_lock(self, user_id: int) -> asyncio.Lock:
+        lock = self._egg_open_locks.get(user_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._egg_open_locks[user_id] = lock
+        return lock
 
     def _resolve_market_value(
         self,
@@ -1583,6 +1591,11 @@ class Pets(commands.Cog):
     @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.command(name="openbox", aliases=("buyegg", "openegg", "egg"))
     async def openbox(self, ctx: commands.Context, egg: str | None = None) -> None:
+        lock = self._get_open_lock(ctx.author.id)
+        async with lock:
+            await self._openbox_impl(ctx, egg)
+
+    async def _openbox_impl(self, ctx: commands.Context, egg: str | None) -> None:
         raw_request = (egg or "").strip()
         double_request = False
         if raw_request:
@@ -2467,6 +2480,7 @@ class Pets(commands.Cog):
                 consumed_ids,
                 self._pet_ids[primary_definition.name],
                 make_shiny=primary_shiny,
+                result_is_huge=primary_definition.is_huge,
             )
         except DatabaseError as exc:
             await ctx.send(embed=embeds.error_embed(str(exc)))
@@ -2869,6 +2883,7 @@ class Pets(commands.Cog):
         if titanic_id is None:
             await ctx.send(embed=embeds.error_embed("Pet Titanic introuvable."))
             return
+        titanic_definition = self._definition_by_name.get(TITANIC_GRIFF_NAME)
 
         try:
             record = await self.database.fuse_user_pets(
@@ -2877,6 +2892,7 @@ class Pets(commands.Cog):
                 titanic_id,
                 make_shiny=False,
                 allow_huge=True,
+                result_is_huge=titanic_definition.is_huge if titanic_definition else True,
             )
         except DatabaseError as exc:
             await ctx.send(embed=embeds.error_embed(str(exc)))
