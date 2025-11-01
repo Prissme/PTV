@@ -256,6 +256,42 @@ class GradeSystem(commands.Cog):
             if grade_level < self.total_grades
             else None
         )
+
+        if next_grade is not None and self._is_grade_ready(row, next_grade):
+            try:
+                completed, new_row = await self.database.complete_grade_if_ready(
+                    target.id,
+                    mastermind_goal=next_grade.mastermind_goal,
+                    egg_goal=next_grade.egg_goal,
+                    sale_goal=next_grade.sale_goal,
+                    potion_goal=next_grade.potion_goal,
+                    max_grade=self.total_grades,
+                )
+            except Exception:
+                logger.exception("Impossible de valider le grade pour %s", target.id)
+            else:
+                if completed:
+                    earned_grade = next_grade
+                    row = new_row
+                    grade_level = int(row["grade_level"])
+                    current_grade = (
+                        GRADE_DEFINITIONS[grade_level - 1]
+                        if grade_level > 0
+                        else None
+                    )
+                    next_grade = (
+                        GRADE_DEFINITIONS[grade_level]
+                        if grade_level < self.total_grades
+                        else None
+                    )
+                    if earned_grade is not None:
+                        await self._handle_grade_completion(
+                            target,
+                            grade_definition=earned_grade,
+                            new_grade_level=grade_level,
+                            channel=ctx.channel,
+                        )
+
         embed = embeds.grade_profile_embed(
             member=target,
             grade_level=grade_level,
