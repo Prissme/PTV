@@ -2784,6 +2784,7 @@ class Database:
         dict[str, float],
         dict[str, object],
         Dict[int, tuple[int, int]],
+        dict[str, object],
     ]:
         await self.ensure_user(user_id)
         # FIX: Fetch best non-huge income outside of the critical transaction to limit lock duration.
@@ -2834,20 +2835,12 @@ class Database:
             )
 
             if not rows:
-                return 0, [], 0.0, {}, {}, {}
+                return 0, [], 0.0, {}, {}, {}, {}
 
             first_row = rows[0]
             now = datetime.now(timezone.utc)
             last_claim: Optional[datetime] = first_row["pet_last_claim"]
             elapsed_seconds = (now - last_claim).total_seconds() if last_claim else 0.0
-            if elapsed_seconds <= 0:
-                await connection.execute(
-                    "UPDATE users SET pet_last_claim = $1 WHERE user_id = $2",
-                    now,
-                    user_id,
-                )
-                return 0, rows, 0.0, {}, {}, {}
-
             booster_multiplier = float(first_row.get("pet_booster_multiplier") or 1.0)
             booster_expires = first_row.get("pet_booster_expires_at")
             booster_activated = first_row.get("pet_booster_activated_at")
@@ -2892,6 +2885,44 @@ class Database:
                 else:
                     potion_should_clear = True
 
+            def build_booster_info(extra_amount: int = 0) -> dict[str, float]:
+                if booster_multiplier <= 1:
+                    return {}
+                return {
+                    "multiplier": booster_multiplier,
+                    "extra": float(max(0, extra_amount)),
+                    "remaining_seconds": float(max(0.0, booster_remaining)),
+                }
+
+            def build_potion_info(bonus: int = 0) -> dict[str, object]:
+                if not (potion_definition and potion_multiplier > 1.0):
+                    return {}
+                return {
+                    "name": potion_definition.name,
+                    "slug": potion_definition.slug,
+                    "multiplier": potion_multiplier,
+                    "bonus": int(max(0, bonus)),
+                    "remaining_seconds": float(max(0.0, potion_remaining)),
+                }
+
+            if elapsed_seconds <= 0:
+                await connection.execute(
+                    "UPDATE users SET pet_last_claim = $1 WHERE user_id = $2",
+                    now,
+                    user_id,
+                )
+                if potion_should_clear:
+                    await self.clear_active_potion(user_id, connection=connection)
+                return (
+                    0,
+                    rows,
+                    0.0,
+                    build_booster_info(),
+                    {},
+                    progress_updates,
+                    build_potion_info(),
+                )
+
             effective_incomes: list[int] = []
             for row in rows:
                 base_income = int(row["base_income_per_hour"])
@@ -2919,7 +2950,17 @@ class Database:
                     now,
                     user_id,
                 )
-                return 0, rows, elapsed_seconds, {}, {}, {}
+                if potion_should_clear:
+                    await self.clear_active_potion(user_id, connection=connection)
+                return (
+                    0,
+                    rows,
+                    elapsed_seconds,
+                    build_booster_info(),
+                    {},
+                    progress_updates,
+                    build_potion_info(),
+                )
 
             elapsed_hours = elapsed_seconds / 3600
             base_amount = hourly_income * elapsed_hours
@@ -2931,7 +2972,17 @@ class Database:
 
             raw_income = base_income_int + booster_extra_amount
             if raw_income <= 0:
-                return 0, rows, elapsed_seconds, {}, {}, {}
+                if potion_should_clear:
+                    await self.clear_active_potion(user_id, connection=connection)
+                return (
+                    0,
+                    rows,
+                    elapsed_seconds,
+                    build_booster_info(booster_extra_amount),
+                    {},
+                    progress_updates,
+                    build_potion_info(potion_bonus_amount),
+                )
 
             if potion_multiplier > 1.0:
                 boosted_by_potion = int(round(raw_income * potion_multiplier))
@@ -2963,18 +3014,23 @@ class Database:
                 clan_shiny_multiplier = max(
                     1.0, float(first_row.get("shiny_luck_multiplier") or 1.0)
                 )
-            boosted_income = int(raw_income * clan_multiplier)
-            clan_bonus = max(0, boosted_income - raw_income)
-            if clan_id is not None:
-                clan_info = {
+
+            def build_clan_info(bonus: int = 0) -> dict[str, object]:
+                if clan_id is None:
+                    return {}
+                return {
                     "id": int(clan_id),
                     "name": str(first_row.get("clan_name") or "Clan"),
                     "multiplier": clan_multiplier,
-                    "bonus": clan_bonus,
+                    "bonus": int(max(0, bonus)),
                     "boost_level": int(first_row.get("clan_boost_level") or 0),
                     "banner": str(first_row.get("clan_banner") or "⚔️"),
                     "shiny_multiplier": clan_shiny_multiplier,
                 }
+            boosted_income = int(raw_income * clan_multiplier)
+            clan_bonus = max(0, boosted_income - raw_income)
+            if clan_id is not None:
+                clan_info = build_clan_info(clan_bonus)
 
             income = boosted_income
             before_balance = int(first_row["balance"])
@@ -3061,23 +3117,8 @@ class Database:
                     new_xp,
                 )
 
-        booster_info: dict[str, float] = {}
-        if booster_multiplier > 1:
-            booster_info = {
-                "multiplier": booster_multiplier,
-                "extra": float(max(0, booster_extra_amount)),
-                "remaining_seconds": float(max(0.0, booster_remaining)),
-            }
-
-        potion_info: dict[str, object] = {}
-        if potion_definition and potion_multiplier > 1.0:
-            potion_info = {
-                "name": potion_definition.name,
-                "slug": potion_definition.slug,
-                "multiplier": potion_multiplier,
-                "bonus": int(max(0, potion_bonus_amount)),
-                "remaining_seconds": float(max(0.0, potion_remaining)),
-            }
+        booster_info: dict[str, float] = build_booster_info(booster_extra_amount)
+        potion_info: dict[str, object] = build_potion_info(potion_bonus_amount)
 
         if potion_should_clear:
             # FIX: Clear expired potions within the active transaction for consistency.
