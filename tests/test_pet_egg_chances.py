@@ -150,9 +150,23 @@ async def _exercise_rainbow_chance(monkeypatch):
         await bot.close()
 
 
+async def _exercise_egg_lookup_variants():
+    cog, _database, bot = await _create_cog()
+    try:
+        egg = cog._resolve_egg("œuf metallique")
+        assert egg is not None
+        assert egg.slug == "metallique"
+    finally:
+        await bot.close()
+
+
 def test_base_gold_chance_stays_active(monkeypatch):
     asyncio.run(_exercise_gold_chance(monkeypatch))
 
 
 def test_base_rainbow_chance_stays_active(monkeypatch):
     asyncio.run(_exercise_rainbow_chance(monkeypatch))
+
+
+def test_egg_lookup_accepts_mixed_diacritics():
+    asyncio.run(_exercise_egg_lookup_variants())
