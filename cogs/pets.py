@@ -397,13 +397,11 @@ class Pets(commands.Cog):
         )
         self._egg_lookup: Dict[str, str] = {}
         for egg in self._eggs.values():
-            aliases = {egg.slug, egg.name.lower()}
-            aliases.update(alias.lower() for alias in egg.aliases)
-            normalized = {token.replace("œ", "oe").strip() for token in aliases}
-            for token in aliases | normalized:
-                key = token.strip().lower()
-                if key:
-                    self._egg_lookup[key] = egg.slug
+            aliases = {egg.slug, egg.name}
+            aliases.update(egg.aliases)
+            for token in aliases:
+                for variant in self._generate_alias_variants(token):
+                    self._egg_lookup[variant] = egg.slug
         if self._default_egg_slug:
             self._egg_lookup.setdefault(self._default_egg_slug, self._default_egg_slug)
 
@@ -412,6 +410,29 @@ class Pets(commands.Cog):
         normalized = unicodedata.normalize("NFKD", value)
         normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
         return "".join(ch for ch in normalized.lower() if ch.isalnum())
+
+    @staticmethod
+    def _generate_alias_variants(token: str | None) -> Set[str]:
+        variants: Set[str] = set()
+        if not token:
+            return variants
+
+        def _add_variant(text: str) -> None:
+            stripped = text.strip().lower()
+            if stripped:
+                variants.add(stripped)
+
+        _add_variant(token)
+        _add_variant(token.replace("œ", "oe").replace("Œ", "oe"))
+
+        for candidate in list(variants):
+            decomposed = unicodedata.normalize("NFKD", candidate)
+            without_diacritics = "".join(
+                ch for ch in decomposed if not unicodedata.combining(ch)
+            )
+            _add_variant(without_diacritics)
+
+        return variants
 
     @staticmethod
     def _market_variant_code(
