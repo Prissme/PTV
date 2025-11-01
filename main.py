@@ -18,6 +18,7 @@ from aiohttp import web
 from discord.ext import commands
 
 from config import DATABASE_URL, LOG_LEVEL, OWNER_ID, PREFIX, TOKEN, PET_DEFINITIONS
+from utils.localization import DEFAULT_LANGUAGE
 
 # FIX: Allow tuning of the health check server operations timeout via environment.
 HEALTH_CHECK_TIMEOUT = int(os.getenv("HEALTH_TIMEOUT", "10"))
@@ -123,6 +124,7 @@ class EcoBot(commands.Bot):
             "plaza",
             "admin",
             "stats",
+            "language",
         )
         self._market_tip_cooldowns: Dict[int, float] = {}
         self._dm_tip_cooldowns: Dict[int, float] = {}
@@ -197,6 +199,22 @@ class EcoBot(commands.Bot):
 
     async def on_command_error(self, context: commands.Context, exception: Exception) -> None:
         await ErrorHandler.handle_command_error(context, exception)
+
+    async def get_user_language(self, user_id: int) -> str:
+        try:
+            return await self.database.get_user_language(user_id)
+        except DatabaseError:
+            logger.exception("Impossible de récupérer la langue de l'utilisateur %s", user_id)
+            return DEFAULT_LANGUAGE
+
+    async def set_user_language(self, user_id: int, language: str) -> str:
+        try:
+            return await self.database.set_user_language(user_id, language)
+        except DatabaseError:
+            logger.exception(
+                "Impossible de mettre à jour la langue de l'utilisateur %s", user_id
+            )
+            return DEFAULT_LANGUAGE
 
     async def on_command_completion(self, ctx: commands.Context) -> None:
         await self._maybe_notify_private_usage(ctx)
