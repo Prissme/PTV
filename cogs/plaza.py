@@ -591,14 +591,14 @@ class Plaza(commands.Cog):
         return "".join(ch for ch in normalized.lower() if ch.isalnum())
 
     @staticmethod
-    def _variant_flags(variant: Optional[str]) -> tuple[Optional[bool], Optional[bool]]:
-        if variant == "gold":
-            return True, False
-        if variant == "rainbow":
-            return False, True
-        if variant == "normal":
-            return False, False
-        return None, None
+    def _variant_flags(
+        variant: Mapping[str, Optional[bool]]
+    ) -> tuple[Optional[bool], Optional[bool], Optional[bool]]:
+        return (
+            variant.get("gold"),
+            variant.get("rainbow"),
+            variant.get("shiny"),
+        )
 
     @staticmethod
     def _pick_preferred_listing_index(rows: Sequence[Mapping[str, object]]) -> int:
@@ -620,18 +620,26 @@ class Plaza(commands.Cog):
             return normal_candidates[0]
         return 0
 
-    def _parse_pet_query(self, raw: str) -> tuple[str, Optional[int], Optional[str]]:
+    def _parse_pet_query(
+        self, raw: str
+    ) -> tuple[str, Optional[int], Mapping[str, Optional[bool]]]:
         tokens = [token for token in raw.replace(",", " ").split() if token]
         if not tokens:
-            return "", None, None
+            return "", None, {}
 
-        variant: Optional[str] = None
         ordinal: Optional[int] = None
         name_parts: list[str] = []
+        variant_flags: dict[str, Optional[bool]] = {
+            "gold": None,
+            "rainbow": None,
+            "shiny": None,
+        }
 
         gold_aliases = {"gold", "doré", "doree", "or"}
         rainbow_aliases = {"rainbow", "rb", "arcenciel", "arc-en-ciel"}
         normal_aliases = {"normal", "base", "standard"}
+        shiny_aliases = {"shiny", "brillant", "etincelant", "étincelant"}
+        dull_aliases = {"noshiny", "nonshiny", "sansshiny"}
 
         for token in tokens:
             lowered = token.lower()
@@ -639,13 +647,22 @@ class Plaza(commands.Cog):
                 ordinal = int(lowered)
                 continue
             if lowered in gold_aliases:
-                variant = "gold"
+                variant_flags["gold"] = True
+                variant_flags["rainbow"] = False
                 continue
             if lowered in rainbow_aliases:
-                variant = "rainbow"
+                variant_flags["rainbow"] = True
+                variant_flags["gold"] = False
                 continue
             if lowered in normal_aliases:
-                variant = "normal"
+                variant_flags["gold"] = False
+                variant_flags["rainbow"] = False
+                continue
+            if lowered in shiny_aliases:
+                variant_flags["shiny"] = True
+                continue
+            if lowered in dull_aliases:
+                variant_flags["shiny"] = False
                 continue
             name_parts.append(token)
 
@@ -653,7 +670,7 @@ class Plaza(commands.Cog):
             name_parts = tokens
 
         slug = self._normalize_key(" ".join(name_parts))
-        return slug, ordinal, variant
+        return slug, ordinal, variant_flags
 
     # Gestion des vues de stand actives
     def _register_stand_view(self, view: StandManagementView) -> None:
@@ -679,14 +696,17 @@ class Plaza(commands.Cog):
 
     def _format_pet_record(self, record: Mapping[str, object]) -> str:
         name = str(record.get("name", "Pet"))
-        markers = ""
+        markers: list[str] = []
         if bool(record.get("is_huge")):
-            markers += " ✨"
+            markers.append("🌟")
         if bool(record.get("is_rainbow")):
-            markers += " 🌈"
+            markers.append("🌈")
         elif bool(record.get("is_gold")):
-            markers += " 🥇"
-        return f"{name}{markers}"
+            markers.append("🥇")
+        if bool(record.get("is_shiny")):
+            markers.append("✨")
+        suffix = f" {' '.join(markers)}" if markers else ""
+        return f"{name}{suffix}"
 
     def _format_listing_line(self, record: Mapping[str, object]) -> str:
         listing_id = int(record.get("id", 0))
@@ -719,7 +739,7 @@ class Plaza(commands.Cog):
     async def _resolve_pet(
         self, user_id: int, raw: str
     ) -> tuple[Optional[Mapping[str, object]], Optional[str], Optional[str]]:
-        slug, ordinal, variant = self._parse_pet_query(raw)
+        slug, ordinal, variant_flags = self._parse_pet_query(raw)
         if not slug:
             return None, None, "Merci de préciser le nom du pet à mettre en vente."
 
@@ -727,18 +747,30 @@ class Plaza(commands.Cog):
         if definition is None:
             return None, None, "Ce pet est introuvable dans ton inventaire."
 
-        is_gold, is_rainbow = self._variant_flags(variant)
+        is_gold, is_rainbow, is_shiny = self._variant_flags(variant_flags)
         rows = list(
             await self.database.get_user_pet_by_name(
                 user_id,
                 definition.name,
                 is_gold=is_gold,
                 is_rainbow=is_rainbow,
+                is_shiny=is_shiny,
                 include_on_market=True,
             )
         )
         if not rows:
-            label = definition.name if variant is None else f"{definition.name} ({variant})"
+            adjectives: list[str] = []
+            if is_shiny:
+                adjectives.append("shiny")
+            if is_rainbow:
+                adjectives.append("rainbow")
+            elif is_gold:
+                adjectives.append("doré")
+            elif is_gold is False and is_rainbow is False:
+                adjectives.append("classique")
+            label = definition.name
+            if adjectives:
+                label += " (" + " ".join(adjectives) + ")"
             return None, None, f"Tu n'as aucun {label} disponible."
 
         if ordinal:
