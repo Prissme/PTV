@@ -1817,7 +1817,11 @@ class Database:
                 level = int(row.get("huge_level") or 1)
                 multiplier = get_huge_level_multiplier(str(row.get("name", "")), level)
                 reference = best_non_huge.get(user_id, 0)
-                scaled = int(reference * multiplier)
+                if reference <= 0:
+                    base_income = int(row["base_income_per_hour"])
+                    scaled = int(base_income * multiplier)
+                else:
+                    scaled = int(reference * multiplier)
                 income_value = max(HUGE_PET_MIN_INCOME, scaled)
             else:
                 if bool(row.get("is_rainbow")):
@@ -2476,6 +2480,7 @@ class Database:
         *,
         is_gold: bool | None = None,
         is_rainbow: bool | None = None,
+        is_shiny: bool | None = None,
         include_active: bool = True,
         include_inactive: bool = True,
         include_on_market: bool = True,
@@ -2494,6 +2499,10 @@ class Database:
         if is_rainbow is not None:
             where_clauses.append(f"up.is_rainbow = ${index}")
             params.append(is_rainbow)
+            index += 1
+        if is_shiny is not None:
+            where_clauses.append(f"up.is_shiny = ${index}")
+            params.append(is_shiny)
             index += 1
         if not include_active:
             where_clauses.append("NOT up.is_active")

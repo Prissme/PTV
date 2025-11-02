@@ -546,6 +546,7 @@ def pet_collection_embed(
         is_rainbow = bool(pet.get("is_rainbow"))
         is_shiny = bool(pet.get("is_shiny"))
         income = int(pet.get("income", pet.get("base_income_per_hour", 0)))
+        identifier = int(pet.get("id") or pet.get("user_pet_id") or 0)
         tags: list[str] = []
         if is_huge:
             level = int(pet.get("huge_level", 1))
@@ -557,6 +558,7 @@ def pet_collection_embed(
         if is_shiny:
             tags.append("Shiny")
         line_parts = [
+            f"#{identifier}" if identifier else "",
             "⭐" if is_active else "",
             _pet_emoji(name),
             name,

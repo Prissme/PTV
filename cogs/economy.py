@@ -1325,7 +1325,8 @@ class Economy(commands.Cog):
 
         remaining = max(1, len(MASTERMIND_CONFIG.colors) - int(perks.color_reduction))
         colors = MASTERMIND_CONFIG.colors[:remaining]
-        config = replace(MASTERMIND_CONFIG, colors=colors)
+        code_length = max(1, min(MASTERMIND_CONFIG.code_length, len(colors)))
+        config = replace(MASTERMIND_CONFIG, colors=colors, code_length=code_length)
         return MastermindHelper(config)
 
     def _evaluate_slots(self, reels: Sequence[str]) -> tuple[int, str]:
