@@ -10,6 +10,7 @@ from discord.ext import commands
 from config import (
     Colors,
     Emojis,
+    GALAXY_PET_MULTIPLIER,
     GOLD_PET_MULTIPLIER,
     PET_EMOJIS,
     PET_RARITY_COLORS,
@@ -18,6 +19,7 @@ from config import (
     PetDefinition,
     PetEggDefinition,
     RAINBOW_PET_MULTIPLIER,
+    SHINY_PET_MULTIPLIER,
 )
 
 _BRANDING_REPLACEMENTS: dict[str, str] = {
@@ -461,14 +463,18 @@ def _pet_title(
     is_huge: bool,
     is_gold: bool,
     *,
+    is_galaxy: bool = False,
     is_rainbow: bool = False,
     is_shiny: bool = False,
 ) -> str:
+    galaxy_marker = " 🌌" if is_galaxy else ""
     rainbow_marker = " 🌈" if is_rainbow else ""
-    gold_marker = " 🥇" if is_gold and not is_rainbow else ""
+    gold_marker = " 🥇" if is_gold and not (is_rainbow or is_galaxy) else ""
     shiny_marker = " ✨" if is_shiny else ""
-    display_name = f"{_pet_emoji(name)} {name}{rainbow_marker}{gold_marker}{shiny_marker}".strip()
-    if is_rainbow:
+    display_name = f"{_pet_emoji(name)} {name}{galaxy_marker}{rainbow_marker}{gold_marker}{shiny_marker}".strip()
+    if is_galaxy:
+        rarity_label = f"{rarity} Galaxy"
+    elif is_rainbow:
         rarity_label = f"{rarity} Rainbow"
     elif is_gold:
         rarity_label = f"{rarity} Or"
@@ -490,15 +496,23 @@ def pet_reveal_embed(
     income_per_hour: int,
     is_huge: bool,
     is_gold: bool,
+    is_galaxy: bool = False,
     is_rainbow: bool = False,
     is_shiny: bool = False,
     market_value: int = 0,
 ) -> discord.Embed:
-    base_color = Colors.GOLD if is_gold or is_rainbow else PET_RARITY_COLORS.get(rarity, Colors.INFO)
+    if is_galaxy:
+        base_color = Colors.ACCENT
+    elif is_gold or is_rainbow:
+        base_color = Colors.GOLD
+    else:
+        base_color = PET_RARITY_COLORS.get(rarity, Colors.INFO)
     description = f"Revenus passifs : **{income_per_hour:,} PB/h**".replace(",", " ")
     if is_huge:
         description += f"\n🎉 Incroyable ! Tu as obtenu **{name}** ! 🎉"
-    if is_rainbow:
+    if is_galaxy:
+        description += f"\n🌌 Variante galaxy ! Puissance x{GALAXY_PET_MULTIPLIER}."
+    elif is_rainbow:
         description += f"\n🌈 Variante rainbow ! Puissance x{RAINBOW_PET_MULTIPLIER}."
     elif is_gold:
         description += f"\n🥇 Variante or ! Puissance x{GOLD_PET_MULTIPLIER}."
@@ -508,7 +522,13 @@ def pet_reveal_embed(
         description += f"\nValeur marché : **{format_currency(market_value)}**"
     embed = _base_embed(
         _pet_title(
-            name, rarity, is_huge, is_gold, is_rainbow=is_rainbow, is_shiny=is_shiny
+            name,
+            rarity,
+            is_huge,
+            is_gold,
+            is_galaxy=is_galaxy,
+            is_rainbow=is_rainbow,
+            is_shiny=is_shiny,
         ),
         description,
         color=base_color,
@@ -543,6 +563,7 @@ def pet_collection_embed(
         is_active = bool(pet.get("is_active"))
         is_huge = bool(pet.get("is_huge"))
         is_gold = bool(pet.get("is_gold"))
+        is_galaxy = bool(pet.get("is_galaxy"))
         is_rainbow = bool(pet.get("is_rainbow"))
         is_shiny = bool(pet.get("is_shiny"))
         income = int(pet.get("income", pet.get("base_income_per_hour", 0)))
@@ -551,7 +572,9 @@ def pet_collection_embed(
         if is_huge:
             level = int(pet.get("huge_level", 1))
             tags.append(f"Niv. {level}")
-        if is_rainbow:
+        if is_galaxy:
+            tags.append("Galaxy")
+        elif is_rainbow:
             tags.append("Rainbow")
         elif is_gold:
             tags.append("Gold")

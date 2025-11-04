@@ -49,7 +49,7 @@ if not DATABASE_URL:
 # ---------------------------------------------------------------------------
 # Paramètres économie
 # ---------------------------------------------------------------------------
-DAILY_REWARD = (100, 200)
+DAILY_REWARD = (10_000, 20_000)
 DAILY_COOLDOWN = 86_400  # 24 heures
 MESSAGE_REWARD = 1
 MESSAGE_COOLDOWN = 60
@@ -336,9 +336,11 @@ GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
 RAINBOW_PET_MULTIPLIER: Final[int] = 10
 RAINBOW_PET_COMBINE_REQUIRED: Final[int] = 10
 RAINBOW_PET_CHANCE: Final[float] = 0.0
+GALAXY_PET_MULTIPLIER: Final[int] = 25
+GALAXY_PET_COMBINE_REQUIRED: Final[int] = 100
 SHINY_PET_MULTIPLIER: Final[int] = 5
 HUGE_PET_NAME: Final[str] = "Huge Shelly"
-HUGE_PET_MULTIPLIER: Final[int] = 6
+HUGE_PET_MULTIPLIER: Final[float] = 4.2
 HUGE_PET_MIN_INCOME: Final[int] = 600
 HUGE_PET_LEVEL_CAP: Final[int] = 80
 HUGE_PET_LEVEL_BASE_XP: Final[int] = 120
@@ -348,20 +350,22 @@ HUGE_GRIFF_NAME: Final[str] = "Huge Griff"
 HUGE_BULL_NAME: Final[str] = "Huge Bull"
 TITANIC_GRIFF_NAME: Final[str] = "Titanic Griff"
 HUGE_KENJI_ONI_NAME: Final[str] = "Huge Kenji Oni"
-HUGE_GRIFF_MULTIPLIER: Final[int] = 4
-TITANIC_GRIFF_MULTIPLIER: Final[int] = 100
-HUGE_GALE_MULTIPLIER: Final[int] = 80
-HUGE_KENJI_ONI_MULTIPLIER: Final[int] = 9
-HUGE_BULL_MULTIPLIER: Final[int] = 6
+HUGE_GRIFF_MULTIPLIER: Final[float] = 2.8
+TITANIC_GRIFF_MULTIPLIER: Final[float] = 70.0
+HUGE_GALE_MULTIPLIER: Final[float] = 56.0
+HUGE_KENJI_ONI_MULTIPLIER: Final[float] = 6.3
+HUGE_BULL_MULTIPLIER: Final[float] = 4.2
+HUGE_BO_NAME: Final[str] = "Huge Bo"
+HUGE_BO_MULTIPLIER: Final[float] = HUGE_PET_MULTIPLIER
 HUGE_SHADE_NAME: Final[str] = "Huge Shade"
-HUGE_SHADE_MULTIPLIER: Final[int] = 6
+HUGE_SHADE_MULTIPLIER: Final[float] = 4.2
 HUGE_MORTIS_NAME: Final[str] = "Huge Mortis"
-HUGE_MORTIS_MULTIPLIER: Final[int] = 9
+HUGE_MORTIS_MULTIPLIER: Final[float] = 6.3
 HUGE_SURGE_NAME: Final[str] = "Huge Surge"
-HUGE_SURGE_MULTIPLIER: Final[int] = 37
+HUGE_SURGE_MULTIPLIER: Final[float] = 25.9
 TITANIC_MEEPLE_NAME: Final[str] = "Titanic Meeple"
-TITANIC_MEEPLE_MULTIPLIER: Final[int] = 640
-HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, int]] = {
+TITANIC_MEEPLE_MULTIPLIER: Final[float] = 448.0
+HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
     HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
     HUGE_KENJI_ONI_NAME: HUGE_KENJI_ONI_MULTIPLIER,
@@ -371,6 +375,7 @@ HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, int]] = {
     HUGE_SURGE_NAME: HUGE_SURGE_MULTIPLIER,
     TITANIC_MEEPLE_NAME: TITANIC_MEEPLE_MULTIPLIER,
     HUGE_BULL_NAME: HUGE_BULL_MULTIPLIER,
+    HUGE_BO_NAME: HUGE_BO_MULTIPLIER,
 }
 
 HUGE_PET_MIN_LEVEL_MULTIPLIERS: Final[Dict[str, float]] = {
@@ -379,7 +384,7 @@ HUGE_PET_MIN_LEVEL_MULTIPLIERS: Final[Dict[str, float]] = {
 }
 
 
-def get_huge_multiplier(name: str) -> int:
+def get_huge_multiplier(name: str) -> float:
     """Retourne le multiplicateur personnalisé associé à un énorme pet."""
 
     normalized = name.strip().lower() if name else ""
@@ -449,6 +454,7 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     HUGE_SHADE_NAME: "Extrêmement rare dans l'Œuf Maudit (0.5%) - Zone Manoir Hanté.",
     HUGE_MORTIS_NAME: "Récompense exclusive pour les membres VIP du serveur.",
     HUGE_SURGE_NAME: "Apparaît dans l'Œuf métallique pour les stratèges les plus assidus.",
+    HUGE_BO_NAME: "Récompense du mode King of the Hill : défends ton trône pour tenter ta chance !",
     TITANIC_MEEPLE_NAME: "Récompense quasi mythique de l'Œuf métallique, au-delà du légendaire.",
 }
 
@@ -617,6 +623,14 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
         name=HUGE_KENJI_ONI_NAME,
         rarity="Secret",
         image_url="https://example.com/document56.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=HUGE_BO_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1435335892712685628.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0,
         is_huge=True,
@@ -810,6 +824,7 @@ PET_EMOJIS: Final[dict[str, str]] = {
     HUGE_SURGE_NAME: os.getenv("PET_EMOJI_HUGE_SURGE", "<:HugeSurge:1433379423133892608>"),
     TITANIC_MEEPLE_NAME: os.getenv("PET_EMOJI_TITANIC_MEEPLE", "<:TITANICMEEPLE:1433380006557646878>"),
     HUGE_BULL_NAME: os.getenv("PET_EMOJI_HUGE_BULL", "<:HugeBull:1433617222357487748>"),
+    HUGE_BO_NAME: os.getenv("PET_EMOJI_HUGE_BO", "<:HugeBo:1435335892712685628>"),
     "Darryl": os.getenv("PET_EMOJI_DARRYL", "<:Darryl:1433376220980187177>"),
     "Rico": os.getenv("PET_EMOJI_RICO", "<:Rico:1433376959127228436>"),
     "Nani": os.getenv("PET_EMOJI_NANI", "<:Nani:1433377774122303582>"),
