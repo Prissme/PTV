@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Sequence, Tuple, cast
 
+from dataclasses import dataclass
+
 import discord
 from discord.ext import commands
 
@@ -188,6 +190,10 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "command": f"{PREFIX}millionairerace",
                     "description": "Prends part à la course millionnaire et fais exploser ta fortune.",
                 },
+                {
+                    "command": f"{PREFIX}koth",
+                    "description": "Conquiers la colline et vise Huge Bo : 1/6000 toutes les 10s, aucun cooldown.",
+                },
             ),
         },
         {
@@ -270,6 +276,10 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "command": f"{PREFIX}goldify",
                     "description": "Fusionne tes pets en version or pour booster leur puissance.",
                     "aliases": ("gold", "fusion"),
+                },
+                {
+                    "command": f"{PREFIX}galaxy <pet>",
+                    "description": "Fusionne 100 rainbow en une variante galaxy 25× plus puissante.",
                 },
                 {
                     "command": f"{PREFIX}claim",
@@ -395,6 +405,10 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "command": f"{PREFIX}millionairerace",
                     "description": "Join the Millionaire Race and skyrocket your fortune.",
                 },
+                {
+                    "command": f"{PREFIX}koth",
+                    "description": "Claim the hill and chase Huge Bo: 1/6000 chance every 10s, no cooldown.",
+                },
             ),
         },
         {
@@ -477,6 +491,10 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "command": f"{PREFIX}goldify",
                     "description": "Fuse your pets into their golden version to boost their power.",
                     "aliases": ("gold", "fusion"),
+                },
+                {
+                    "command": f"{PREFIX}galaxy <pet>",
+                    "description": "Fuse 100 rainbow copies into a galaxy variant that's 25× stronger.",
                 },
                 {
                     "command": f"{PREFIX}claim",

@@ -21,10 +21,13 @@ from config import (
     CLAN_SHINY_LUCK_INCREMENT,
     GOLD_PET_MULTIPLIER,
     GOLD_PET_COMBINE_REQUIRED,
+    GALAXY_PET_COMBINE_REQUIRED,
+    GALAXY_PET_MULTIPLIER,
     HUGE_PET_LEVEL_CAP,
     HUGE_PET_MIN_INCOME,
     HUGE_GRIFF_NAME,
     HUGE_PET_NAMES,
+    HUGE_BO_NAME,
     RAINBOW_PET_COMBINE_REQUIRED,
     RAINBOW_PET_MULTIPLIER,
     SHINY_PET_MULTIPLIER,
@@ -231,6 +234,12 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_user_pets_rainbow ON user_pets(user_id) WHERE is_rainbow"
             )
             await connection.execute(
+                "ALTER TABLE user_pets ADD COLUMN IF NOT EXISTS is_galaxy BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_pets_galaxy ON user_pets(user_id) WHERE is_galaxy"
+            )
+            await connection.execute(
                 "ALTER TABLE user_pets ADD COLUMN IF NOT EXISTS is_shiny BOOLEAN NOT NULL DEFAULT FALSE"
             )
             await connection.execute(
@@ -347,6 +356,7 @@ class Database:
                     pet_id INTEGER NOT NULL REFERENCES pets(pet_id) ON DELETE CASCADE,
                     is_gold BOOLEAN NOT NULL DEFAULT FALSE,
                     is_rainbow BOOLEAN NOT NULL DEFAULT FALSE,
+                    is_galaxy BOOLEAN NOT NULL DEFAULT FALSE,
                     is_shiny BOOLEAN NOT NULL DEFAULT FALSE,
                     price BIGINT NOT NULL CHECK (price >= 0),
                     source TEXT NOT NULL CHECK (source IN ('stand', 'trade')),
@@ -355,7 +365,22 @@ class Database:
                 """
             )
             await connection.execute(
+                "ALTER TABLE pet_trade_history ADD COLUMN IF NOT EXISTS is_galaxy BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            await connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_pet_trade_history_pet ON pet_trade_history(pet_id)"
+            )
+
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS koth_states (
+                    guild_id BIGINT PRIMARY KEY,
+                    king_user_id BIGINT,
+                    channel_id BIGINT,
+                    claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_roll_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
             )
 
             await connection.execute(
@@ -1736,6 +1761,8 @@ class Database:
                 up.is_gold,
                 up.is_huge,
                 up.is_rainbow,
+
+                up.is_galaxy,
                 up.is_shiny,
                 up.huge_level,
                 p.base_income_per_hour,
@@ -1754,7 +1781,11 @@ class Database:
             value = int(market_values.get(pet_id, 0))
             if value <= 0:
                 value = max(base_income * 120, 1_000)
-            if bool(row.get("is_rainbow")):
+            is_galaxy = bool(row.get("is_galaxy"))
+            is_rainbow = bool(row.get("is_rainbow"))
+            if is_galaxy:
+                value = int(value * GALAXY_PET_MULTIPLIER)
+            elif is_rainbow:
                 value = int(value * RAINBOW_PET_MULTIPLIER)
             elif bool(row["is_gold"]):
                 value = int(value * GOLD_PET_MULTIPLIER)
@@ -1783,6 +1814,8 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+
+                up.is_galaxy,
                 up.is_shiny,
                 up.huge_level,
                 p.name,
@@ -1797,7 +1830,11 @@ class Database:
             if bool(row.get("is_huge")):
                 continue
             base_income = int(row["base_income_per_hour"])
-            if bool(row.get("is_rainbow")):
+            is_galaxy = bool(row.get("is_galaxy"))
+            is_rainbow = bool(row.get("is_rainbow"))
+            if is_galaxy:
+                base_income *= GALAXY_PET_MULTIPLIER
+            elif is_rainbow:
                 base_income *= RAINBOW_PET_MULTIPLIER
             elif bool(row.get("is_gold")):
                 base_income *= GOLD_PET_MULTIPLIER
@@ -1824,7 +1861,9 @@ class Database:
                     scaled = int(reference * multiplier)
                 income_value = max(HUGE_PET_MIN_INCOME, scaled)
             else:
-                if bool(row.get("is_rainbow")):
+                if bool(row.get("is_galaxy")):
+                    income_value = base_income * GALAXY_PET_MULTIPLIER
+                elif bool(row.get("is_rainbow")):
                     income_value = base_income * RAINBOW_PET_MULTIPLIER
                 elif bool(row.get("is_gold")):
                     income_value = base_income * GOLD_PET_MULTIPLIER
@@ -2031,22 +2070,27 @@ class Database:
         is_huge: bool = False,
         is_gold: bool = False,
         is_rainbow: bool = False,
+        is_galaxy: bool = False,
         is_shiny: bool = False,
     ) -> asyncpg.Record:
         await self.ensure_user(user_id)
-        if is_rainbow:
+        if is_galaxy:
+            is_gold = False
+            is_rainbow = False
+        elif is_rainbow:
             is_gold = False
         row = await self.pool.fetchrow(
             """
-            INSERT INTO user_pets (user_id, pet_id, is_huge, is_gold, is_rainbow, is_shiny)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, user_id, pet_id, is_active, is_huge, is_gold, is_rainbow, is_shiny, acquired_at
+            INSERT INTO user_pets (user_id, pet_id, is_huge, is_gold, is_rainbow, is_galaxy, is_shiny)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id, user_id, pet_id, is_active, is_huge, is_gold, is_rainbow, is_galaxy, is_shiny, acquired_at
             """,
             user_id,
             pet_id,
             is_huge,
             is_gold,
             is_rainbow,
+            is_galaxy,
             is_shiny,
         )
         if row is None:
@@ -2067,6 +2111,7 @@ class Database:
                   AND up.pet_id = $2
                   AND NOT up.is_gold
                   AND NOT up.is_rainbow
+                  AND NOT up.is_galaxy
                   AND NOT up.is_active
                   AND NOT up.on_market
                 ORDER BY up.acquired_at, up.id
@@ -2114,6 +2159,7 @@ class Database:
                     up.is_huge,
                     up.is_gold,
                     up.is_rainbow,
+                    up.is_galaxy,
                     up.is_shiny,
                     up.huge_level,
                     up.huge_xp,
@@ -2148,6 +2194,7 @@ class Database:
                   AND up.pet_id = $2
                   AND up.is_gold
                   AND NOT up.is_rainbow
+                  AND NOT up.is_galaxy
                   AND NOT up.is_active
                   AND NOT up.on_market
                 ORDER BY up.acquired_at, up.id
@@ -2194,6 +2241,7 @@ class Database:
                     up.is_huge,
                     up.is_gold,
                     up.is_rainbow,
+                    up.is_galaxy,
                     up.is_shiny,
                     up.huge_level,
                     up.huge_xp,
@@ -2212,6 +2260,87 @@ class Database:
 
         if new_record is None:
             raise DatabaseError("Impossible de récupérer le pet rainbow")
+
+        return new_record, required
+
+    async def upgrade_pet_to_galaxy(
+        self, user_id: int, pet_id: int, *, make_shiny: bool = False
+    ) -> tuple[asyncpg.Record, int]:
+        await self.ensure_user(user_id)
+        async with self.transaction() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT up.id
+                FROM user_pets AS up
+                WHERE up.user_id = $1
+                  AND up.pet_id = $2
+                  AND up.is_rainbow
+                  AND NOT up.is_galaxy
+                  AND NOT up.is_active
+                  AND NOT up.on_market
+                ORDER BY up.acquired_at, up.id
+                FOR UPDATE
+                """,
+                user_id,
+                pet_id,
+            )
+
+            available_ids = [int(row["id"]) for row in rows]
+            required = GALAXY_PET_COMBINE_REQUIRED
+
+            if len(available_ids) < required:
+                raise DatabaseError(
+                    f"Il te faut {required} exemplaires RAINBOW pour créer un Galaxy. Tu n'en as que {len(available_ids)}."
+                )
+
+            consumed_ids = available_ids[:required]
+            await connection.execute(
+                "DELETE FROM user_pets WHERE id = ANY($1::INT[])",
+                consumed_ids,
+            )
+
+            inserted = await connection.fetchrow(
+                """
+                INSERT INTO user_pets (user_id, pet_id, is_galaxy, is_shiny)
+                VALUES ($1, $2, TRUE, $3)
+                RETURNING id
+                """,
+                user_id,
+                pet_id,
+                make_shiny,
+            )
+
+            if inserted is None:
+                raise DatabaseError("Impossible de créer le pet galaxy")
+
+            new_record = await connection.fetchrow(
+                """
+                SELECT
+                    up.id,
+                    up.nickname,
+                    up.is_active,
+                    up.is_huge,
+                    up.is_gold,
+                    up.is_rainbow,
+                    up.is_galaxy,
+                    up.is_shiny,
+                    up.huge_level,
+                    up.huge_xp,
+                    up.acquired_at,
+                    p.pet_id,
+                    p.name,
+                    p.rarity,
+                    p.image_url,
+                    p.base_income_per_hour
+                FROM user_pets AS up
+                JOIN pets AS p ON p.pet_id = up.pet_id
+                WHERE up.id = $1
+                """,
+                int(inserted["id"]),
+            )
+
+        if new_record is None:
+            raise DatabaseError("Impossible de récupérer le pet galaxy")
 
         return new_record, required
 
@@ -2293,6 +2422,8 @@ class Database:
                     up.is_huge,
                     up.is_gold,
                     up.is_rainbow,
+
+                    up.is_galaxy,
                     up.is_shiny,
                     up.huge_level,
                     up.huge_xp,
@@ -2323,6 +2454,8 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+
+                up.is_galaxy,
                 up.is_shiny,
                 up.on_market,
                 up.huge_level,
@@ -2351,6 +2484,8 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+
+                up.is_galaxy,
                 up.is_shiny,
                 up.on_market,
                 up.huge_level,
@@ -2391,6 +2526,8 @@ class Database:
                     up.is_huge,
                     up.is_gold,
                     up.is_rainbow,
+
+                    up.is_galaxy,
                     up.is_shiny,
                     up.on_market,
                     up.huge_level,
@@ -2443,6 +2580,8 @@ class Database:
                     up.is_huge,
                     up.is_gold,
                     up.is_rainbow,
+
+                    up.is_galaxy,
                     up.is_shiny,
                     up.huge_level,
                     up.huge_xp,
@@ -2521,6 +2660,8 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+
+                up.is_galaxy,
                 up.is_shiny,
                 up.on_market,
                 up.huge_level,
@@ -2549,6 +2690,8 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+
+                up.is_galaxy,
                 up.is_shiny,
                 up.huge_level,
                 up.huge_xp,
@@ -2856,6 +2999,8 @@ class Database:
                     up.is_huge,
                     up.is_gold,
                     up.is_rainbow,
+
+                    up.is_galaxy,
                     up.is_shiny,
                     up.huge_level,
                     up.huge_xp,
@@ -2959,7 +3104,9 @@ class Database:
                     scaled_income = int(best_non_huge_income * multiplier)
                     income_value = max(HUGE_PET_MIN_INCOME, scaled_income)
                 else:
-                    if bool(row.get("is_rainbow")):
+                    if bool(row.get("is_galaxy")):
+                        income_value = base_income * GALAXY_PET_MULTIPLIER
+                    elif bool(row.get("is_rainbow")):
                         income_value = base_income * RAINBOW_PET_MULTIPLIER
                     elif bool(row["is_gold"]):
                         income_value = base_income * GOLD_PET_MULTIPLIER
@@ -3300,8 +3447,15 @@ class Database:
         return {int(row["pet_id"]): int(row["total"]) for row in rows}
 
     @staticmethod
-    def _build_variant_code(is_gold: bool, is_rainbow: bool, is_shiny: bool) -> str:
-        base = "rainbow" if is_rainbow else "gold" if is_gold else "normal"
+    def _build_variant_code(is_gold: bool, is_rainbow: bool, is_galaxy: bool, is_shiny: bool) -> str:
+        if is_galaxy:
+            base = "galaxy"
+        elif is_rainbow:
+            base = "rainbow"
+        elif is_gold:
+            base = "gold"
+        else:
+            base = "normal"
         if is_shiny:
             return f"{base}+shiny"
         return base
@@ -3312,6 +3466,7 @@ class Database:
         pet_id: int,
         is_gold: bool,
         is_rainbow: bool,
+        is_galaxy: bool,
         is_shiny: bool,
         price: int,
         source: str,
@@ -3322,11 +3477,11 @@ class Database:
         if source not in {"stand", "trade"}:
             raise ValueError("Source de trade inconnue")
 
-        params = (pet_id, is_gold, is_rainbow, is_shiny, price, source)
+        params = (pet_id, is_gold, is_rainbow, is_galaxy, is_shiny, price, source)
         query = (
             """
-            INSERT INTO pet_trade_history (pet_id, is_gold, is_rainbow, is_shiny, price, source)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO pet_trade_history (pet_id, is_gold, is_rainbow, is_galaxy, is_shiny, price, source)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             """
         )
 
@@ -3342,7 +3497,7 @@ class Database:
 
         rows = await self.pool.fetch(
             """
-            SELECT pet_id, is_gold, is_rainbow, is_shiny, price
+            SELECT pet_id, is_gold, is_rainbow, is_galaxy, is_shiny, price
             FROM pet_trade_history
         """
         )
@@ -3353,6 +3508,7 @@ class Database:
             code = self._build_variant_code(
                 bool(row.get("is_gold")),
                 bool(row.get("is_rainbow")),
+                bool(row.get("is_galaxy")),
                 bool(row.get("is_shiny")),
             )
             key = (pet_id, code)
@@ -3365,6 +3521,59 @@ class Database:
             if count:
                 averages[key] = int(round(total / count))
         return averages
+
+    # ------------------------------------------------------------------
+    # King of the Hill
+    # ------------------------------------------------------------------
+    async def get_koth_state(self, guild_id: int) -> Optional[asyncpg.Record]:
+        row = await self.pool.fetchrow(
+            """
+            SELECT guild_id, king_user_id, channel_id, claimed_at, last_roll_at
+            FROM koth_states
+            WHERE guild_id = $1
+            """,
+            guild_id,
+        )
+        return row
+
+    async def upsert_koth_state(
+        self, guild_id: int, king_user_id: int, channel_id: int
+    ) -> asyncpg.Record:
+        now = datetime.now(timezone.utc)
+        row = await self.pool.fetchrow(
+            """
+            INSERT INTO koth_states (guild_id, king_user_id, channel_id, claimed_at, last_roll_at)
+            VALUES ($1, $2, $3, $4, $4)
+            ON CONFLICT (guild_id) DO UPDATE
+            SET king_user_id = EXCLUDED.king_user_id,
+                channel_id = EXCLUDED.channel_id,
+                claimed_at = EXCLUDED.claimed_at,
+                last_roll_at = EXCLUDED.last_roll_at
+            RETURNING guild_id, king_user_id, channel_id, claimed_at, last_roll_at
+            """,
+            guild_id,
+            king_user_id,
+            channel_id,
+            now,
+        )
+        if row is None:
+            raise DatabaseError("Impossible de mettre à jour l'état King of the Hill")
+        return row
+
+    async def get_all_koth_states(self) -> Sequence[asyncpg.Record]:
+        return await self.pool.fetch(
+            "SELECT guild_id, king_user_id, channel_id, claimed_at, last_roll_at FROM koth_states"
+        )
+
+    async def update_koth_roll_timestamp(
+        self, guild_id: int, *, timestamp: datetime | None = None
+    ) -> None:
+        moment = timestamp or datetime.now(timezone.utc)
+        await self.pool.execute(
+            "UPDATE koth_states SET last_roll_at = $2 WHERE guild_id = $1",
+            guild_id,
+            moment,
+        )
     # ------------------------------------------------------------------
     # Historique financier
     # ------------------------------------------------------------------
@@ -3575,6 +3784,7 @@ class Database:
                         pet_id=int(row["pet_id"]),
                         is_gold=bool(row.get("is_gold")),
                         is_rainbow=bool(row.get("is_rainbow")),
+                        is_galaxy=bool(row.get("is_galaxy")),
                         is_shiny=bool(row.get("is_shiny")),
                         price=max(0, price),
                         source="trade",
@@ -3586,6 +3796,7 @@ class Database:
                             "pet_id": int(row["pet_id"]),
                             "is_gold": bool(row.get("is_gold")),
                             "is_rainbow": bool(row.get("is_rainbow")),
+                            "is_galaxy": bool(row.get("is_galaxy")),
                             "is_shiny": bool(row.get("is_shiny")),
                             "price": max(0, price),
                         }
@@ -3736,6 +3947,7 @@ class Database:
                 pet_id=int(pet_row["pet_id"]),
                 is_gold=bool(pet_row.get("is_gold")),
                 is_rainbow=bool(pet_row.get("is_rainbow")),
+                is_galaxy=bool(pet_row.get("is_galaxy")),
                 is_shiny=bool(pet_row.get("is_shiny")),
                 price=price,
                 source="stand",
@@ -3785,6 +3997,8 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+
+                up.is_galaxy,
                 up.on_market,
                 p.name,
                 p.rarity,
@@ -3810,6 +4024,8 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+
+                up.is_galaxy,
                 p.name,
                 p.rarity,
                 p.base_income_per_hour
@@ -3839,6 +4055,8 @@ class Database:
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
+
+                up.is_galaxy,
                 p.name,
                 p.rarity
             FROM market_listings AS ml

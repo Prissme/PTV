@@ -30,6 +30,8 @@ from config import (
     RAINBOW_PET_CHANCE,
     RAINBOW_PET_COMBINE_REQUIRED,
     RAINBOW_PET_MULTIPLIER,
+    GALAXY_PET_COMBINE_REQUIRED,
+    GALAXY_PET_MULTIPLIER,
     PET_EMOJIS,
     SHINY_PET_MULTIPLIER,
     HUGE_PET_LEVEL_CAP,
@@ -302,11 +304,19 @@ class PetSelectionView(discord.ui.View):
     def _build_label(candidate: Mapping[str, Any], index: int) -> str:
         data = candidate.get("data", {})
         name = str(data.get("name", "Pet"))
+        is_galaxy = bool(data.get("is_galaxy"))
         is_rainbow = bool(data.get("is_rainbow"))
         is_gold = bool(data.get("is_gold"))
         is_active = bool(data.get("is_active"))
         income = int(data.get("base_income_per_hour", 0))
-        marker = " 🌈" if is_rainbow else (" 🥇" if is_gold else "")
+        if is_galaxy:
+            marker = " 🌌"
+        elif is_rainbow:
+            marker = " 🌈"
+        elif is_gold:
+            marker = " 🥇"
+        else:
+            marker = ""
         active_marker = "⭐ " if is_active else ""
         base_label = f"{index}. {active_marker}{name}{marker}"
         income_part = f" • {income:,} PB/h" if income else ""
@@ -438,9 +448,16 @@ class Pets(commands.Cog):
 
     @staticmethod
     def _market_variant_code(
-        *, is_gold: bool, is_rainbow: bool, is_shiny: bool
+        *, is_gold: bool, is_rainbow: bool, is_galaxy: bool, is_shiny: bool
     ) -> str:
-        base = "rainbow" if is_rainbow else "gold" if is_gold else "normal"
+        if is_galaxy:
+            base = "galaxy"
+        elif is_rainbow:
+            base = "rainbow"
+        elif is_gold:
+            base = "gold"
+        else:
+            base = "normal"
         return f"{base}+shiny" if is_shiny else base
 
     @staticmethod
@@ -468,24 +485,49 @@ class Pets(commands.Cog):
         pet_id: int,
         is_gold: bool,
         is_rainbow: bool,
+        is_galaxy: bool,
         is_shiny: bool,
     ) -> int:
         codes = [
             self._market_variant_code(
-                is_gold=is_gold, is_rainbow=is_rainbow, is_shiny=is_shiny
+                is_gold=is_gold,
+                is_rainbow=is_rainbow,
+                is_galaxy=is_galaxy,
+                is_shiny=is_shiny,
             )
         ]
         if is_shiny:
             codes.append(
                 self._market_variant_code(
-                    is_gold=is_gold, is_rainbow=is_rainbow, is_shiny=False
+                    is_gold=is_gold,
+                    is_rainbow=is_rainbow,
+                    is_galaxy=is_galaxy,
+                    is_shiny=False,
+                )
+            )
+        if is_galaxy:
+            codes.append(
+                self._market_variant_code(
+                    is_gold=is_gold,
+                    is_rainbow=is_rainbow,
+                    is_galaxy=False,
+                    is_shiny=is_shiny,
                 )
             )
         if is_rainbow or is_gold:
             codes.append(
-                self._market_variant_code(is_gold=False, is_rainbow=False, is_shiny=is_shiny)
+                self._market_variant_code(
+                    is_gold=False,
+                    is_rainbow=False,
+                    is_galaxy=False,
+                    is_shiny=is_shiny,
+                )
             )
-        codes.append(self._market_variant_code(is_gold=False, is_rainbow=False, is_shiny=False))
+        codes.append(
+            self._market_variant_code(
+                is_gold=False, is_rainbow=False, is_galaxy=False, is_shiny=False
+            )
+        )
 
         for code in codes:
             key = (pet_id, code)
@@ -587,10 +629,12 @@ class Pets(commands.Cog):
         definition = self._definition_by_id.get(pet_identifier)
         is_gold = bool(record.get("is_gold"))
         is_rainbow = bool(record.get("is_rainbow"))
+        is_galaxy = bool(record.get("is_galaxy"))
         is_shiny = bool(record.get("is_shiny"))
         is_huge = bool(record.get("is_huge"))
         data["is_gold"] = is_gold
         data["is_rainbow"] = is_rainbow
+        data["is_galaxy"] = is_galaxy
         data["is_shiny"] = is_shiny
         base_income = int(record.get("base_income_per_hour", data.get("base_income_per_hour", 0)))
         pet_name = str(data.get("name", ""))
@@ -619,7 +663,9 @@ class Pets(commands.Cog):
             data.pop("huge_xp_required", None)
             data.pop("huge_progress", None)
             data.pop("_reference_income", None)
-            if is_rainbow:
+            if is_galaxy:
+                effective_income = base_income * GALAXY_PET_MULTIPLIER
+            elif is_rainbow:
                 effective_income = base_income * RAINBOW_PET_MULTIPLIER
             elif is_gold:
                 effective_income = base_income * GOLD_PET_MULTIPLIER
@@ -660,6 +706,7 @@ class Pets(commands.Cog):
                 pet_id=pet_identifier,
                 is_gold=bool(data.get("is_gold")),
                 is_rainbow=bool(data.get("is_rainbow")),
+                is_galaxy=bool(data.get("is_galaxy")),
                 is_shiny=bool(data.get("is_shiny")),
             )
             pets_data.append(data)
@@ -1122,6 +1169,7 @@ class Pets(commands.Cog):
             pet_id=pet_identifier,
             is_gold=bool(pet_data.get("is_gold")),
             is_rainbow=bool(pet_data.get("is_rainbow")),
+            is_galaxy=bool(pet_data.get("is_galaxy")),
             is_shiny=bool(pet_data.get("is_shiny")),
         )
         embed = embeds.pet_equip_embed(
@@ -1481,6 +1529,7 @@ class Pets(commands.Cog):
             pet_id=pet_id,
             is_gold=is_gold,
             is_rainbow=is_rainbow,
+            is_galaxy=False,
             is_shiny=is_shiny,
         )
         if pet_definition.is_huge:
@@ -1504,6 +1553,7 @@ class Pets(commands.Cog):
             income_per_hour=income_per_hour,
             is_huge=pet_definition.is_huge,
             is_gold=is_gold,
+            is_galaxy=False,
             is_rainbow=is_rainbow,
             is_shiny=is_shiny,
             market_value=market_value,
@@ -1535,7 +1585,9 @@ class Pets(commands.Cog):
         for record in record_list:
             if not bool(record.get("is_huge")):
                 base_income = int(record.get("base_income_per_hour", 0))
-                if bool(record.get("is_rainbow")):
+                if bool(record.get("is_galaxy")):
+                    base_income *= GALAXY_PET_MULTIPLIER
+                elif bool(record.get("is_rainbow")):
                     base_income *= RAINBOW_PET_MULTIPLIER
                 elif bool(record.get("is_gold")):
                     base_income *= GOLD_PET_MULTIPLIER
@@ -1553,6 +1605,7 @@ class Pets(commands.Cog):
                     pet_id=pet_identifier,
                     is_gold=bool(data.get("is_gold")),
                     is_rainbow=bool(data.get("is_rainbow")),
+                    is_galaxy=bool(data.get("is_galaxy")),
                     is_shiny=bool(data.get("is_shiny")),
                 )
             data.pop("_reference_income", None)
@@ -1858,6 +1911,7 @@ class Pets(commands.Cog):
                 pet_id=pet_id,
                 is_gold=False,
                 is_rainbow=False,
+                is_galaxy=False,
                 is_shiny=False,
             )
         embed = embeds.pet_index_embed(
@@ -2508,7 +2562,9 @@ class Pets(commands.Cog):
             name = str(entry.get("name", "Pet"))
             income = int(entry.get("base_income_per_hour", 0))
             tags: List[str] = []
-            if entry.get("is_rainbow"):
+            if entry.get("is_galaxy"):
+                tags.append("Galaxy")
+            elif entry.get("is_rainbow"):
                 tags.append("Rainbow")
             elif entry.get("is_gold"):
                 tags.append("Gold")
@@ -2591,6 +2647,7 @@ class Pets(commands.Cog):
             pet_id=pet_identifier,
             is_gold=bool(pet_data.get("is_gold")),
             is_rainbow=bool(pet_data.get("is_rainbow")),
+            is_galaxy=bool(pet_data.get("is_galaxy")),
             is_shiny=bool(pet_data.get("is_shiny")),
         )
         reveal_embed = embeds.pet_reveal_embed(
@@ -2601,6 +2658,7 @@ class Pets(commands.Cog):
             is_huge=bool(pet_data.get("is_huge", False)),
             is_gold=True,
             is_rainbow=bool(pet_data.get("is_rainbow", False)),
+            is_galaxy=bool(pet_data.get("is_galaxy", False)),
             is_shiny=bool(pet_data.get("is_shiny", False)),
             market_value=int(pet_data.get("market_value", 0)),
         )
@@ -2684,6 +2742,7 @@ class Pets(commands.Cog):
             income_per_hour=rainbow_income,
             is_huge=False,
             is_gold=False,
+            is_galaxy=False,
             is_rainbow=True,
             is_shiny=bool(pet_data.get("is_shiny", False)),
             market_value=0,
@@ -2693,6 +2752,88 @@ class Pets(commands.Cog):
             value=(
                 f"🎉 {consumed} pets GOLD fusionnés en 1 RAINBOW !\n"
                 f"Puissance : **{rainbow_income:,} PB/h** ({RAINBOW_PET_MULTIPLIER}x le pet de base)\n"
+                "Les pets utilisés ont été retirés de ton inventaire."
+            ).replace(",", " "),
+            inline=False,
+        )
+
+        await ctx.send(embed=embed)
+
+        mastery_update = await self.database.add_mastery_experience(
+            ctx.author.id, PET_MASTERY.slug, max(1, int(consumed))
+        )
+        await self._handle_mastery_notifications(
+            ctx, mastery_update, mastery=PET_MASTERY
+        )
+
+    @commands.command(name="galaxy")
+    async def galaxy(self, ctx: commands.Context, *, pet_name: str) -> None:
+        slug, _, _ = self._parse_pet_query(pet_name)
+        if not slug:
+            await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
+            return
+
+        definition = self._definition_by_slug.get(slug)
+        if definition is None:
+            await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
+            return
+        if definition.is_huge:
+            await ctx.send(embed=embeds.error_embed("Les Huge pets ne peuvent pas devenir galaxy."))
+            return
+
+        pet_id = self._pet_ids.get(definition.name)
+        if pet_id is None:
+            await ctx.send(embed=embeds.error_embed("Pet non synchronisé."))
+            return
+
+        pet_mastery_progress = await self.database.get_mastery_progress(
+            ctx.author.id, PET_MASTERY.slug
+        )
+        pet_mastery_level = int(pet_mastery_progress.get("level", 1))
+        pet_perks = _compute_pet_mastery_perks(pet_mastery_level)
+        clan_row = await self.database.get_user_clan(ctx.author.id)
+        clan_shiny_multiplier = 1.0
+        if clan_row is not None:
+            clan_shiny_multiplier = max(
+                1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
+            )
+
+        shiny_chance = (
+            float(pet_perks.rainbowify_shiny_chance)
+            * float(pet_perks.egg_shiny_multiplier)
+            * clan_shiny_multiplier
+        )
+        make_shiny = random.random() < min(1.0, max(0.0, shiny_chance))
+
+        try:
+            record, consumed = await self.database.upgrade_pet_to_galaxy(
+                ctx.author.id, pet_id, make_shiny=make_shiny
+            )
+        except DatabaseError as exc:
+            await ctx.send(embed=embeds.error_embed(str(exc)))
+            return
+
+        pet_data = self._convert_record(record, best_non_huge_income=None)
+        base_income = definition.base_income_per_hour
+        galaxy_income = base_income * GALAXY_PET_MULTIPLIER
+
+        embed = embeds.pet_reveal_embed(
+            name=definition.name,
+            rarity=definition.rarity,
+            image_url=definition.image_url,
+            income_per_hour=galaxy_income,
+            is_huge=False,
+            is_gold=False,
+            is_galaxy=True,
+            is_rainbow=False,
+            is_shiny=bool(pet_data.get("is_shiny", False)),
+            market_value=0,
+        )
+        embed.add_field(
+            name="🌌 Fusion Galaxy",
+            value=(
+                f"🎉 {consumed} pets RAINBOW fusionnés en 1 GALAXY !\n"
+                f"Puissance : **{galaxy_income:,} PB/h** ({GALAXY_PET_MULTIPLIER}x le pet de base)\n"
                 "Les pets utilisés ont été retirés de ton inventaire."
             ).replace(",", " "),
             inline=False,
@@ -2906,6 +3047,7 @@ class Pets(commands.Cog):
             income_per_hour=int(pet_data.get("base_income_per_hour", 0)),
             is_huge=True,
             is_gold=False,
+            is_galaxy=False,
             is_rainbow=False,
             is_shiny=bool(pet_data.get("is_shiny", False)),
             market_value=0,
