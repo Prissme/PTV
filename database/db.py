@@ -7,6 +7,7 @@ import random
 import sys
 from collections import defaultdict
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
@@ -56,6 +57,65 @@ logger = logging.getLogger(__name__)
 _HUGE_PET_NAME_LOOKUP = {name.lower() for name in HUGE_PET_NAMES}
 
 
+@dataclass(frozen=True)
+class _BoosterComputation:
+    extra_income: int = 0
+    overlap_seconds: float = 0.0
+    remaining_seconds: float = 0.0
+
+    def consumed_seconds(self, elapsed_seconds: float) -> int:
+        if self.extra_income <= 0:
+            return 0
+        return int(min(elapsed_seconds, self.overlap_seconds))
+
+
+@dataclass(frozen=True)
+class _BoosterState:
+    multiplier: float
+    activated_at: datetime | None
+    expires_at: datetime | None
+
+    def evaluate(
+        self,
+        *,
+        now: datetime,
+        last_claim: datetime | None,
+        hourly_income: float,
+    ) -> _BoosterComputation:
+        remaining = 0.0
+        if isinstance(self.expires_at, datetime):
+            remaining = max(0.0, (self.expires_at - now).total_seconds())
+
+        if self.multiplier <= 1 or not isinstance(self.expires_at, datetime):
+            return _BoosterComputation(remaining_seconds=remaining)
+
+        if not isinstance(self.activated_at, datetime) or last_claim is None:
+            return _BoosterComputation(remaining_seconds=remaining)
+
+        overlap_start = max(last_claim, self.activated_at)
+        overlap_end = min(now, self.expires_at)
+        if overlap_end <= overlap_start:
+            return _BoosterComputation(remaining_seconds=remaining)
+
+        overlap_seconds = (overlap_end - overlap_start).total_seconds()
+        if hourly_income <= 0:
+            return _BoosterComputation(
+                overlap_seconds=overlap_seconds, remaining_seconds=remaining
+            )
+
+        booster_hours = overlap_seconds / 3600
+        extra = int(hourly_income * booster_hours * (self.multiplier - 1))
+        if extra <= 0:
+            return _BoosterComputation(
+                overlap_seconds=overlap_seconds, remaining_seconds=remaining
+            )
+        return _BoosterComputation(
+            extra_income=extra,
+            overlap_seconds=overlap_seconds,
+            remaining_seconds=remaining,
+        )
+
+
 class DatabaseError(RuntimeError):
     """Erreur levée lorsqu'une opération PostgreSQL échoue."""
 
@@ -97,6 +157,152 @@ class Database:
         adjusted = int(round(amount * multiplier))
         adjusted = max(amount, adjusted)
         return adjusted, max(0, adjusted - amount)
+
+    @staticmethod
+    def _build_empty_claim_result(
+        rows: Sequence[asyncpg.Record], elapsed_seconds: float
+    ) -> tuple[
+        int,
+        Sequence[asyncpg.Record],
+        float,
+        dict[str, float],
+        dict[str, object],
+        Dict[int, tuple[int, int]],
+        dict[str, object],
+        dict[str, float | int],
+    ]:
+        return (
+            0,
+            rows,
+            float(elapsed_seconds),
+            {},
+            {},
+            {},
+            {},
+            {
+                "count": 0,
+                "bonus": 0,
+                "multiplier": 1.0,
+            },
+        )
+
+    @staticmethod
+    def _compute_pet_income(
+        row: asyncpg.Record, best_non_huge_income: int
+    ) -> float:
+        base_income = float(row["base_income_per_hour"])
+        if bool(row["is_huge"]):
+            name = str(row.get("name", ""))
+            level = int(row.get("huge_level") or 1)
+            multiplier = get_huge_level_multiplier(name, level)
+            reference_income = (
+                best_non_huge_income if best_non_huge_income > 0 else base_income
+            )
+            return float(compute_huge_income(reference_income, multiplier))
+
+        income_value = base_income
+        if bool(row.get("is_galaxy")):
+            income_value *= GALAXY_PET_MULTIPLIER
+        elif bool(row.get("is_rainbow")):
+            income_value *= RAINBOW_PET_MULTIPLIER
+        elif bool(row["is_gold"]):
+            income_value *= GOLD_PET_MULTIPLIER
+        if bool(row.get("is_shiny")):
+            income_value *= SHINY_PET_MULTIPLIER
+        return float(income_value)
+
+    @staticmethod
+    def _calculate_income_shares(
+        rows: Sequence[asyncpg.Record],
+        effective_incomes: Sequence[float],
+        hourly_income: float,
+        total_income: int,
+    ) -> List[int]:
+        if total_income <= 0 or hourly_income <= 0 or not rows:
+            return [0 for _ in rows]
+
+        shares: List[int] = [0 for _ in rows]
+        remaining_income = total_income
+        for index, effective in enumerate(effective_incomes):
+            if index == len(rows) - 1:
+                share_amount = remaining_income
+            else:
+                proportion = effective / hourly_income if hourly_income else 0.0
+                share_amount = int(round(total_income * proportion))
+                share_amount = max(0, min(remaining_income, share_amount))
+                remaining_income -= share_amount
+            shares[index] = share_amount
+        return shares
+
+    def _calculate_huge_progress(
+        self,
+        rows: Sequence[asyncpg.Record],
+        total_income: int,
+        effective_incomes: Sequence[float],
+        hourly_income: float,
+    ) -> Dict[int, tuple[int, int]]:
+        if total_income <= 0 or hourly_income <= 0 or not rows:
+            return {}
+        shares = self._calculate_income_shares(
+            rows, effective_incomes, hourly_income, total_income
+        )
+        progress_updates: Dict[int, tuple[int, int]] = {}
+        for share_amount, row in zip(shares, rows):
+            if not bool(row.get("is_huge")):
+                continue
+            xp_gain = share_amount // 1_000
+            if xp_gain <= 0:
+                xp_gain = 1
+            level = max(1, int(row.get("huge_level") or 1))
+            current_xp = max(0, int(row.get("huge_xp") or 0))
+            new_level = level
+            accumulated_xp = current_xp + xp_gain
+            while new_level < HUGE_PET_LEVEL_CAP:
+                required = huge_level_required_xp(new_level)
+                if required <= 0 or accumulated_xp < required:
+                    break
+                accumulated_xp -= required
+                new_level += 1
+            if new_level >= HUGE_PET_LEVEL_CAP:
+                new_level = HUGE_PET_LEVEL_CAP
+                accumulated_xp = 0
+            if new_level != level or accumulated_xp != current_xp:
+                user_pet_id = int(row["id"])
+                progress_updates[user_pet_id] = (new_level, accumulated_xp)
+        return progress_updates
+
+    @staticmethod
+    def _evaluate_potion_state(
+        slug: object,
+        expires_at: object,
+        now: datetime,
+    ) -> tuple[float, PotionDefinition | None, float, bool]:
+        potion_multiplier = 1.0
+        potion_definition: PotionDefinition | None = None
+        potion_remaining = 0.0
+        potion_should_clear = False
+
+        if slug:
+            potion_definition = POTION_DEFINITION_MAP.get(str(slug))
+            if isinstance(expires_at, datetime) and potion_definition is not None:
+                if expires_at > now:
+                    potion_remaining = (expires_at - now).total_seconds()
+                    if potion_definition.effect_type == "pb_boost":
+                        potion_multiplier += float(potion_definition.effect_value)
+                else:
+                    potion_should_clear = True
+            else:
+                potion_should_clear = True
+
+        return potion_multiplier, potion_definition, potion_remaining, potion_should_clear
+
+    @classmethod
+    def _build_rebirth_info(cls, count: int, bonus: int) -> dict[str, float]:
+        return {
+            "count": count,
+            "bonus": max(0, bonus),
+            "multiplier": cls._rebirth_multiplier(count),
+        }
 
     @property
     def pool(self) -> asyncpg.Pool:
@@ -3093,11 +3299,11 @@ class Database:
         dict[str, object],
         Dict[int, tuple[int, int]],
         dict[str, object],
+        dict[str, float | int],
     ]:
         await self.ensure_user(user_id)
         # FIX: Fetch best non-huge income outside of the critical transaction to limit lock duration.
         best_non_huge_income = await self.get_best_non_huge_income(user_id)
-        progress_updates: Dict[int, tuple[int, int]] = {}
         async with self.transaction() as connection:
             rows = await connection.fetch(
                 """
@@ -3146,11 +3352,7 @@ class Database:
             )
 
             if not rows:
-                return 0, [], 0.0, {}, {}, {}, {}, {
-                    "count": 0,
-                    "bonus": 0,
-                    "multiplier": 1.0,
-                }
+                return self._build_empty_claim_result([], 0.0)
 
             first_row = rows[0]
             now = datetime.now(timezone.utc)
@@ -3162,80 +3364,25 @@ class Database:
                     now,
                     user_id,
                 )
-                return 0, rows, 0.0, {}, {}, {}, {}, {
-                    "count": 0,
-                    "bonus": 0,
-                    "multiplier": 1.0,
-                }
+                return self._build_empty_claim_result(rows, 0.0)
 
             booster_multiplier = float(first_row.get("pet_booster_multiplier") or 1.0)
-            booster_expires = first_row.get("pet_booster_expires_at")
-            booster_activated = first_row.get("pet_booster_activated_at")
-            active_potion_slug = first_row.get("active_potion_slug")
-            active_potion_expires_at = first_row.get("active_potion_expires_at")
-            booster_seconds = 0.0
-            booster_remaining = 0.0
-            booster_extra_amount = 0
-            potion_multiplier = 1.0
-            potion_bonus_amount = 0
-            potion_remaining = 0.0
-            potion_definition: PotionDefinition | None = None
-            potion_should_clear = False
+            booster_state = _BoosterState(
+                multiplier=booster_multiplier,
+                activated_at=first_row.get("pet_booster_activated_at"),
+                expires_at=first_row.get("pet_booster_expires_at"),
+            )
+            potion_multiplier, potion_definition, potion_remaining, potion_should_clear = (
+                self._evaluate_potion_state(
+                    first_row.get("active_potion_slug"),
+                    first_row.get("active_potion_expires_at"),
+                    now,
+                )
+            )
 
-            if isinstance(booster_expires, datetime):
-                booster_remaining = (booster_expires - now).total_seconds()
-
-            if (
-                booster_multiplier > 1
-                and isinstance(booster_expires, datetime)
-                and isinstance(booster_activated, datetime)
-                and last_claim is not None
-            ):
-                interval_start = last_claim
-                interval_end = now
-                overlap_start = max(interval_start, booster_activated)
-                overlap_end = min(interval_end, booster_expires)
-                if overlap_end > overlap_start:
-                    booster_seconds = (overlap_end - overlap_start).total_seconds()
-
-            if active_potion_slug:
-                potion_definition = POTION_DEFINITION_MAP.get(str(active_potion_slug))
-                if isinstance(active_potion_expires_at, datetime) and potion_definition is not None:
-                    if active_potion_expires_at > now:
-                        potion_remaining = (
-                            active_potion_expires_at - now
-                        ).total_seconds()
-                        if potion_definition.effect_type == "pb_boost":
-                            potion_multiplier += float(potion_definition.effect_value)
-                    else:
-                        potion_should_clear = True
-                else:
-                    potion_should_clear = True
-
-            effective_incomes: list[int] = []
-            for row in rows:
-                base_income = int(row["base_income_per_hour"])
-                if bool(row["is_huge"]):
-                    name = str(row.get("name", ""))
-                    level = int(row.get("huge_level") or 1)
-                    multiplier = get_huge_level_multiplier(name, level)
-                    reference_income = (
-                        best_non_huge_income if best_non_huge_income > 0 else base_income
-                    )
-                    income_value = compute_huge_income(reference_income, multiplier)
-                else:
-                    if bool(row.get("is_galaxy")):
-                        income_value = base_income * GALAXY_PET_MULTIPLIER
-                    elif bool(row.get("is_rainbow")):
-                        income_value = base_income * RAINBOW_PET_MULTIPLIER
-                    elif bool(row["is_gold"]):
-                        income_value = base_income * GOLD_PET_MULTIPLIER
-                    else:
-                        income_value = base_income
-                    if bool(row.get("is_shiny")):
-                        income_value *= SHINY_PET_MULTIPLIER
-                effective_incomes.append(income_value)
-
+            effective_incomes = [
+                self._compute_pet_income(row, best_non_huge_income) for row in rows
+            ]
             hourly_income = sum(effective_incomes)
             if hourly_income <= 0:
                 await connection.execute(
@@ -3243,28 +3390,19 @@ class Database:
                     now,
                     user_id,
                 )
-                return 0, rows, elapsed_seconds, {}, {}, {}, {}, {
-                    "count": 0,
-                    "bonus": 0,
-                    "multiplier": 1.0,
-                }
+                return self._build_empty_claim_result(rows, elapsed_seconds)
 
             elapsed_hours = elapsed_seconds / 3600
-            base_amount = hourly_income * elapsed_hours
-            base_income_int = int(base_amount)
+            base_income_int = int(hourly_income * elapsed_hours)
+            booster_result = booster_state.evaluate(
+                now=now, last_claim=last_claim, hourly_income=hourly_income
+            )
 
-            if booster_seconds > 0 and booster_multiplier > 1:
-                booster_hours = booster_seconds / 3600
-                booster_extra_amount = int(hourly_income * booster_hours * (booster_multiplier - 1))
-
-            raw_income = base_income_int + booster_extra_amount
+            raw_income = base_income_int + booster_result.extra_income
             if raw_income <= 0:
-                return 0, rows, elapsed_seconds, {}, {}, {}, {}, {
-                    "count": 0,
-                    "bonus": 0,
-                    "multiplier": 1.0,
-                }
+                return self._build_empty_claim_result(rows, elapsed_seconds)
 
+            potion_bonus_amount = 0
             if potion_multiplier > 1.0:
                 boosted_by_potion = int(round(raw_income * potion_multiplier))
                 potion_bonus_amount = max(0, boosted_by_potion - raw_income)
@@ -3273,18 +3411,15 @@ class Database:
             base_consumed_seconds = (
                 int((base_income_int / hourly_income) * 3600) if hourly_income else 0
             )
-            booster_consumed_seconds = (
-                int(min(elapsed_seconds, booster_seconds)) if booster_extra_amount > 0 else 0
+            consumed_seconds = max(
+                base_consumed_seconds,
+                booster_result.consumed_seconds(elapsed_seconds),
             )
-            consumed_seconds = max(base_consumed_seconds, booster_consumed_seconds)
             consumed_seconds = min(int(elapsed_seconds), consumed_seconds)
 
-            if last_claim is None:
+            new_claim_time = now if last_claim is None else last_claim + timedelta(seconds=consumed_seconds)
+            if new_claim_time > now:
                 new_claim_time = now
-            else:
-                new_claim_time = last_claim + timedelta(seconds=consumed_seconds)
-                if new_claim_time > now:
-                    new_claim_time = now
 
             clan_info: dict[str, object] = {}
             clan_id = first_row.get("member_clan_id")
@@ -3336,6 +3471,7 @@ class Database:
                 description=description,
             )
 
+            booster_expires = first_row.get("pet_booster_expires_at")
             if (
                 booster_multiplier > 1
                 and isinstance(booster_expires, datetime)
@@ -3353,43 +3489,7 @@ class Database:
                     user_id,
                 )
 
-            shares: list[int] = [0 for _ in rows]
-            if income > 0 and hourly_income > 0 and rows:
-                remaining_income = income
-                for index, effective in enumerate(effective_incomes):
-                    if index == len(rows) - 1:
-                        share_amount = remaining_income
-                    else:
-                        proportion = effective / hourly_income if hourly_income else 0.0
-                        share_amount = int(round(income * proportion))
-                        share_amount = max(0, min(remaining_income, share_amount))
-                        remaining_income -= share_amount
-                    shares[index] = share_amount
-
-            for share_amount, row in zip(shares, rows):
-                if not bool(row.get("is_huge")):
-                    continue
-                # FIX: Grant a minimum XP point even when the huge pet's share rounds to zero.
-                xp_gain = share_amount // 1_000
-                if xp_gain <= 0:
-                    xp_gain = 1
-                level = max(1, int(row.get("huge_level") or 1))
-                current_xp = max(0, int(row.get("huge_xp") or 0))
-                new_level = level
-                accumulated_xp = current_xp + xp_gain
-                while new_level < HUGE_PET_LEVEL_CAP:
-                    required = huge_level_required_xp(new_level)
-                    if required <= 0 or accumulated_xp < required:
-                        break
-                    accumulated_xp -= required
-                    new_level += 1
-                if new_level >= HUGE_PET_LEVEL_CAP:
-                    new_level = HUGE_PET_LEVEL_CAP
-                    accumulated_xp = 0
-                if new_level != level or accumulated_xp != current_xp:
-                    user_pet_id = int(row["id"])
-                    progress_updates[user_pet_id] = (new_level, accumulated_xp)
-
+            progress_updates = self._calculate_huge_progress(rows, income, effective_incomes, hourly_income)
             for pet_id, (new_level, new_xp) in progress_updates.items():
                 await connection.execute(
                     "UPDATE user_pets SET huge_level = $2, huge_xp = $3 WHERE id = $1",
@@ -3398,44 +3498,40 @@ class Database:
                     new_xp,
                 )
 
-        booster_info: dict[str, float] = {}
-        if booster_multiplier > 1:
-            booster_info = {
-                "multiplier": booster_multiplier,
-                "extra": float(max(0, booster_extra_amount)),
-                "remaining_seconds": float(max(0.0, booster_remaining)),
-            }
+            booster_info: dict[str, float] = {}
+            if booster_multiplier > 1:
+                booster_info = {
+                    "multiplier": booster_multiplier,
+                    "extra": float(max(0, booster_result.extra_income)),
+                    "remaining_seconds": float(max(0.0, booster_result.remaining_seconds)),
+                }
 
-        potion_info: dict[str, object] = {}
-        if potion_definition and potion_multiplier > 1.0:
-            potion_info = {
-                "name": potion_definition.name,
-                "slug": potion_definition.slug,
-                "multiplier": potion_multiplier,
-                "bonus": int(max(0, potion_bonus_amount)),
-                "remaining_seconds": float(max(0.0, potion_remaining)),
-            }
+            potion_info: dict[str, object] = {}
+            if potion_definition and potion_multiplier > 1.0:
+                potion_info = {
+                    "name": potion_definition.name,
+                    "slug": potion_definition.slug,
+                    "multiplier": potion_multiplier,
+                    "bonus": int(max(0, potion_bonus_amount)),
+                    "remaining_seconds": float(max(0.0, potion_remaining)),
+                }
 
-        if potion_should_clear:
-            # FIX: Clear expired potions within the active transaction for consistency.
-            await self.clear_active_potion(user_id, connection=connection)
+            if potion_should_clear:
+                # FIX: Clear expired potions within the active transaction for consistency.
+                await self.clear_active_potion(user_id, connection=connection)
 
-        rebirth_info = {
-            "count": rebirth_count,
-            "bonus": max(0, rebirth_bonus),
-            "multiplier": self._rebirth_multiplier(rebirth_count),
-        }
+            rebirth_info = self._build_rebirth_info(rebirth_count, rebirth_bonus)
 
-        return (
-            income,
-            rows,
-            elapsed_seconds,
-            booster_info,
-            clan_info,
-            progress_updates,
-            potion_info,
-            rebirth_info,
-        )
+            return (
+                income,
+                rows,
+                elapsed_seconds,
+                booster_info,
+                clan_info,
+                progress_updates,
+                potion_info,
+                rebirth_info,
+            )
 
     async def record_pet_opening(self, user_id: int, pet_id: int) -> None:
         await self.ensure_user(user_id)
