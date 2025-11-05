@@ -1,4 +1,5 @@
 import asyncio
+import asyncio
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -43,4 +44,13 @@ class _DummyDatabase(Database):
 def test_claim_income_returns_consistent_tuple_length() -> None:
     database = _DummyDatabase()
     result = asyncio.run(database.claim_active_pet_income(42))
-    assert result == (0, [], 0.0, {}, {}, {}, {})
+    assert result == (
+        0,
+        [],
+        0.0,
+        {},
+        {},
+        {},
+        {},
+        {"count": 0, "bonus": 0, "multiplier": 1.0},
+    )

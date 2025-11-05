@@ -29,6 +29,41 @@ class GradeSystem(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.database = bot.database
+
+    class RebirthConfirmView(discord.ui.View):
+        def __init__(self, author_id: int) -> None:
+            super().__init__(timeout=60)
+            self.author_id = int(author_id)
+            self.value: Optional[bool] = None
+
+        async def interaction_check(self, interaction: discord.Interaction) -> bool:
+            if interaction.user.id != self.author_id:
+                await interaction.response.send_message(
+                    "Seule la personne qui a lancé la commande peut confirmer ce rebirth.",
+                    ephemeral=True,
+                )
+                return False
+            return True
+
+        @discord.ui.button(label="Recommencer", style=discord.ButtonStyle.danger)
+        async def confirm(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ) -> None:
+            self.value = True
+            for child in self.children:
+                child.disabled = True
+            await interaction.response.edit_message(view=self)
+            self.stop()
+
+        @discord.ui.button(label="Annuler", style=discord.ButtonStyle.secondary)
+        async def cancel(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ) -> None:
+            self.value = False
+            for child in self.children:
+                child.disabled = True
+            await interaction.response.edit_message(view=self)
+            self.stop()
     @property
     def total_grades(self) -> int:
         return len(GRADE_DEFINITIONS)
@@ -307,6 +342,85 @@ class GradeSystem(commands.Cog):
             pet_slots=BASE_PET_SLOTS + grade_level,
         )
         await ctx.send(embed=embed)
+
+    @commands.command(name="rebirth")
+    async def rebirth(self, ctx: commands.Context) -> None:
+        if not isinstance(ctx.author, discord.Member):
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Le rebirth doit être effectué depuis le serveur principal."
+                )
+            )
+            return
+
+        grade_level = await self.database.get_grade_level(ctx.author.id)
+        if grade_level < self.total_grades:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    "Atteins d'abord le grade maximum avant de pouvoir rebirth."
+                )
+            )
+            return
+
+        rebirth_count = await self.database.get_rebirth_count(ctx.author.id)
+        description_lines = [
+            f"• Tu es sur le point de lancer ton rebirth #{rebirth_count + 1}",
+            "• Retour à la zone 1 et au grade 1",
+            "• Tes PB, potions actives et tickets de tombola seront perdus",
+            "• Tu conserves l'intégralité de tes pets",
+            "• Bonus permanent : +50% de PB gagnés",
+            "• Accès au gold garanti en payant 100× le prix d'un œuf",
+            "• Double ouverture récapitulée dans un seul embed",
+            "• Nouvelle zone : *Coming soon*",
+        ]
+        prompt_embed = embeds.warning_embed(
+            "\n".join(description_lines),
+            title="Confirmer le rebirth ?",
+        )
+        prompt_embed.set_author(
+            name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url
+        )
+        prompt_embed.set_footer(text="Cette action est irréversible.")
+
+        view = self.RebirthConfirmView(ctx.author.id)
+        message = await ctx.send(embed=prompt_embed, view=view)
+        await view.wait()
+
+        if view.value is not True:
+            await message.edit(view=None)
+            if view.value is False:
+                await ctx.send(embed=embeds.info_embed("Rebirth annulé."))
+            else:
+                await ctx.send(
+                    embed=embeds.info_embed(
+                        "Temps écoulé, rebirth annulé.", title="Rebirth"
+                    )
+                )
+            return
+
+        new_count = await self.database.perform_rebirth(ctx.author.id)
+        if isinstance(ctx.author, discord.Member):
+            await self._assign_grade_role(ctx.author, 1)
+
+        multiplier = 1.0 + 0.5 * new_count
+        success_lines = [
+            "✅ Nouveau départ en zone 1, grade 1",
+            "• Solde, potions et tickets ont été réinitialisés",
+            "• Tes pets restent intacts",
+            f"• Multiplicateur PB actuel : x{multiplier:.1f}",
+            "• Utilise `e!openbox <œuf> gold` pour un pet or garanti",
+            "• Les doubles ouvertures s'affichent maintenant dans un seul embed",
+            "• Zone suivante : *Coming soon*",
+        ]
+        success_embed = embeds.success_embed(
+            "\n".join(success_lines),
+            title=f"Rebirth #{new_count} terminé !",
+        )
+        success_embed.set_author(
+            name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url
+        )
+        await message.edit(view=None)
+        await ctx.send(embed=success_embed)
 
     @commands.command(name="gradeleaderboard", aliases=("gradelb", "xpleaderboard", "xplb"))
     async def grade_leaderboard(self, ctx: commands.Context) -> None:

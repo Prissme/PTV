@@ -85,6 +85,19 @@ class Database:
         self._min_size = min_size
         self._max_size = max_size
 
+    @staticmethod
+    def _rebirth_multiplier(count: int) -> float:
+        return 1.0 + 0.5 * max(0, int(count))
+
+    @classmethod
+    def _apply_rebirth_multiplier(cls, amount: int, count: int) -> tuple[int, int]:
+        if amount <= 0 or count <= 0:
+            return amount, 0
+        multiplier = cls._rebirth_multiplier(count)
+        adjusted = int(round(amount * multiplier))
+        adjusted = max(amount, adjusted)
+        return adjusted, max(0, adjusted - amount)
+
     @property
     def pool(self) -> asyncpg.Pool:
         if self._pool is None:
@@ -176,6 +189,12 @@ class Database:
             )
             await connection.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS active_potion_expires_at TIMESTAMPTZ"
+            )
+            await connection.execute(
+                """
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS rebirth_count
+                INTEGER NOT NULL DEFAULT 0 CHECK (rebirth_count >= 0)
+                """
             )
             await connection.execute(
                 """
@@ -1189,14 +1208,18 @@ class Database:
 
         async with self.transaction() as connection:
             row = await connection.fetchrow(
-                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                "SELECT balance, rebirth_count FROM users WHERE user_id = $1 FOR UPDATE",
                 user_id,
             )
             if row is None:
                 raise DatabaseError("Utilisateur introuvable lors de la mise à jour du solde")
 
             before = int(row["balance"])
-            tentative_after = before + amount
+            rebirth_count = int(row.get("rebirth_count") or 0)
+            effective_amount = amount
+            if amount > 0:
+                effective_amount, _ = self._apply_rebirth_multiplier(amount, rebirth_count)
+            tentative_after = before + effective_amount
             after = tentative_after if tentative_after >= 0 else 0
             applied_amount = after - before
             await connection.execute(
@@ -1238,11 +1261,11 @@ class Database:
 
         async with self.transaction() as connection:
             sender_row = await connection.fetchrow(
-                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                "SELECT balance, rebirth_count FROM users WHERE user_id = $1 FOR UPDATE",
                 sender_id,
             )
             recipient_row = await connection.fetchrow(
-                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                "SELECT balance, rebirth_count FROM users WHERE user_id = $1 FOR UPDATE",
                 recipient_id,
             )
 
@@ -1256,7 +1279,9 @@ class Database:
             recipient_before = int(recipient_row["balance"])
 
             sender_after = sender_before - amount
-            recipient_after = recipient_before + amount
+            recipient_rebirth = int(recipient_row.get("rebirth_count") or 0)
+            recipient_gain, _ = self._apply_rebirth_multiplier(amount, recipient_rebirth)
+            recipient_after = recipient_before + recipient_gain
 
             await connection.execute(
                 "UPDATE users SET balance = $1 WHERE user_id = $2",
@@ -1283,7 +1308,7 @@ class Database:
                 connection=connection,
                 user_id=recipient_id,
                 transaction_type=receive_transaction_type,
-                amount=amount,
+                amount=recipient_gain,
                 balance_before=recipient_before,
                 balance_after=recipient_after,
                 description=receive_description,
@@ -1919,6 +1944,67 @@ class Database:
             user_id,
         )
         return int(value or 0)
+
+    async def get_rebirth_count(self, user_id: int) -> int:
+        await self.ensure_user(user_id)
+        value = await self.pool.fetchval(
+            "SELECT rebirth_count FROM users WHERE user_id = $1",
+            user_id,
+        )
+        return int(value or 0)
+
+    async def perform_rebirth(self, user_id: int) -> int:
+        await self.ensure_user(user_id)
+        async with self.transaction() as connection:
+            user_row = await connection.fetchrow(
+                "SELECT balance, rebirth_count FROM users WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            if user_row is None:
+                raise DatabaseError("Utilisateur introuvable pour le rebirth")
+
+            await connection.execute(
+                """
+                UPDATE users
+                SET
+                    balance = 0,
+                    rebirth_count = rebirth_count + 1,
+                    active_potion_slug = NULL,
+                    active_potion_expires_at = NULL,
+                    pet_booster_multiplier = 1,
+                    pet_booster_expires_at = NULL,
+                    pet_booster_activated_at = NULL
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
+            await connection.execute(
+                "DELETE FROM user_potions WHERE user_id = $1",
+                user_id,
+            )
+            await connection.execute(
+                "DELETE FROM raffle_tickets WHERE user_id = $1",
+                user_id,
+            )
+            await connection.execute(
+                "DELETE FROM user_zones WHERE user_id = $1",
+                user_id,
+            )
+            await connection.execute(
+                """
+                UPDATE user_grades
+                SET grade_level = 0,
+                    mastermind_progress = 0,
+                    egg_progress = 0,
+                    sale_progress = 0,
+                    potion_progress = 0,
+                    updated_at = NOW()
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
+
+        return int(user_row.get("rebirth_count", 0)) + 1
 
     # ------------------------------------------------------------------
     # Gestion des zones
@@ -3035,6 +3121,7 @@ class Database:
                     p.base_income_per_hour,
                     u.pet_last_claim,
                     u.balance,
+                    u.rebirth_count,
                     u.pet_booster_multiplier,
                     u.pet_booster_expires_at,
                     u.pet_booster_activated_at,
@@ -3059,7 +3146,11 @@ class Database:
             )
 
             if not rows:
-                return 0, [], 0.0, {}, {}, {}, {}
+                return 0, [], 0.0, {}, {}, {}, {}, {
+                    "count": 0,
+                    "bonus": 0,
+                    "multiplier": 1.0,
+                }
 
             first_row = rows[0]
             now = datetime.now(timezone.utc)
@@ -3071,7 +3162,11 @@ class Database:
                     now,
                     user_id,
                 )
-                return 0, rows, 0.0, {}, {}, {}, {}
+                return 0, rows, 0.0, {}, {}, {}, {}, {
+                    "count": 0,
+                    "bonus": 0,
+                    "multiplier": 1.0,
+                }
 
             booster_multiplier = float(first_row.get("pet_booster_multiplier") or 1.0)
             booster_expires = first_row.get("pet_booster_expires_at")
@@ -3148,7 +3243,11 @@ class Database:
                     now,
                     user_id,
                 )
-                return 0, rows, elapsed_seconds, {}, {}, {}, {}
+                return 0, rows, elapsed_seconds, {}, {}, {}, {}, {
+                    "count": 0,
+                    "bonus": 0,
+                    "multiplier": 1.0,
+                }
 
             elapsed_hours = elapsed_seconds / 3600
             base_amount = hourly_income * elapsed_hours
@@ -3160,7 +3259,11 @@ class Database:
 
             raw_income = base_income_int + booster_extra_amount
             if raw_income <= 0:
-                return 0, rows, elapsed_seconds, {}, {}, {}, {}
+                return 0, rows, elapsed_seconds, {}, {}, {}, {}, {
+                    "count": 0,
+                    "bonus": 0,
+                    "multiplier": 1.0,
+                }
 
             if potion_multiplier > 1.0:
                 boosted_by_potion = int(round(raw_income * potion_multiplier))
@@ -3205,7 +3308,10 @@ class Database:
                     "shiny_multiplier": clan_shiny_multiplier,
                 }
 
-            income = boosted_income
+            rebirth_count = int(first_row.get("rebirth_count") or 0)
+            income, rebirth_bonus = self._apply_rebirth_multiplier(
+                boosted_income, rebirth_count
+            )
             before_balance = int(first_row["balance"])
             after_balance = before_balance + income
 
@@ -3218,6 +3324,8 @@ class Database:
             description = f"Revenus passifs ({len(rows)} pets)"
             if clan_bonus > 0:
                 description += " + boost clan"
+            if rebirth_bonus > 0:
+                description += " + bonus rebirth"
             await self.record_transaction(
                 connection=connection,
                 user_id=user_id,
@@ -3312,6 +3420,12 @@ class Database:
             # FIX: Clear expired potions within the active transaction for consistency.
             await self.clear_active_potion(user_id, connection=connection)
 
+        rebirth_info = {
+            "count": rebirth_count,
+            "bonus": max(0, rebirth_bonus),
+            "multiplier": self._rebirth_multiplier(rebirth_count),
+        }
+
         return (
             income,
             rows,
@@ -3320,6 +3434,7 @@ class Database:
             clan_info,
             progress_updates,
             potion_info,
+            rebirth_info,
         )
 
     async def record_pet_opening(self, user_id: int, pet_id: int) -> None:
@@ -3716,11 +3831,11 @@ class Database:
             partner_pets = await _prepare_pets(partner_id, partner_offer)
 
             initiator_balance_row = await connection.fetchrow(
-                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                "SELECT balance, rebirth_count FROM users WHERE user_id = $1 FOR UPDATE",
                 initiator_id,
             )
             partner_balance_row = await connection.fetchrow(
-                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                "SELECT balance, rebirth_count FROM users WHERE user_id = $1 FOR UPDATE",
                 partner_id,
             )
             if initiator_balance_row is None or partner_balance_row is None:
@@ -3738,8 +3853,17 @@ class Database:
             if partner_mid < 0:
                 raise DatabaseError("Ton partenaire n'a plus assez de PB pour ce trade.")
 
-            initiator_final = initiator_mid + partner_pb_out
-            partner_final = partner_mid + initiator_pb_out
+            initiator_rebirth = int(initiator_balance_row.get("rebirth_count") or 0)
+            partner_rebirth = int(partner_balance_row.get("rebirth_count") or 0)
+            initiator_gain, _ = self._apply_rebirth_multiplier(
+                partner_pb_out, initiator_rebirth
+            )
+            partner_gain, _ = self._apply_rebirth_multiplier(
+                initiator_pb_out, partner_rebirth
+            )
+
+            initiator_final = initiator_mid + initiator_gain
+            partner_final = partner_mid + partner_gain
 
             await connection.execute(
                 "UPDATE users SET balance = $1 WHERE user_id = $2",
@@ -3767,9 +3891,9 @@ class Database:
                     connection=connection,
                     user_id=partner_id,
                     transaction_type="trade",
-                    amount=initiator_pb_out,
+                    amount=partner_gain,
                     balance_before=partner_mid,
-                    balance_after=partner_mid + initiator_pb_out,
+                    balance_after=partner_mid + partner_gain,
                     description=f"Trade avec {initiator_id}",
                     related_user_id=initiator_id,
                 )
@@ -3789,9 +3913,9 @@ class Database:
                     connection=connection,
                     user_id=initiator_id,
                     transaction_type="trade",
-                    amount=partner_pb_out,
+                    amount=initiator_gain,
                     balance_before=initiator_mid,
-                    balance_after=initiator_final,
+                    balance_after=initiator_mid + initiator_gain,
                     description=f"Trade avec {partner_id}",
                     related_user_id=partner_id,
                 )
@@ -3919,7 +4043,7 @@ class Database:
 
             price = int(listing["price"])
             seller_balance = await connection.fetchrow(
-                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                "SELECT balance, rebirth_count FROM users WHERE user_id = $1 FOR UPDATE",
                 seller_id,
             )
             buyer_balance = await connection.fetchrow(
@@ -3934,7 +4058,9 @@ class Database:
             if buyer_before < price:
                 raise InsufficientBalanceError("Solde insuffisant pour cet achat.")
 
-            seller_after = seller_before + price
+            seller_rebirth = int(seller_balance.get("rebirth_count") or 0)
+            seller_gain, _ = self._apply_rebirth_multiplier(price, seller_rebirth)
+            seller_after = seller_before + seller_gain
             buyer_after = buyer_before - price
 
             await connection.execute(
@@ -3994,12 +4120,12 @@ class Database:
                 connection=connection,
                 user_id=seller_id,
                 transaction_type="stand_sale",
-                amount=price,
+                amount=seller_gain,
                 balance_before=seller_before,
                 balance_after=seller_after,
                 description=f"Vente annonce #{listing_id}",
                 related_user_id=buyer_id,
-        )
+            )
 
         if completed is None:
             raise DatabaseError("Impossible de finaliser l'achat.")
@@ -4223,7 +4349,7 @@ class Database:
             item_slug = str(listing.get("item_slug") or "")
 
             seller_balance = await connection.fetchrow(
-                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                "SELECT balance, rebirth_count FROM users WHERE user_id = $1 FOR UPDATE",
                 seller_id,
             )
             buyer_balance = await connection.fetchrow(
@@ -4238,7 +4364,9 @@ class Database:
             if buyer_before < price:
                 raise InsufficientBalanceError("Solde insuffisant pour cet achat.")
 
-            seller_after = seller_before + price
+            seller_rebirth = int(seller_balance.get("rebirth_count") or 0)
+            seller_gain, _ = self._apply_rebirth_multiplier(price, seller_rebirth)
+            seller_after = seller_before + seller_gain
             buyer_after = buyer_before - price
 
             await connection.execute(
@@ -4289,7 +4417,7 @@ class Database:
                 connection=connection,
                 user_id=seller_id,
                 transaction_type="stand_sale",
-                amount=price,
+                amount=seller_gain,
                 balance_before=seller_before,
                 balance_after=seller_after,
                 description=f"Vente consommable #{listing_id}",
