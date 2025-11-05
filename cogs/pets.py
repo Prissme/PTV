@@ -192,6 +192,26 @@ def _compute_pet_mastery_perks(level: int) -> PetMasteryPerks:
     )
 
 
+@dataclass(frozen=True)
+class RolledPet:
+    definition: PetDefinition
+    pet_id: int
+    is_gold: bool
+    is_rainbow: bool
+    is_shiny: bool
+    is_huge: bool
+    income_per_hour: int
+    market_value: int
+
+
+@dataclass(frozen=True)
+class EggOpenResult:
+    rolled_pet: RolledPet
+    message: discord.Message | None
+    embed: discord.Embed
+    bonus: bool = False
+
+
 class PetInventoryView(discord.ui.View):
     """Interface paginée pour afficher la collection de pets par lots de huit."""
 
@@ -1216,6 +1236,16 @@ class Pets(commands.Cog):
             if unlocked:
                 return True
 
+        if zone.rebirth_required > 0:
+            rebirth_count, _ = await self.database.get_rebirth_info(ctx.author.id)
+            if rebirth_count < zone.rebirth_required:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Cette zone nécessite au moins un rebirth pour être explorée."
+                    )
+                )
+                return False
+
         grade_level = await self.database.get_grade_level(ctx.author.id)
         if grade_level < zone.grade_required:
             grade_label = self._grade_label(zone.grade_required)
@@ -1292,17 +1322,22 @@ class Pets(commands.Cog):
         pet_mastery = await self.database.get_mastery_progress(ctx.author.id, PET_MASTERY.slug)
         egg_level = int(egg_mastery.get("level", 1))
         pet_level = int(pet_mastery.get("level", 1))
+        rebirth_count, _ = await self.database.get_rebirth_info(ctx.author.id)
         lines: List[str] = []
         for zone in PET_ZONES:
             zone_unlocked = zone.entry_cost <= 0 or zone.slug in unlocked_zones
             meets_grade = grade_level >= zone.grade_required
             meets_egg_mastery = egg_level >= zone.egg_mastery_required
             meets_pet_mastery = pet_level >= zone.pet_mastery_required
-            status = (
-                "✅"
-                if zone_unlocked and meets_grade and meets_egg_mastery and meets_pet_mastery
-                else "🔒"
+            meets_rebirth = rebirth_count >= zone.rebirth_required
+            available = (
+                zone_unlocked
+                and meets_grade
+                and meets_egg_mastery
+                and meets_pet_mastery
+                and meets_rebirth
             )
+            status = "✅" if available else "🔒"
             requirements: List[str] = []
             if not meets_grade:
                 requirements.append(
@@ -1315,6 +1350,10 @@ class Pets(commands.Cog):
             if zone.pet_mastery_required > 0 and not meets_pet_mastery:
                 requirements.append(
                     f"{PET_MASTERY.display_name} niveau {zone.pet_mastery_required}"
+                )
+            if zone.rebirth_required > 0 and not meets_rebirth:
+                requirements.append(
+                    f"Rebirth {zone.rebirth_required}+"
                 )
             if zone.entry_cost > 0:
                 if zone.slug in unlocked_zones:
@@ -1330,6 +1369,8 @@ class Pets(commands.Cog):
                 lines.append(
                     f"  • {egg.name} — {embeds.format_currency(egg.price)} (`e!openbox {egg.slug}`)"
                 )
+            if zone.placeholder:
+                lines.append(f"  • {zone.placeholder}")
 
         description = (
             "\n".join(lines) if lines else "Aucun œuf n'est disponible pour le moment."
@@ -1376,8 +1417,11 @@ class Pets(commands.Cog):
         active_potion: tuple[PotionDefinition, datetime] | None = None,
         charge_cost: bool = True,
         bonus: bool = False,
-    ) -> bool:
+        silent: bool = False,
+        guarantee_gold: bool = False,
+    ) -> EggOpenResult | None:
         await self.database.ensure_user(ctx.author.id)
+        message: discord.Message | None = None
         if charge_cost:
             balance = await self.database.fetch_balance(ctx.author.id)
             if balance < egg.price:
@@ -1387,7 +1431,7 @@ class Pets(commands.Cog):
                         f"**{embeds.format_currency(egg.price)}** pour acheter {egg.name}."
                     )
                 )
-                return False
+                return None
 
             await self.database.increment_balance(
                 ctx.author.id,
@@ -1432,7 +1476,7 @@ class Pets(commands.Cog):
                         "Réessaie dans quelques instants."
                     )
                 )
-                return False
+                return None
         is_gold = False
         is_rainbow = False
         is_shiny = False
@@ -1464,6 +1508,9 @@ class Pets(commands.Cog):
                     is_gold = False
             if shiny_chance > 0:
                 is_shiny = random.random() < shiny_chance
+            if guarantee_gold and not pet_definition.is_huge:
+                is_gold = True
+                is_rainbow = False
         _user_pet = await self.database.add_user_pet(
             ctx.author.id,
             pet_id,
@@ -1503,37 +1550,39 @@ class Pets(commands.Cog):
                 )
             )
 
-        egg_title = f"{egg.name} (bonus)" if bonus else egg.name
-        animation_steps = (
-            (egg_title, "L'œuf commence à bouger…"),
-            (egg_title, "Des fissures apparaissent !"),
-            (egg_title, "Ça y est, il est sur le point d'éclore !"),
-        )
-        speed_factor = 1.0
-        if mastery_perks is not None:
-            speed_factor = max(0.5, min(5.0, float(mastery_perks.animation_speed)))
-        step_delay = max(0.2, 1.1 / speed_factor)
-        reveal_delay = max(0.2, 1.2 / speed_factor)
-        message = await ctx.send(
-            content=EGG_OPEN_EMOJI,
-            embed=embeds.pet_animation_embed(
-                title=animation_steps[0][0],
-                description=animation_steps[0][1],
-                emoji=EGG_OPEN_EMOJI,
+        if not silent:
+            egg_title = f"{egg.name} (bonus)" if bonus else egg.name
+            animation_steps = (
+                (egg_title, "L'œuf commence à bouger…"),
+                (egg_title, "Des fissures apparaissent !"),
+                (egg_title, "Ça y est, il est sur le point d'éclore !"),
             )
-        )
-        for title, description in animation_steps[1:]:
-            await asyncio.sleep(step_delay)
-            await message.edit(
+            speed_factor = 1.0
+            if mastery_perks is not None:
+                speed_factor = max(0.5, min(5.0, float(mastery_perks.animation_speed)))
+            step_delay = max(0.2, 1.1 / speed_factor)
+            reveal_delay = max(0.2, 1.2 / speed_factor)
+            message = await ctx.send(
                 content=EGG_OPEN_EMOJI,
                 embed=embeds.pet_animation_embed(
-                    title=title,
-                    description=description,
+                    title=animation_steps[0][0],
+                    description=animation_steps[0][1],
                     emoji=EGG_OPEN_EMOJI,
-                )
+                ),
             )
+            for title, description in animation_steps[1:]:
+                await asyncio.sleep(step_delay)
+                await message.edit(
+                    content=EGG_OPEN_EMOJI,
+                    embed=embeds.pet_animation_embed(
+                        title=title,
+                        description=description,
+                        emoji=EGG_OPEN_EMOJI,
+                    ),
+                )
 
-        await asyncio.sleep(reveal_delay)
+            await asyncio.sleep(reveal_delay)
+
         market_values = await self.database.get_pet_market_values()
         market_value = self._resolve_market_value(
             market_values,
@@ -1570,7 +1619,8 @@ class Pets(commands.Cog):
             market_value=market_value,
         )
         reveal_embed.set_footer(text=f"Utilise e!equip {pet_definition.name} pour l'équiper !")
-        await message.edit(content=EGG_OPEN_EMOJI, embed=reveal_embed)
+        if message is not None:
+            await message.edit(content=EGG_OPEN_EMOJI, embed=reveal_embed)
 
         for auto_message in auto_messages:
             await ctx.send(auto_message)
@@ -1584,7 +1634,17 @@ class Pets(commands.Cog):
         await self._handle_mastery_notifications(ctx, mastery_update)
 
         self._dispatch_grade_progress(ctx, "egg", 1)
-        return True
+        rolled = RolledPet(
+            definition=pet_definition,
+            pet_id=pet_id,
+            is_gold=is_gold,
+            is_rainbow=is_rainbow,
+            is_shiny=is_shiny,
+            is_huge=pet_definition.is_huge,
+            income_per_hour=income_per_hour,
+            market_value=market_value,
+        )
+        return EggOpenResult(rolled_pet=rolled, message=message, embed=reveal_embed, bonus=bonus)
 
     def _sort_pets_for_display(
         self,
@@ -1662,12 +1722,20 @@ class Pets(commands.Cog):
     async def _openbox_impl(self, ctx: commands.Context, egg: str | None) -> None:
         raw_request = (egg or "").strip()
         double_request = False
+        gold_request = False
         if raw_request:
             tokens = raw_request.split()
-            if tokens and tokens[-1].lower() in {"x2", "2", "double"}:
-                double_request = True
-                tokens = tokens[:-1]
-                raw_request = " ".join(tokens).strip()
+            filtered_tokens: list[str] = []
+            for token in tokens:
+                lowered = token.lower()
+                if lowered in {"x2", "2", "double"}:
+                    double_request = True
+                    continue
+                if lowered in {"gold", "garantie", "garanti", "guaranteed", "or"}:
+                    gold_request = True
+                    continue
+                filtered_tokens.append(token)
+            raw_request = " ".join(filtered_tokens).strip()
 
         normalized_request = raw_request or None
 
@@ -1715,32 +1783,108 @@ class Pets(commands.Cog):
                 1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
             )
 
-        if double_request:
+        rebirth_count, _ = await self.database.get_rebirth_info(ctx.author.id)
+        has_rebirth = rebirth_count > 0
+
+        if double_request and not has_rebirth:
             if egg_perks.double_chance > 0:
-                await ctx.send(
-                    embed=embeds.info_embed(
-                        "Le mode double est désormais automatique : tu as "
-                        f"{egg_perks.double_chance * 100:.0f}% de chances d'obtenir un œuf bonus gratuitement à chaque ouverture."
-                    )
+                note = (
+                    f"Tu as déjà {egg_perks.double_chance * 100:.0f}% de chances "
+                    "d'obtenir un œuf bonus gratuitement."
                 )
             else:
-                await ctx.send(
-                    embed=embeds.warning_embed(
-                        "Atteins le niveau 5 de Maîtrise des œufs pour débloquer 5% de chance d'obtenir un deuxième œuf gratuit."
-                    )
+                note = (
+                    "Atteins le niveau 5 de Maîtrise des œufs pour débloquer "
+                    "5% de chance d'obtenir un deuxième œuf gratuit."
                 )
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    "Le mode double premium se débloque après un rebirth. " + note
+                )
+            )
+            double_request = False
+        if gold_request and not has_rebirth:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    "L'option œuf garanti or se débloque après un rebirth."
+                )
+            )
+            gold_request = False
 
         active_potion = await self.database.get_active_potion(ctx.author.id)
-        opened = await self._open_pet_egg(
-            ctx,
-            egg_definition,
-            pet_mastery_perks=pet_perks,
-            clan_shiny_multiplier=clan_shiny_multiplier,
-            active_potion=active_potion,
-            mastery_perks=egg_perks,
-        )
-        if not opened:
-            return
+
+        purchase_count = 2 if double_request else 1
+        guarantee_multiplier = 100 if gold_request else 1
+        manual_cost = purchase_count > 1 or guarantee_multiplier > 1
+
+        special_results: list[EggOpenResult] = []
+        if manual_cost:
+            total_cost = egg_definition.price * purchase_count * guarantee_multiplier
+            balance = await self.database.fetch_balance(ctx.author.id)
+            if balance < total_cost:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        f"Il te faut {embeds.format_currency(total_cost)} pour cette ouverture spéciale."
+                    )
+                )
+                return
+            descriptors: list[str] = []
+            if double_request:
+                descriptors.append("double")
+            if gold_request:
+                descriptors.append("garantie or")
+            description = f"Achat de {egg_definition.name}"
+            if descriptors:
+                description += f" ({', '.join(descriptors)})"
+            await self.database.increment_balance(
+                ctx.author.id,
+                -total_cost,
+                transaction_type="pet_purchase",
+                description=description,
+            )
+            await ctx.send(
+                embed=embeds.info_embed(
+                    f"Ouverture spéciale : {embeds.format_currency(total_cost)} PB pour "
+                    f"{purchase_count} œuf(s){' garantis or' if gold_request else ''}.",
+                    title="Mode premium",
+                )
+            )
+            for index in range(purchase_count):
+                result = await self._open_pet_egg(
+                    ctx,
+                    egg_definition,
+                    pet_mastery_perks=pet_perks,
+                    clan_shiny_multiplier=clan_shiny_multiplier,
+                    active_potion=active_potion,
+                    mastery_perks=egg_perks,
+                    charge_cost=False,
+                    bonus=False,
+                    silent=index > 0,
+                    guarantee_gold=gold_request,
+                )
+                if result is None:
+                    return
+                special_results.append(result)
+        else:
+            result = await self._open_pet_egg(
+                ctx,
+                egg_definition,
+                pet_mastery_perks=pet_perks,
+                clan_shiny_multiplier=clan_shiny_multiplier,
+                active_potion=active_potion,
+                mastery_perks=egg_perks,
+            )
+            if result is None:
+                return
+            special_results.append(result)
+
+        if double_request and len(special_results) >= 2:
+            combined_embed = embeds.pet_multi_reveal_embed(
+                [res.rolled_pet for res in special_results]
+            )
+            first_message = special_results[0].message
+            if first_message is not None:
+                await first_message.edit(content=EGG_OPEN_EMOJI, embed=combined_embed)
 
         bonus_eggs = 0
         triple_triggered = False

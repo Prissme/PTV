@@ -34,6 +34,7 @@ from config import (
     TITANIC_GRIFF_NAME,
     POTION_DEFINITION_MAP,
     PotionDefinition,
+    REBIRTH_PLUS_ZONE_SLUG,
     get_huge_level_multiplier,
     huge_level_required_xp,
 )
@@ -159,6 +160,12 @@ class Database:
             )
             await connection.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS active_potion_expires_at TIMESTAMPTZ"
+            )
+            await connection.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS rebirth_count INTEGER NOT NULL DEFAULT 0"
+            )
+            await connection.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS rebirth_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1"
             )
             await connection.execute(
                 """
@@ -1170,14 +1177,20 @@ class Database:
 
         async with self.transaction() as connection:
             row = await connection.fetchrow(
-                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                "SELECT balance, rebirth_multiplier FROM users WHERE user_id = $1 FOR UPDATE",
                 user_id,
             )
             if row is None:
                 raise DatabaseError("Utilisateur introuvable lors de la mise à jour du solde")
 
             before = int(row["balance"])
-            tentative_after = before + amount
+            multiplier = float(row.get("rebirth_multiplier") or 1.0)
+            applied = amount
+            if amount > 0 and multiplier > 1.0:
+                applied = int(round(amount * multiplier))
+                if applied <= 0:
+                    applied = amount
+            tentative_after = before + applied
             after = tentative_after if tentative_after >= 0 else 0
             applied_amount = after - before
             await connection.execute(
@@ -1903,6 +1916,88 @@ class Database:
             user_id,
         )
         return int(value or 0)
+
+    async def get_rebirth_info(self, user_id: int) -> tuple[int, float]:
+        await self.ensure_user(user_id)
+        row = await self.pool.fetchrow(
+            "SELECT rebirth_count, rebirth_multiplier FROM users WHERE user_id = $1",
+            user_id,
+        )
+        if row is None:
+            return 0, 1.0
+        return int(row.get("rebirth_count") or 0), float(row.get("rebirth_multiplier") or 1.0)
+
+    async def perform_rebirth(
+        self, user_id: int, *, reset_grade_level: int = 1, multiplier: float = 1.5
+    ) -> dict[str, float]:
+        await self.ensure_user(user_id)
+        async with self.transaction() as connection:
+            user_row = await connection.fetchrow(
+                "SELECT rebirth_count FROM users WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            if user_row is None:
+                raise DatabaseError("Utilisateur introuvable lors du rebirth")
+
+            await connection.execute(
+                "UPDATE users SET balance = 0, active_potion_slug = NULL, active_potion_expires_at = NULL WHERE user_id = $1",
+                user_id,
+            )
+            await connection.execute(
+                "DELETE FROM user_potions WHERE user_id = $1",
+                user_id,
+            )
+            await connection.execute(
+                "DELETE FROM raffle_tickets WHERE user_id = $1",
+                user_id,
+            )
+            await connection.execute(
+                "DELETE FROM user_zones WHERE user_id = $1",
+                user_id,
+            )
+            await connection.execute(
+                """
+                UPDATE user_grades
+                SET grade_level = $2,
+                    mastermind_progress = 0,
+                    egg_progress = 0,
+                    sale_progress = 0,
+                    potion_progress = 0,
+                    updated_at = NOW()
+                WHERE user_id = $1
+                """,
+                user_id,
+                max(0, int(reset_grade_level)),
+            )
+            await connection.execute(
+                """
+                UPDATE users
+                SET rebirth_count = COALESCE(rebirth_count, 0) + 1,
+                    rebirth_multiplier = $2
+                WHERE user_id = $1
+                """,
+                user_id,
+                float(multiplier),
+            )
+            await connection.execute(
+                """
+                INSERT INTO user_zones (user_id, zone_slug)
+                VALUES ($1, $2)
+                ON CONFLICT (user_id, zone_slug) DO NOTHING
+                """,
+                user_id,
+                REBIRTH_PLUS_ZONE_SLUG,
+            )
+            row = await connection.fetchrow(
+                "SELECT rebirth_count, rebirth_multiplier FROM users WHERE user_id = $1",
+                user_id,
+            )
+        if row is None:
+            raise DatabaseError("Impossible de récupérer les informations de rebirth")
+        return {
+            "rebirth_count": int(row.get("rebirth_count") or 0),
+            "rebirth_multiplier": float(row.get("rebirth_multiplier") or 1.0),
+        }
 
     # ------------------------------------------------------------------
     # Gestion des zones

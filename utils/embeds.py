@@ -86,6 +86,7 @@ __all__ = [
     "grade_completed_embed",
     "pet_animation_embed",
     "pet_reveal_embed",
+    "pet_multi_reveal_embed",
     "pet_collection_embed",
     "pet_index_embed",
     "pet_equip_embed",
@@ -534,6 +535,56 @@ def pet_reveal_embed(
         color=base_color,
     )
     embed.set_image(url=image_url)
+    return _finalize_embed(embed)
+
+
+def pet_multi_reveal_embed(pets: Sequence[object]) -> discord.Embed:
+    if not pets:
+        return info_embed("Aucun pet à afficher.", title="Ouverture multiple")
+
+    embed = _base_embed("Ouverture multiple !", "Tes récompenses :", color=Colors.INFO)
+    first_image: str | None = None
+    second_image: str | None = None
+
+    for index, pet in enumerate(pets, start=1):
+        definition = getattr(pet, "definition", None)
+        if definition is None and isinstance(pet, Mapping):
+            definition = pet.get("definition")
+
+        name = getattr(definition, "name", getattr(pet, "name", ""))
+        rarity = getattr(definition, "rarity", getattr(pet, "rarity", ""))
+        image_url = getattr(definition, "image_url", getattr(pet, "image_url", ""))
+        is_huge = bool(getattr(pet, "is_huge", False))
+        is_gold = bool(getattr(pet, "is_gold", False))
+        is_rainbow = bool(getattr(pet, "is_rainbow", False))
+        is_shiny = bool(getattr(pet, "is_shiny", False))
+        income = int(getattr(pet, "income_per_hour", 0))
+        market_value = int(getattr(pet, "market_value", 0))
+
+        title = _pet_title(
+            str(name),
+            str(rarity),
+            is_huge,
+            is_gold,
+            is_galaxy=False,
+            is_rainbow=is_rainbow,
+            is_shiny=is_shiny,
+        )
+        lines = [f"Revenus passifs : **{income:,} PB/h**".replace(",", " ")]
+        if market_value > 0 and not is_huge:
+            lines.append(f"Valeur marché : **{format_currency(market_value)}**")
+        embed.add_field(name=f"Œuf #{index}", value="\n".join(lines), inline=False)
+
+        if index == 1 and image_url:
+            first_image = str(image_url)
+        elif index == 2 and image_url:
+            second_image = str(image_url)
+
+    if first_image:
+        embed.set_thumbnail(url=first_image)
+    if second_image:
+        embed.set_image(url=second_image)
+
     return _finalize_embed(embed)
 
 
