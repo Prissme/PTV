@@ -469,6 +469,49 @@ def get_huge_level_multiplier(name: str, level: int) -> float:
     return min_multiplier + (final_multiplier - min_multiplier) * progress
 
 
+def clamp_income_value(raw_value: float, *, minimum: int = 0) -> int:
+    """Clamp un montant de revenu à la plage signée 64 bits."""
+
+    floor = max(0, int(minimum))
+    try:
+        numeric = float(raw_value)
+    except (TypeError, ValueError):
+        return floor
+    if numeric <= 0 or math.isnan(numeric):
+        return floor
+    if not math.isfinite(numeric):
+        return MAX_PET_INCOME
+    try:
+        clamped = int(numeric)
+    except (OverflowError, ValueError):
+        return MAX_PET_INCOME
+    if clamped >= MAX_PET_INCOME:
+        return MAX_PET_INCOME
+    if clamped <= floor:
+        return floor
+    return clamped
+
+
+def safe_multiply_income(value: int, multiplier: float) -> int:
+    """Multiplie ``value`` par ``multiplier`` sans dépasser les limites."""
+
+    base = max(0, int(value))
+    if base == 0 or multiplier <= 0:
+        return 0
+    try:
+        product = float(multiplier) * base
+    except (OverflowError, ValueError):
+        return MAX_PET_INCOME
+    return clamp_income_value(product)
+
+
+def compute_huge_income(reference_income: int, multiplier: float) -> int:
+    """Calcule le revenu effectif d'un Huge en tenant compte des bornes."""
+
+    scaled = safe_multiply_income(reference_income, multiplier)
+    return max(HUGE_PET_MIN_INCOME, scaled)
+
+
 HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     HUGE_PET_NAME: "Extrêmement rare dans l'œuf basique.",
     "Huge Trunk": "Peut apparaître dans l'œuf bio avec un taux minuscule.",
@@ -495,27 +538,33 @@ def get_egg_frenzy_window(
         reference = reference.replace(tzinfo=timezone.utc)
 
     local_now = reference.astimezone(EGG_FRENZY_TIMEZONE)
-    start_local = local_now.replace(
-        hour=EGG_FRENZY_START_TIME.hour,
-        minute=EGG_FRENZY_START_TIME.minute,
-        second=EGG_FRENZY_START_TIME.second,
-        microsecond=EGG_FRENZY_START_TIME.microsecond,
-    )
-    end_local = local_now.replace(
-        hour=EGG_FRENZY_END_TIME.hour,
-        minute=EGG_FRENZY_END_TIME.minute,
-        second=EGG_FRENZY_END_TIME.second,
-        microsecond=EGG_FRENZY_END_TIME.microsecond,
-    )
+    midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def _apply_offset(base: datetime, target: time) -> datetime:
+        delta = timedelta(
+            hours=target.hour,
+            minutes=target.minute,
+            seconds=target.second,
+            microseconds=target.microsecond,
+        )
+        return base + delta
+
+    start_local = _apply_offset(midnight, EGG_FRENZY_START_TIME)
+    end_local = _apply_offset(midnight, EGG_FRENZY_END_TIME)
 
     if EGG_FRENZY_END_TIME <= EGG_FRENZY_START_TIME:
-        if local_now < end_local:
-            start_local -= timedelta(days=1)
-        else:
+        if end_local <= start_local:
             end_local += timedelta(days=1)
-    elif local_now >= end_local:
-        start_local += timedelta(days=1)
-        end_local += timedelta(days=1)
+        if local_now < start_local and local_now >= end_local - timedelta(days=1):
+            start_local -= timedelta(days=1)
+            end_local -= timedelta(days=1)
+        if local_now >= end_local:
+            start_local += timedelta(days=1)
+            end_local += timedelta(days=1)
+    else:
+        if local_now >= end_local:
+            start_local += timedelta(days=1)
+            end_local += timedelta(days=1)
 
     return start_local, end_local
 
@@ -528,13 +577,9 @@ def is_egg_frenzy_active(reference: datetime | None = None) -> bool:
     elif reference.tzinfo is None:
         reference = reference.replace(tzinfo=timezone.utc)
 
+    start_local, end_local = get_egg_frenzy_window(reference)
     local_now = reference.astimezone(EGG_FRENZY_TIMEZONE)
-    if EGG_FRENZY_END_TIME <= EGG_FRENZY_START_TIME:
-        return (
-            local_now.time() >= EGG_FRENZY_START_TIME
-            or local_now.time() < EGG_FRENZY_END_TIME
-        )
-    return EGG_FRENZY_START_TIME <= local_now.time() < EGG_FRENZY_END_TIME
+    return start_local <= local_now < end_local
 
 
 _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (

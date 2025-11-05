@@ -111,9 +111,16 @@ class HealthCheckServer:
 
         try:
             runner = web.AppRunner(self._app)
-            await runner.setup()
+            await asyncio.wait_for(runner.setup(), timeout=HEALTH_CHECK_TIMEOUT)
             site = web.TCPSite(runner, self._host, self._port)
-            await site.start()
+            await asyncio.wait_for(site.start(), timeout=HEALTH_CHECK_TIMEOUT)
+        except asyncio.TimeoutError:
+            self._logger.error(
+                "Expiration du délai lors du démarrage du serveur de health check (%ss)",
+                HEALTH_CHECK_TIMEOUT,
+            )
+            await self.stop()
+            raise
         except Exception:
             self._logger.exception("Échec du démarrage du serveur HTTP de health check")
             await self.stop()
@@ -186,6 +193,16 @@ class EcoBot(commands.Bot):
             "eggs": "eggs",
             "claim": "claim",
         }
+
+    @staticmethod
+    def _prune_tip_cooldowns(storage: Dict[int, float], *, threshold: float, now: float) -> None:
+        expired = [
+            user_id
+            for user_id, timestamp in list(storage.items())
+            if now >= timestamp and (now - timestamp) >= threshold
+        ]
+        for user_id in expired:
+            storage.pop(user_id, None)
 
     async def get_prefix(self, message: discord.Message) -> str | Sequence[str]:
         prefixes = await super().get_prefix(message)
@@ -281,6 +298,8 @@ class EcoBot(commands.Bot):
 
         allowed_mentions = discord.AllowedMentions.none()
 
+        self._prune_tip_cooldowns(self._dm_tip_cooldowns, threshold=1800, now=now)
+
         if isinstance(channel, discord.DMChannel):
             last_notice = self._dm_tip_cooldowns.get(author.id, 0.0)
             if now - last_notice < 1800:
@@ -307,6 +326,8 @@ class EcoBot(commands.Bot):
         channel_name = base_channel.name.lower()
         if "marche" not in channel_name and "marché" not in channel_name:
             return
+
+        self._prune_tip_cooldowns(self._market_tip_cooldowns, threshold=3600, now=now)
 
         last_tip = self._market_tip_cooldowns.get(author.id, 0.0)
         if now - last_tip < 3600:

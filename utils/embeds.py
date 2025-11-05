@@ -868,32 +868,31 @@ def pet_claim_embed(
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
 
     shares: list[int] = []
-    remaining = amount
-    # FIX: Avoid dividing by zero when pets have no recorded income by splitting rewards fairly.
-    if amount > 0 and total_income <= 0 and pets:
-        base_share, remainder = divmod(amount, len(pets))
-        for index in range(len(pets)):
-            share = base_share + (1 if index < remainder else 0)
-            shares.append(share)
-        remaining = 0
-    else:
-        for index, pet in enumerate(pets):
-            income = int(pet.get("base_income_per_hour", 0))
-            if amount > 0 and total_income > 0:
-                if index == len(pets) - 1:
+    if amount > 0 and pets:
+        weights = [max(0, int(pet.get("base_income_per_hour", 0))) for pet in pets]
+        weight_total = sum(weights)
+        if total_income <= 0 or weight_total <= 0:
+            base_share, remainder = divmod(amount, len(pets))
+            for index in range(len(pets)):
+                share = base_share + (1 if index < remainder else 0)
+                shares.append(share)
+        else:
+            remaining = amount
+            for index, income in enumerate(weights):
+                if index == len(weights) - 1:
                     share = remaining
                 else:
-                    share = int(round(amount * (income / total_income)))
+                    ratio = income / weight_total if weight_total else 0.0
+                    share = int(round(amount * ratio)) if ratio > 0 else 0
                     share = max(0, min(remaining, share))
                     remaining -= share
-            else:
-                share = 0
-            shares.append(max(0, share))
-
-    if amount > 0 and shares:
-        diff = amount - sum(shares)
-        if diff > 0:
-            shares[-1] += diff
+                shares.append(max(0, share))
+            if shares:
+                diff = amount - sum(shares)
+                if diff != 0:
+                    shares[-1] += diff
+    else:
+        shares = [0 for _ in pets]
 
     lines: list[str] = []
     for pet, share in zip(pets, shares):

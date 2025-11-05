@@ -6,6 +6,7 @@ import contextlib
 import logging
 import random
 import time
+from weakref import WeakValueDictionary
 from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -36,6 +37,7 @@ from config import (
     PREFIX,
     TITANIC_GRIFF_NAME,
     VIP_ROLE_ID,
+    compute_huge_income,
     get_huge_level_multiplier,
 )
 from utils import embeds
@@ -603,7 +605,7 @@ class MastermindSession:
 
         best_non_huge = await self.database.get_best_non_huge_income(self.ctx.author.id)
         multiplier = get_huge_level_multiplier(HUGE_KENJI_ONI_NAME, 1)
-        huge_income = max(HUGE_PET_MIN_INCOME, int(best_non_huge * multiplier))
+        huge_income = compute_huge_income(best_non_huge, multiplier)
         emoji = PET_EMOJIS.get(HUGE_KENJI_ONI_NAME, PET_EMOJIS.get("default", "🐾"))
         self.status_lines.append(
             "🔥 Jackpot ! Tu remportes "
@@ -1150,6 +1152,10 @@ class Economy(commands.Cog):
         self._cleanup_task: asyncio.Task[None] | None = None
         self.mastermind_helper = MASTERMIND_HELPER
         self._active_race_players: set[int] = set()
+        self._message_reward_locks: WeakValueDictionary[int, asyncio.Lock] = (
+            WeakValueDictionary()
+        )
+        self._message_reward_lock_guard = asyncio.Lock()
         # FIX: Manage Mastermind cooldown manually to support grade-based bypass.
         self._mastermind_cooldown = commands.CooldownMapping.from_cooldown(
             1, MASTERMIND_CONFIG.cooldown, commands.BucketType.user
@@ -1250,7 +1256,7 @@ class Economy(commands.Cog):
             )
             best_non_huge = 0
         multiplier = get_huge_level_multiplier(HUGE_BULL_NAME, 1)
-        huge_income = max(HUGE_PET_MIN_INCOME, int(best_non_huge * multiplier))
+        huge_income = compute_huge_income(best_non_huge, multiplier)
         try:
             remaining = await self.database.get_user_raffle_tickets(winner_id)
         except Exception:
@@ -1605,6 +1611,14 @@ class Economy(commands.Cog):
     # ------------------------------------------------------------------
     # Récompenses de messages
     # ------------------------------------------------------------------
+    async def _get_message_reward_lock(self, user_id: int) -> asyncio.Lock:
+        async with self._message_reward_lock_guard:
+            lock = self._message_reward_locks.get(user_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._message_reward_locks[user_id] = lock
+            return lock
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or not message.guild:
@@ -1612,17 +1626,18 @@ class Economy(commands.Cog):
         if not message.content.strip():
             return
 
-        # FIX: Atomically verify and apply the cooldown to avoid double rewards.
-        remaining = await self.message_cooldown.check_and_trigger(message.author.id)
-        if remaining > 0:
-            return
-        await self.database.ensure_user(message.author.id)
-        await self.database.increment_balance(
-            message.author.id,
-            MESSAGE_REWARD,
-            transaction_type="message_reward",
-            description=f"Récompense de message {message.channel.id}:{message.id}",
-        )
+        lock = await self._get_message_reward_lock(message.author.id)
+        async with lock:
+            remaining = await self.message_cooldown.check_and_trigger(message.author.id)
+            if remaining > 0:
+                return
+            await self.database.ensure_user(message.author.id)
+            await self.database.increment_balance(
+                message.author.id,
+                MESSAGE_REWARD,
+                transaction_type="message_reward",
+                description=f"Récompense de message {message.channel.id}:{message.id}",
+            )
 
     # ------------------------------------------------------------------
     # Commandes économie
