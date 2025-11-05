@@ -37,13 +37,14 @@ class DummyDatabase:
         self.balance += amount
         return self.balance, self.balance
 
-    async def add_user_pet(self, user_id: int, pet_id: int, *, is_huge: bool = False, is_gold: bool = False, is_rainbow: bool = False, is_shiny: bool = False):
+    async def add_user_pet(self, user_id: int, pet_id: int, *, is_huge: bool = False, is_gold: bool = False, is_rainbow: bool = False, is_galaxy: bool = False, is_shiny: bool = False):
         self.last_added = {
             "user_id": user_id,
             "pet_id": pet_id,
             "is_huge": is_huge,
             "is_gold": is_gold,
             "is_rainbow": is_rainbow,
+            "is_galaxy": is_galaxy,
             "is_shiny": is_shiny,
         }
         return {"id": 1}
@@ -170,3 +171,88 @@ def test_base_rainbow_chance_stays_active(monkeypatch):
 
 def test_egg_lookup_accepts_mixed_diacritics():
     asyncio.run(_exercise_egg_lookup_variants())
+
+
+def test_huge_variant_rolls_follow_priority(monkeypatch):
+    async def _run():
+        cog, _database, bot = await _create_cog()
+        try:
+            rolls = iter([
+                pets_module.HUGE_GALAXY_CHANCE / 2,
+                pets_module.HUGE_SHINY_CHANCE / 2,
+            ])
+            monkeypatch.setattr(pets_module.random, "random", lambda: next(rolls))
+            is_gold, is_rainbow, is_galaxy, is_shiny = cog._roll_huge_variants()
+            assert is_galaxy is True
+            assert is_gold is False
+            assert is_rainbow is False
+            assert is_shiny is True
+        finally:
+            await bot.close()
+
+    asyncio.run(_run())
+
+
+def test_huge_variant_rolls_respect_rainbow_priority(monkeypatch):
+    async def _run():
+        cog, _database, bot = await _create_cog()
+        try:
+            rolls = iter([
+                0.5,
+                pets_module.HUGE_RAINBOW_CHANCE / 2,
+                0.5,
+            ])
+            monkeypatch.setattr(pets_module.random, "random", lambda: next(rolls))
+            is_gold, is_rainbow, is_galaxy, is_shiny = cog._roll_huge_variants()
+            assert is_galaxy is False
+            assert is_rainbow is True
+            assert is_gold is False
+            assert is_shiny is False
+        finally:
+            await bot.close()
+
+    asyncio.run(_run())
+
+
+def test_huge_reference_uses_shiny_variants():
+    async def _run():
+        cog, _database, bot = await _create_cog()
+        try:
+            non_huge = next(definition for definition in cog._definitions if not definition.is_huge)
+            huge = next(definition for definition in cog._definitions if definition.is_huge)
+            shiny_record = {
+                "pet_id": cog._pet_ids[non_huge.name],
+                "is_huge": False,
+                "base_income_per_hour": non_huge.base_income_per_hour,
+                "is_gold": False,
+                "is_rainbow": True,
+                "is_galaxy": False,
+                "is_shiny": True,
+                "name": non_huge.name,
+            }
+            huge_record = {
+                "pet_id": cog._pet_ids[huge.name],
+                "is_huge": True,
+                "base_income_per_hour": huge.base_income_per_hour,
+                "huge_level": 1,
+                "huge_xp": 0,
+                "name": huge.name,
+            }
+            captured: dict[str, int] = {}
+
+            def _fake_compute(best_non_huge_income, *, pet_name, level):
+                captured["reference"] = best_non_huge_income
+                return 42
+
+            cog._compute_huge_income = _fake_compute
+            cog._sort_pets_for_display([shiny_record, huge_record])
+            expected = int(
+                non_huge.base_income_per_hour
+                * pets_module.RAINBOW_PET_MULTIPLIER
+                * pets_module.SHINY_PET_MULTIPLIER
+            )
+            assert captured["reference"] == expected
+        finally:
+            await bot.close()
+
+    asyncio.run(_run())

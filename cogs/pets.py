@@ -74,6 +74,11 @@ logger = logging.getLogger(__name__)
 HUGE_SHELLY_ALERT_CHANNEL_ID = 1236724293631611022
 EGG_OPEN_EMOJI = "<:Egg:1433411763944296518>"
 
+HUGE_GOLD_CHANCE = 0.1
+HUGE_RAINBOW_CHANCE = 0.01
+HUGE_SHINY_CHANCE = 0.004
+HUGE_GALAXY_CHANCE = 0.0001
+
 
 
 @dataclass(frozen=True)
@@ -200,6 +205,7 @@ class PetHatchResult:
     market_value: int | None
     is_gold: bool = False
     is_rainbow: bool = False
+    is_galaxy: bool = False
     is_shiny: bool = False
     is_huge: bool = False
     auto_messages: List[str] = field(default_factory=list)
@@ -480,6 +486,70 @@ class Pets(commands.Cog):
         return f"{base}+shiny" if is_shiny else base
 
     @staticmethod
+    def _roll_chance(chance: float) -> bool:
+        return chance > 0 and random.random() < chance
+
+    @staticmethod
+    def _variant_income_multiplier(
+        *, is_gold: bool, is_rainbow: bool, is_galaxy: bool, is_shiny: bool
+    ) -> float:
+        multiplier = 1.0
+        if is_galaxy:
+            multiplier *= GALAXY_PET_MULTIPLIER
+        elif is_rainbow:
+            multiplier *= RAINBOW_PET_MULTIPLIER
+        elif is_gold:
+            multiplier *= GOLD_PET_MULTIPLIER
+        if is_shiny:
+            multiplier *= SHINY_PET_MULTIPLIER
+        return multiplier
+
+    def _roll_huge_variants(self) -> tuple[bool, bool, bool, bool]:
+        is_galaxy = self._roll_chance(HUGE_GALAXY_CHANCE)
+        if is_galaxy:
+            return False, False, True, self._roll_chance(HUGE_SHINY_CHANCE)
+
+        is_rainbow = self._roll_chance(HUGE_RAINBOW_CHANCE)
+        is_gold = False if is_rainbow else self._roll_chance(HUGE_GOLD_CHANCE)
+        is_shiny = self._roll_chance(HUGE_SHINY_CHANCE)
+        return is_gold, is_rainbow, False, is_shiny
+
+    def _roll_standard_pet_variants(
+        self,
+        *,
+        mastery_perks: EggMasteryPerks | None,
+        pet_mastery_perks: PetMasteryPerks | None,
+        clan_shiny_multiplier: float,
+    ) -> tuple[bool, bool, bool, bool]:
+        base_gold = max(0.0, float(GOLD_PET_CHANCE))
+        base_rainbow = max(0.0, float(RAINBOW_PET_CHANCE))
+        bonus_gold = 0.0
+        bonus_rainbow = 0.0
+        if mastery_perks is not None:
+            bonus_gold = max(0.0, float(mastery_perks.gold_chance))
+            bonus_rainbow = max(0.0, float(mastery_perks.rainbow_chance))
+
+        gold_chance = min(1.0, base_gold + bonus_gold)
+        rainbow_chance = min(1.0, base_rainbow + bonus_rainbow)
+        shiny_chance = 0.0
+        if pet_mastery_perks is not None:
+            gold_chance *= float(pet_mastery_perks.gold_luck_multiplier)
+            rainbow_chance *= float(pet_mastery_perks.rainbow_luck_multiplier)
+            shiny_chance = max(0.0, float(pet_mastery_perks.egg_shiny_chance))
+            shiny_chance *= float(pet_mastery_perks.egg_shiny_multiplier)
+
+        gold_chance = min(1.0, gold_chance)
+        rainbow_chance = min(1.0, rainbow_chance)
+        shiny_chance *= max(1.0, float(clan_shiny_multiplier))
+
+        is_gold = self._roll_chance(gold_chance)
+        is_rainbow = self._roll_chance(rainbow_chance)
+        if is_rainbow:
+            is_gold = False
+        is_shiny = self._roll_chance(shiny_chance)
+        return is_gold, is_rainbow, False, is_shiny
+
+    @staticmethod
     def _parse_toggle_argument(raw: str | None) -> bool | None:
         if raw is None:
             return None
@@ -686,16 +756,13 @@ class Pets(commands.Cog):
             data.pop("huge_xp_required", None)
             data.pop("huge_progress", None)
             data.pop("_reference_income", None)
-            if is_galaxy:
-                effective_income = base_income * GALAXY_PET_MULTIPLIER
-            elif is_rainbow:
-                effective_income = base_income * RAINBOW_PET_MULTIPLIER
-            elif is_gold:
-                effective_income = base_income * GOLD_PET_MULTIPLIER
-            else:
-                effective_income = base_income
-            if is_shiny:
-                effective_income *= SHINY_PET_MULTIPLIER
+            multiplier = self._variant_income_multiplier(
+                is_gold=is_gold,
+                is_rainbow=is_rainbow,
+                is_galaxy=is_galaxy,
+                is_shiny=is_shiny,
+            )
+            effective_income = base_income * multiplier
 
         data["base_income_per_hour"] = int(effective_income)
         return data
@@ -1463,38 +1530,30 @@ class Pets(commands.Cog):
                 return False
         is_gold = False
         is_rainbow = False
+        is_galaxy = False
         is_shiny = False
-        if not pet_definition.is_huge:
-            base_gold_chance = max(0.0, float(GOLD_PET_CHANCE))
-            base_rainbow_chance = max(0.0, float(RAINBOW_PET_CHANCE))
-            bonus_gold_chance = 0.0
-            bonus_rainbow_chance = 0.0
-            if mastery_perks is not None:
-                bonus_gold_chance = max(0.0, float(mastery_perks.gold_chance))
-                bonus_rainbow_chance = max(0.0, float(mastery_perks.rainbow_chance))
-
-            gold_chance = min(1.0, base_gold_chance + bonus_gold_chance)
-            rainbow_chance = min(1.0, base_rainbow_chance + bonus_rainbow_chance)
-            shiny_chance = 0.0
-            if pet_mastery_perks is not None:
-                gold_chance *= float(pet_mastery_perks.gold_luck_multiplier)
-                rainbow_chance *= float(pet_mastery_perks.rainbow_luck_multiplier)
-                shiny_chance = max(0.0, float(pet_mastery_perks.egg_shiny_chance))
-                shiny_chance *= float(pet_mastery_perks.egg_shiny_multiplier)
-            gold_chance = min(1.0, gold_chance)
-            rainbow_chance = min(1.0, rainbow_chance)
-            shiny_chance *= max(1.0, float(clan_shiny_multiplier))
-            if gold_chance > 0:
-                is_gold = random.random() < gold_chance
-            if rainbow_chance > 0:
-                is_rainbow = random.random() < rainbow_chance
-                if is_rainbow:
-                    is_gold = False
-            if shiny_chance > 0:
-                is_shiny = random.random() < shiny_chance
+        if pet_definition.is_huge:
+            (
+                is_gold,
+                is_rainbow,
+                is_galaxy,
+                is_shiny,
+            ) = self._roll_huge_variants()
+        else:
+            (
+                is_gold,
+                is_rainbow,
+                is_galaxy,
+                is_shiny,
+            ) = self._roll_standard_pet_variants(
+                mastery_perks=mastery_perks,
+                pet_mastery_perks=pet_mastery_perks,
+                clan_shiny_multiplier=clan_shiny_multiplier,
+            )
 
         if force_gold and not pet_definition.is_huge:
             is_rainbow = False
+            is_galaxy = False
             is_gold = True
 
         await self.database.add_user_pet(
@@ -1503,6 +1562,7 @@ class Pets(commands.Cog):
             is_huge=pet_definition.is_huge,
             is_gold=is_gold,
             is_rainbow=is_rainbow,
+            is_galaxy=is_galaxy,
             is_shiny=is_shiny,
         )
         await self.database.record_pet_opening(ctx.author.id, pet_id)
@@ -1542,7 +1602,7 @@ class Pets(commands.Cog):
             pet_id=pet_id,
             is_gold=is_gold,
             is_rainbow=is_rainbow,
-            is_galaxy=False,
+            is_galaxy=is_galaxy,
             is_shiny=is_shiny,
         )
         if pet_definition.is_huge:
@@ -1551,13 +1611,12 @@ class Pets(commands.Cog):
                 best_non_huge_income, pet_name=pet_definition.name, level=1
             )
         else:
-            multiplier = 1
-            if is_rainbow:
-                multiplier = RAINBOW_PET_MULTIPLIER
-            elif is_gold:
-                multiplier = GOLD_PET_MULTIPLIER
-            if is_shiny:
-                multiplier *= SHINY_PET_MULTIPLIER
+            multiplier = self._variant_income_multiplier(
+                is_gold=is_gold,
+                is_rainbow=is_rainbow,
+                is_galaxy=is_galaxy,
+                is_shiny=is_shiny,
+            )
             income_per_hour = int(pet_definition.base_income_per_hour * multiplier)
 
         if pet_definition.name == HUGE_PET_NAME:
@@ -1575,6 +1634,7 @@ class Pets(commands.Cog):
             market_value=market_value,
             is_gold=is_gold,
             is_rainbow=is_rainbow,
+            is_galaxy=is_galaxy,
             is_shiny=is_shiny,
             is_huge=pet_definition.is_huge,
             auto_messages=auto_messages,
@@ -1635,7 +1695,7 @@ class Pets(commands.Cog):
                 income_per_hour=result.income_per_hour,
                 is_huge=result.is_huge,
                 is_gold=result.is_gold,
-                is_galaxy=False,
+                is_galaxy=result.is_galaxy,
                 is_rainbow=result.is_rainbow,
                 is_shiny=result.is_shiny,
                 market_value=int(result.market_value or 0),
@@ -1658,6 +1718,7 @@ class Pets(commands.Cog):
                         "income_per_hour": entry.income_per_hour,
                         "is_huge": entry.is_huge,
                         "is_gold": entry.is_gold,
+                        "is_galaxy": entry.is_galaxy,
                         "is_rainbow": entry.is_rainbow,
                         "is_shiny": entry.is_shiny,
                         "market_value": int(entry.market_value or 0),
@@ -1736,14 +1797,15 @@ class Pets(commands.Cog):
         for record in record_list:
             if not bool(record.get("is_huge")):
                 base_income = int(record.get("base_income_per_hour", 0))
-                if bool(record.get("is_galaxy")):
-                    base_income *= GALAXY_PET_MULTIPLIER
-                elif bool(record.get("is_rainbow")):
-                    base_income *= RAINBOW_PET_MULTIPLIER
-                elif bool(record.get("is_gold")):
-                    base_income *= GOLD_PET_MULTIPLIER
-                if base_income > best_non_huge_income:
-                    best_non_huge_income = base_income
+                multiplier = self._variant_income_multiplier(
+                    is_gold=bool(record.get("is_gold")),
+                    is_rainbow=bool(record.get("is_rainbow")),
+                    is_galaxy=bool(record.get("is_galaxy")),
+                    is_shiny=bool(record.get("is_shiny")),
+                )
+                effective_income = int(base_income * multiplier)
+                if effective_income > best_non_huge_income:
+                    best_non_huge_income = effective_income
 
         converted = []
         for record in record_list:
