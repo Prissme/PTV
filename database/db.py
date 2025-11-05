@@ -2721,6 +2721,8 @@ class Database:
                     WHEN up.is_gold THEN $2
                     ELSE 1
                 END
+                * CASE WHEN up.is_galaxy THEN $4 ELSE 1 END
+                * CASE WHEN up.is_shiny THEN $5 ELSE 1 END
             ) AS best_income
             FROM user_pets AS up
             JOIN pets AS p ON p.pet_id = up.pet_id
@@ -2735,6 +2737,8 @@ class Database:
             user_id,
             GOLD_PET_MULTIPLIER,
             RAINBOW_PET_MULTIPLIER,
+            GALAXY_PET_MULTIPLIER,
+            SHINY_PET_MULTIPLIER,
         )
         if row is None:
             return 0
