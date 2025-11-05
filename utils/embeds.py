@@ -563,6 +563,7 @@ def pet_multi_reveal_embed(
         income = int(entry.get("income_per_hour", 0))
         is_huge = bool(entry.get("is_huge"))
         is_gold = bool(entry.get("is_gold"))
+        is_galaxy = bool(entry.get("is_galaxy"))
         is_rainbow = bool(entry.get("is_rainbow"))
         is_shiny = bool(entry.get("is_shiny"))
         market_value = int(entry.get("market_value") or 0)
@@ -578,6 +579,8 @@ def pet_multi_reveal_embed(
         flags: list[str] = []
         if is_huge:
             flags.append("Huge")
+        if is_galaxy:
+            flags.append("Galaxy")
         if is_rainbow:
             flags.append("Rainbow")
         elif is_gold:
