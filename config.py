@@ -131,21 +131,21 @@ class GradeDefinition:
 BASE_PET_SLOTS: Final[int] = 4
 
 GRADE_DEFINITIONS: Tuple[GradeDefinition, ...] = (
-    GradeDefinition("Novice", 0, 3, 1, 1, 250),
-    GradeDefinition("Apprenti", 1, 5, 1, 1, 400),
-    GradeDefinition("Disciple", 1, 8, 2, 1, 550),
-    GradeDefinition("Explorateur", 1, 12, 3, 2, 700),
-    GradeDefinition("Aventurier", 2, 16, 4, 2, 900),
-    GradeDefinition("Expert", 2, 20, 5, 3, 1_100),
-    GradeDefinition("Champion", 2, 25, 6, 3, 1_400),
-    GradeDefinition("Maître", 3, 30, 7, 4, 1_700),
-    GradeDefinition("Prodige", 3, 36, 8, 4, 2_100),
-    GradeDefinition("Élite", 4, 43, 9, 5, 2_600),
-    GradeDefinition("Légende", 5, 51, 10, 5, 3_200),
-    GradeDefinition("Mythique", 6, 60, 11, 6, 3_900),
-    GradeDefinition("Cosmique", 7, 70, 13, 7, 4_700),
-    GradeDefinition("Divin", 8, 81, 15, 8, 5_600),
-    GradeDefinition("Parangon", 9, 93, 17, 9, 6_600),
+    GradeDefinition("Novice", 0, 3, 1, 1, 375),
+    GradeDefinition("Apprenti", 1, 5, 1, 1, 600),
+    GradeDefinition("Disciple", 1, 8, 2, 1, 825),
+    GradeDefinition("Explorateur", 1, 12, 3, 2, 1_050),
+    GradeDefinition("Aventurier", 2, 16, 4, 2, 1_350),
+    GradeDefinition("Expert", 2, 20, 5, 3, 1_650),
+    GradeDefinition("Champion", 2, 25, 6, 3, 2_100),
+    GradeDefinition("Maître", 3, 30, 7, 4, 2_550),
+    GradeDefinition("Prodige", 3, 36, 8, 4, 3_150),
+    GradeDefinition("Élite", 4, 43, 9, 5, 3_900),
+    GradeDefinition("Légende", 5, 51, 10, 5, 4_800),
+    GradeDefinition("Mythique", 6, 60, 11, 6, 5_850),
+    GradeDefinition("Cosmique", 7, 70, 13, 7, 7_050),
+    GradeDefinition("Divin", 8, 81, 15, 8, 8_400),
+    GradeDefinition("Parangon", 9, 93, 17, 9, 9_900),
 )
 
 GRADE_ROLE_IDS: Tuple[int, ...] = (
@@ -338,6 +338,8 @@ class PetZoneDefinition:
     eggs: Tuple[PetEggDefinition, ...]
     egg_mastery_required: int = 0
     pet_mastery_required: int = 0
+    rebirth_required: int = 0
+    placeholder: str | None = None
 
 
 EGG_FRENZY_LUCK_BONUS: Final[float] = 0.50
@@ -354,6 +356,7 @@ STARTER_ZONE_SLUG: Final[str] = "starter"
 FORET_ZONE_SLUG: Final[str] = "foret"
 MANOIR_ZONE_SLUG: Final[str] = "manoir_hante"
 ROBOT_ZONE_SLUG: Final[str] = "robotique"
+REBIRTH_PLUS_ZONE_SLUG: Final[str] = "rebirth_plus"
 GOLD_PET_MULTIPLIER: Final[int] = 3
 GOLD_PET_CHANCE: Final[float] = _get_float_env("PET_GOLD_CHANCE", 0.0)
 GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
@@ -578,7 +581,7 @@ _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
         rarity="Secret",
         image_url="https://example.com/document48.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.0015,
+        drop_rate=0.000015,
         is_huge=True,
     ),
 )
@@ -617,7 +620,7 @@ _FOREST_EGG_PETS: Tuple[PetDefinition, ...] = (
         rarity="Secret",
         image_url="https://example.com/document53.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.004,
+        drop_rate=0.00004,
         is_huge=True,
     ),
 )
@@ -668,7 +671,7 @@ _CURSED_EGG_PETS: Tuple[PetDefinition, ...] = (
         rarity="Secret",
         image_url="https://cdn.discordapp.com/emojis/1431422771094753310.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.005,
+        drop_rate=0.00005,
         is_huge=True,
     ),
 )
@@ -863,6 +866,15 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         eggs=_eggs_for_zone(ROBOT_ZONE_SLUG),
         egg_mastery_required=10,
         pet_mastery_required=10,
+    ),
+    PetZoneDefinition(
+        name="Zone Mystère",
+        slug=REBIRTH_PLUS_ZONE_SLUG,
+        grade_required=1,
+        entry_cost=0,
+        eggs=(),
+        rebirth_required=1,
+        placeholder="Coming soon…",
     ),
 )
 

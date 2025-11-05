@@ -325,6 +325,71 @@ class GradeSystem(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    @commands.command(name="rebirth")
+    async def rebirth(self, ctx: commands.Context, confirmation: str | None = None) -> None:
+        grade_level = await self.database.get_grade_level(ctx.author.id)
+        if grade_level < self.total_grades:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Tu dois atteindre le grade 15 avant de pouvoir renaître."
+                )
+            )
+            return
+
+        rebirth_count, multiplier = await self.database.get_rebirth_info(ctx.author.id)
+        if confirmation is None:
+            description = (
+                "Le rebirth réinitialise ton aventure :\n"
+                "• Retour au grade 1 et zones de départ.\n"
+                "• Perte de tous tes PB, potions actives ou en stock, et tickets.\n"
+                "• Tu conserves tes pets actuels.\n\n"
+                "En échange, tu obtiens un multiplicateur permanent de PB x1,5"
+                " et un accès à de nouvelles options (double œuf, œufs garantis or).\n\n"
+                "Confirme avec `e!rebirth confirm` pour valider."
+            )
+            if rebirth_count > 0:
+                description = (
+                    f"Rebirths actuels : **{rebirth_count}** — multiplicateur actuel x{multiplier:.2f}.\n\n"
+                    + description
+                )
+            await ctx.send(embed=embeds.warning_embed(description, title="Rebirth EcoBot"))
+            return
+
+        if confirmation.lower() not in {"confirm", "oui", "yes"}:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Pour confirmer, utilise `e!rebirth confirm`."
+                )
+            )
+            return
+
+        try:
+            result = await self.database.perform_rebirth(ctx.author.id, reset_grade_level=1)
+        except Exception:
+            logger.exception("Impossible d'effectuer le rebirth pour %s", ctx.author.id)
+            await ctx.send(
+                embed=embeds.error_embed("Une erreur est survenue pendant le rebirth. Réessaie plus tard.")
+            )
+            return
+
+        new_multiplier = float(result.get("rebirth_multiplier", 1.0))
+        total_rebirths = int(result.get("rebirth_count", 0))
+
+        if isinstance(ctx.author, discord.Member):
+            await self._assign_grade_role(ctx.author, 1)
+
+        success_lines = [
+            f"Rebirth réussi ! Multiplicateur PB : **x{new_multiplier:.2f}**.",
+            "Tes PB, potions et tickets ont été remis à zéro.",
+            "Tu conserves l'ensemble de tes pets.",
+            "Zone mystère débloquée : coming soon…",
+        ]
+        embed = embeds.success_embed(
+            "\n".join(success_lines),
+            title=f"Rebirth #{total_rebirths}",
+        )
+        await ctx.send(embed=embed)
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(GradeSystem(bot))

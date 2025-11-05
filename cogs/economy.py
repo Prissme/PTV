@@ -72,7 +72,7 @@ SLOT_MIN_BET = 50
 SLOT_MAX_BET = 1_000_000_000
 CASINO_HUGE_MAX_CHANCE = 0.10
 CASINO_HUGE_CHANCE_PER_PB = CASINO_HUGE_MAX_CHANCE / SLOT_MAX_BET
-CASINO_TITANIC_MAX_CHANCE = 0.01
+CASINO_TITANIC_MAX_CHANCE = 0.0081
 CASINO_TITANIC_CHANCE_PER_PB = CASINO_TITANIC_MAX_CHANCE / SLOT_MAX_BET
 
 MASTERMIND_HUGE_MIN_CHANCE = 0.00055
@@ -115,31 +115,31 @@ MILLIONAIRE_RACE_COOLDOWN: int = 1_800
 # Mode Hardcore : 20 étapes avec une difficulté décroissant par paliers jusqu'à Huge Gale
 MILLIONAIRE_RACE_STAGES: tuple[MillionaireRaceStage, ...] = (
     # Étapes 1-5 : 95% → 75%
-    MillionaireRaceStage("Sprint Émeraude", 0.95, 1_000, ()),
+    MillionaireRaceStage("Sprint Émeraude", 0.95, 1_500, ()),
     MillionaireRaceStage("Relais Rubis", 0.90, 0, ("Shelly",)),
     MillionaireRaceStage("Virage Saphir", 0.85, 0, (), ("fortune_i",)),
-    MillionaireRaceStage("Montée Jade", 0.80, 1_500, ()),
+    MillionaireRaceStage("Montée Jade", 0.80, 2_250, ()),
     MillionaireRaceStage("Ascension Ambrée", 0.75, 0, ("Colt",)),
 
     # Étapes 6-10 : 70% → 50%
     MillionaireRaceStage("Échappée Turquoise", 0.70, 0, (), ("luck_i",)),
-    MillionaireRaceStage("Secteur Améthyste", 0.65, 2_000, ()),
+    MillionaireRaceStage("Secteur Améthyste", 0.65, 3_000, ()),
     MillionaireRaceStage("Piste Onyx", 0.60, 0, ("Barley",)),
     MillionaireRaceStage("Canyon Rubis", 0.55, 0, (), ("fortune_ii",)),
-    MillionaireRaceStage("Vallée Cristal", 0.50, 3_000, ()),
+    MillionaireRaceStage("Vallée Cristal", 0.50, 4_500, ()),
 
     # Étapes 11-15 : 45% → 25%
     MillionaireRaceStage("Ciel Prisme", 0.45, 0, ("Poco",)),
     MillionaireRaceStage("Spirale Stellaire", 0.40, 0, (), ("luck_ii",)),
-    MillionaireRaceStage("Portail Titan", 0.35, 4_000, ()),
+    MillionaireRaceStage("Portail Titan", 0.35, 6_000, ()),
     MillionaireRaceStage("Faille Temporelle", 0.30, 0, ("Rosa",)),
     MillionaireRaceStage("Nexus Éternel", 0.25, 0, (), ("fortune_iii",)),
 
     # Étapes 16-19 : 20% → 5%
-    MillionaireRaceStage("Abîme Infini", 0.20, 6_000, ()),
+    MillionaireRaceStage("Abîme Infini", 0.20, 9_000, ()),
     MillionaireRaceStage("Dimension Chaos", 0.15, 0, ("Angelo",)),
     MillionaireRaceStage("Royaume Perdu", 0.10, 0, (), ("luck_iii",)),
-    MillionaireRaceStage("Faille Légendaire", 0.05, 10_000, (), ("fortune_iv",)),
+    MillionaireRaceStage("Faille Légendaire", 0.05, 15_000, (), ("fortune_iv",)),
 
     # Étape 20 : FINALE - Huge Gale à 5%
     MillionaireRaceStage("Couronne Millionnaire", 0.05, 0, (HUGE_GALE_NAME,), ("fortune_v",)),
