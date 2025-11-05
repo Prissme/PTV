@@ -86,6 +86,7 @@ __all__ = [
     "grade_completed_embed",
     "pet_animation_embed",
     "pet_reveal_embed",
+    "pet_multi_reveal_embed",
     "pet_collection_embed",
     "pet_index_embed",
     "pet_equip_embed",
@@ -534,6 +535,73 @@ def pet_reveal_embed(
         color=base_color,
     )
     embed.set_image(url=image_url)
+    return _finalize_embed(embed)
+
+
+def pet_multi_reveal_embed(
+    *,
+    egg_name: str,
+    pets: Sequence[Mapping[str, object]],
+) -> discord.Embed:
+    count = len(pets)
+    if count <= 0:
+        return pet_reveal_embed(
+            name="Mystère",
+            rarity="Commun",
+            image_url="",
+            income_per_hour=0,
+            is_huge=False,
+            is_gold=False,
+        )
+
+    description = f"Tu obtiens **{count}** pets !"
+    embed = _base_embed(f"🎁 {egg_name}", description, color=Colors.PRIMARY)
+
+    for entry in pets:
+        name = str(entry.get("name", "Pet"))
+        rarity = str(entry.get("rarity", ""))
+        income = int(entry.get("income_per_hour", 0))
+        is_huge = bool(entry.get("is_huge"))
+        is_gold = bool(entry.get("is_gold"))
+        is_rainbow = bool(entry.get("is_rainbow"))
+        is_shiny = bool(entry.get("is_shiny"))
+        market_value = int(entry.get("market_value") or 0)
+        bonus = bool(entry.get("bonus"))
+        forced = bool(entry.get("forced"))
+
+        emoji = PET_EMOJIS.get(name, "🐾")
+        field_name = f"{emoji} {name}"
+        lines = [
+            f"Rareté : **{rarity}**",
+            f"Revenus : **{income:,} PB/h**".replace(",", " "),
+        ]
+        flags: list[str] = []
+        if is_huge:
+            flags.append("Huge")
+        if is_rainbow:
+            flags.append("Rainbow")
+        elif is_gold:
+            flags.append("Gold")
+        if is_shiny:
+            flags.append("Shiny")
+        if bonus:
+            flags.append("Bonus")
+        if forced:
+            flags.append("Gold garanti")
+        if flags:
+            lines.append(" · ".join(flags))
+        if market_value > 0 and not is_huge:
+            lines.append(f"Valeur : {format_currency(market_value)}")
+        embed.add_field(name=field_name, value="\n".join(lines), inline=False)
+
+    first_image = str(pets[0].get("image_url") or "")
+    if first_image:
+        embed.set_thumbnail(url=first_image)
+    if count >= 2:
+        second_image = str(pets[1].get("image_url") or "")
+        if second_image:
+            embed.set_image(url=second_image)
+
     return _finalize_embed(embed)
 
 

@@ -193,6 +193,20 @@ def _compute_pet_mastery_perks(level: int) -> PetMasteryPerks:
     )
 
 
+@dataclass
+class PetHatchResult:
+    definition: PetDefinition
+    income_per_hour: int
+    market_value: int | None
+    is_gold: bool = False
+    is_rainbow: bool = False
+    is_shiny: bool = False
+    is_huge: bool = False
+    auto_messages: List[str] = field(default_factory=list)
+    bonus: bool = False
+    was_forced_gold: bool = False
+
+
 class PetInventoryView(discord.ui.View):
     """Interface paginée pour afficher la collection de pets par lots de huit."""
 
@@ -778,7 +792,7 @@ class Pets(commands.Cog):
         def _roll_shiny(base_chance: float) -> bool:
             chance = max(0.0, float(base_chance))
             if chance <= 0:
-                return False
+                return None
             chance *= float(pet_perks.egg_shiny_multiplier)
             chance *= shiny_multiplier
             chance = min(1.0, chance)
@@ -1244,7 +1258,7 @@ class Pets(commands.Cog):
                         f"Tu dois atteindre le niveau {zone.egg_mastery_required} de {EGG_MASTERY.display_name} pour accéder à {zone.name}."
                     )
                 )
-                return False
+                return None
 
         if zone.pet_mastery_required > 0:
             pet_mastery = await self.database.get_mastery_progress(
@@ -1298,6 +1312,7 @@ class Pets(commands.Cog):
         pet_mastery = await self.database.get_mastery_progress(ctx.author.id, PET_MASTERY.slug)
         egg_level = int(egg_mastery.get("level", 1))
         pet_level = int(pet_mastery.get("level", 1))
+        rebirth_count = await self.database.get_rebirth_count(ctx.author.id)
         lines: List[str] = []
         for zone in PET_ZONES:
             zone_unlocked = zone.entry_cost <= 0 or zone.slug in unlocked_zones
@@ -1337,6 +1352,10 @@ class Pets(commands.Cog):
                     f"  • {egg.name} — {embeds.format_currency(egg.price)} (`e!openbox {egg.slug}`)"
                 )
 
+        if rebirth_count > 0:
+            lines.append("**✅ Zone Mystérieuse** — Coming soon")
+            lines.append("  • Contenu en préparation…")
+
         description = (
             "\n".join(lines) if lines else "Aucun œuf n'est disponible pour le moment."
         )
@@ -1371,7 +1390,7 @@ class Pets(commands.Cog):
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error("Impossible d'envoyer l'alerte Huge Shelly", exc_info=exc)
 
-    async def _open_pet_egg(
+    async def _hatch_pet(
         self,
         ctx: commands.Context,
         egg: PetEggDefinition,
@@ -1382,22 +1401,25 @@ class Pets(commands.Cog):
         active_potion: tuple[PotionDefinition, datetime] | None = None,
         charge_cost: bool = True,
         bonus: bool = False,
-    ) -> bool:
+        price_multiplier: int = 1,
+        force_gold: bool = False,
+    ) -> PetHatchResult | None:
         await self.database.ensure_user(ctx.author.id)
         if charge_cost:
+            effective_price = egg.price * max(1, int(price_multiplier))
             balance = await self.database.fetch_balance(ctx.author.id)
-            if balance < egg.price:
+            if balance < effective_price:
                 await ctx.send(
                     embed=embeds.error_embed(
                         "Tu n'as pas assez de PB. Il te faut "
-                        f"**{embeds.format_currency(egg.price)}** pour acheter {egg.name}."
+                        f"**{embeds.format_currency(effective_price)}** pour acheter {egg.name}."
                     )
                 )
-                return False
+                return None
 
             await self.database.increment_balance(
                 ctx.author.id,
-                -egg.price,
+                -effective_price,
                 transaction_type="pet_purchase",
                 description=f"Achat de {egg.name}",
             )
@@ -1470,7 +1492,12 @@ class Pets(commands.Cog):
                     is_gold = False
             if shiny_chance > 0:
                 is_shiny = random.random() < shiny_chance
-        _user_pet = await self.database.add_user_pet(
+
+        if force_gold and not pet_definition.is_huge:
+            is_rainbow = False
+            is_gold = True
+
+        await self.database.add_user_pet(
             ctx.author.id,
             pet_id,
             is_huge=pet_definition.is_huge,
@@ -1509,37 +1536,6 @@ class Pets(commands.Cog):
                 )
             )
 
-        egg_title = f"{egg.name} (bonus)" if bonus else egg.name
-        animation_steps = (
-            (egg_title, "L'œuf commence à bouger…"),
-            (egg_title, "Des fissures apparaissent !"),
-            (egg_title, "Ça y est, il est sur le point d'éclore !"),
-        )
-        speed_factor = 1.0
-        if mastery_perks is not None:
-            speed_factor = max(0.5, min(5.0, float(mastery_perks.animation_speed)))
-        step_delay = max(0.2, 1.1 / speed_factor)
-        reveal_delay = max(0.2, 1.2 / speed_factor)
-        message = await ctx.send(
-            content=EGG_OPEN_EMOJI,
-            embed=embeds.pet_animation_embed(
-                title=animation_steps[0][0],
-                description=animation_steps[0][1],
-                emoji=EGG_OPEN_EMOJI,
-            )
-        )
-        for title, description in animation_steps[1:]:
-            await asyncio.sleep(step_delay)
-            await message.edit(
-                content=EGG_OPEN_EMOJI,
-                embed=embeds.pet_animation_embed(
-                    title=title,
-                    description=description,
-                    emoji=EGG_OPEN_EMOJI,
-                )
-            )
-
-        await asyncio.sleep(reveal_delay)
         market_values = await self.database.get_pet_market_values()
         market_value = self._resolve_market_value(
             market_values,
@@ -1563,23 +1559,6 @@ class Pets(commands.Cog):
             if is_shiny:
                 multiplier *= SHINY_PET_MULTIPLIER
             income_per_hour = int(pet_definition.base_income_per_hour * multiplier)
-        reveal_embed = embeds.pet_reveal_embed(
-            name=pet_definition.name,
-            rarity=pet_definition.rarity,
-            image_url=pet_definition.image_url,
-            income_per_hour=income_per_hour,
-            is_huge=pet_definition.is_huge,
-            is_gold=is_gold,
-            is_galaxy=False,
-            is_rainbow=is_rainbow,
-            is_shiny=is_shiny,
-            market_value=market_value,
-        )
-        reveal_embed.set_footer(text=f"Utilise e!equip {pet_definition.name} pour l'équiper !")
-        await message.edit(content=EGG_OPEN_EMOJI, embed=reveal_embed)
-
-        for auto_message in auto_messages:
-            await ctx.send(auto_message)
 
         if pet_definition.name == HUGE_PET_NAME:
             await self._send_huge_shelly_alert(ctx)
@@ -1590,6 +1569,161 @@ class Pets(commands.Cog):
         await self._handle_mastery_notifications(ctx, mastery_update)
 
         self._dispatch_grade_progress(ctx, "egg", 1)
+        return PetHatchResult(
+            definition=pet_definition,
+            income_per_hour=income_per_hour,
+            market_value=market_value,
+            is_gold=is_gold,
+            is_rainbow=is_rainbow,
+            is_shiny=is_shiny,
+            is_huge=pet_definition.is_huge,
+            auto_messages=auto_messages,
+            bonus=bonus,
+            was_forced_gold=force_gold,
+        )
+
+    async def _display_hatch_results(
+        self,
+        ctx: commands.Context,
+        egg: PetEggDefinition,
+        results: Sequence[PetHatchResult],
+        *,
+        mastery_perks: EggMasteryPerks | None = None,
+    ) -> None:
+        egg_title = egg.name
+        animation_steps = (
+            (egg_title, "L'œuf commence à bouger…"),
+            (egg_title, "Des fissures apparaissent !"),
+            (egg_title, "Ça y est, il est sur le point d'éclore !"),
+        )
+        speed_factor = 1.0
+        if mastery_perks is not None:
+            speed_factor = max(0.5, min(5.0, float(mastery_perks.animation_speed)))
+        step_delay = max(0.2, 1.1 / speed_factor)
+        reveal_delay = max(0.2, 1.2 / speed_factor)
+
+        message = await ctx.send(
+            content=EGG_OPEN_EMOJI,
+            embed=embeds.pet_animation_embed(
+                title=animation_steps[0][0],
+                description=animation_steps[0][1],
+                emoji=EGG_OPEN_EMOJI,
+            ),
+        )
+        for title, description in animation_steps[1:]:
+            await asyncio.sleep(step_delay)
+            await message.edit(
+                content=EGG_OPEN_EMOJI,
+                embed=embeds.pet_animation_embed(
+                    title=title,
+                    description=description,
+                    emoji=EGG_OPEN_EMOJI,
+                ),
+            )
+
+        await asyncio.sleep(reveal_delay)
+
+        if not results:
+            return
+
+        if len(results) == 1:
+            result = results[0]
+            embed = embeds.pet_reveal_embed(
+                name=result.definition.name,
+                rarity=result.definition.rarity,
+                image_url=result.definition.image_url,
+                income_per_hour=result.income_per_hour,
+                is_huge=result.is_huge,
+                is_gold=result.is_gold,
+                is_galaxy=False,
+                is_rainbow=result.is_rainbow,
+                is_shiny=result.is_shiny,
+                market_value=int(result.market_value or 0),
+            )
+            footer_parts: list[str] = []
+            if result.was_forced_gold:
+                footer_parts.append("Gold garanti")
+            if result.bonus:
+                footer_parts.append("Bonus gratuit")
+            footer_parts.append(f"Utilise e!equip {result.definition.name} pour l'équiper !")
+            embed.set_footer(text=" • ".join(footer_parts))
+        else:
+            payloads: list[dict[str, object]] = []
+            for entry in results:
+                payloads.append(
+                    {
+                        "name": entry.definition.name,
+                        "rarity": entry.definition.rarity,
+                        "image_url": entry.definition.image_url,
+                        "income_per_hour": entry.income_per_hour,
+                        "is_huge": entry.is_huge,
+                        "is_gold": entry.is_gold,
+                        "is_rainbow": entry.is_rainbow,
+                        "is_shiny": entry.is_shiny,
+                        "market_value": int(entry.market_value or 0),
+                        "bonus": entry.bonus,
+                        "forced": entry.was_forced_gold,
+                    }
+                )
+            embed = embeds.pet_multi_reveal_embed(
+                egg_name=egg.name,
+                pets=payloads,
+            )
+            names = list(dict.fromkeys(entry.definition.name for entry in results))
+            if names:
+                if len(names) == 1:
+                    footer_text = f"Utilise e!equip {names[0]} pour l'équiper !"
+                elif len(names) == 2:
+                    footer_text = f"Utilise e!equip {names[0]} ou {names[1]} pour les équiper !"
+                else:
+                    footer_text = (
+                        "Utilise e!equip "
+                        + ", ".join(names[:-1])
+                        + f" ou {names[-1]} pour les équiper !"
+                    )
+                embed.set_footer(text=footer_text)
+
+        await message.edit(content=EGG_OPEN_EMOJI, embed=embed)
+
+    async def _open_pet_egg(
+        self,
+        ctx: commands.Context,
+        egg: PetEggDefinition,
+        *,
+        mastery_perks: EggMasteryPerks | None = None,
+        pet_mastery_perks: PetMasteryPerks | None = None,
+        clan_shiny_multiplier: float = 1.0,
+        active_potion: tuple[PotionDefinition, datetime] | None = None,
+        charge_cost: bool = True,
+        bonus: bool = False,
+    ) -> bool:
+        """Compatibilité héritée pour les tests existants.
+
+        La nouvelle implémentation découpe l'éclosion en deux méthodes
+        (`_hatch_pet` et `_display_hatch_results`). Ce wrapper conserve
+        l'ancienne signature pour éviter d'adapter tous les appelants
+        historiques, notamment dans la suite de tests.
+        """
+
+        result = await self._hatch_pet(
+            ctx,
+            egg,
+            mastery_perks=mastery_perks,
+            pet_mastery_perks=pet_mastery_perks,
+            clan_shiny_multiplier=clan_shiny_multiplier,
+            active_potion=active_potion,
+            charge_cost=charge_cost,
+            bonus=bonus,
+        )
+        if result is None:
+            return False
+
+        await self._display_hatch_results(
+            ctx,
+            egg,
+            [result],
+            mastery_perks=mastery_perks,
+        )
         return True
 
     def _sort_pets_for_display(
@@ -1668,12 +1802,21 @@ class Pets(commands.Cog):
     async def _openbox_impl(self, ctx: commands.Context, egg: str | None) -> None:
         raw_request = (egg or "").strip()
         double_request = False
+        force_gold_request = False
         if raw_request:
             tokens = raw_request.split()
-            if tokens and tokens[-1].lower() in {"x2", "2", "double"}:
-                double_request = True
-                tokens = tokens[:-1]
-                raw_request = " ".join(tokens).strip()
+            while tokens:
+                token = tokens[-1].lower()
+                if token in {"x2", "2", "double"}:
+                    double_request = True
+                    tokens.pop()
+                    continue
+                if token in {"gold", "golden", "garanti", "garantie", "guaranteed", "100x", "x100"}:
+                    force_gold_request = True
+                    tokens.pop()
+                    continue
+                break
+            raw_request = " ".join(tokens).strip()
 
         normalized_request = raw_request or None
 
@@ -1736,17 +1879,40 @@ class Pets(commands.Cog):
                     )
                 )
 
+        rebirth_count = await self.database.get_rebirth_count(ctx.author.id)
+        price_multiplier = 1
+        if force_gold_request:
+            if rebirth_count <= 0:
+                await ctx.send(
+                    embed=embeds.warning_embed(
+                        "Le gold garanti se débloque après ton premier rebirth."
+                    )
+                )
+                force_gold_request = False
+            else:
+                price_multiplier = 100
+                await ctx.send(
+                    embed=embeds.info_embed(
+                        f"Tu choisis de payer **{embeds.format_currency(egg_definition.price * price_multiplier)}** pour garantir un pet or.",
+                        title="Gold garanti activé",
+                    )
+                )
+
         active_potion = await self.database.get_active_potion(ctx.author.id)
-        opened = await self._open_pet_egg(
+        primary_result = await self._hatch_pet(
             ctx,
             egg_definition,
             pet_mastery_perks=pet_perks,
             clan_shiny_multiplier=clan_shiny_multiplier,
             active_potion=active_potion,
             mastery_perks=egg_perks,
+            price_multiplier=price_multiplier,
+            force_gold=force_gold_request,
         )
-        if not opened:
+        if primary_result is None:
             return
+
+        results: List[PetHatchResult] = [primary_result]
 
         bonus_eggs = 0
         triple_triggered = False
@@ -1766,7 +1932,7 @@ class Pets(commands.Cog):
                     f"{EGG_OPEN_EMOJI} 🎉 **Chance !** Tu ouvres un œuf bonus gratuitement !"
                 )
             for _ in range(bonus_eggs):
-                await self._open_pet_egg(
+                bonus_result = await self._hatch_pet(
                     ctx,
                     egg_definition,
                     pet_mastery_perks=pet_perks,
@@ -1776,6 +1942,19 @@ class Pets(commands.Cog):
                     charge_cost=False,
                     bonus=True,
                 )
+                if bonus_result is not None:
+                    results.append(bonus_result)
+
+        await self._display_hatch_results(
+            ctx,
+            egg_definition,
+            results,
+            mastery_perks=egg_perks,
+        )
+
+        for result in results:
+            for auto_message in result.auto_messages:
+                await ctx.send(auto_message)
 
     @commands.group(
         name="petauto",
@@ -3111,6 +3290,7 @@ class Pets(commands.Cog):
             clan_info,
             progress_updates,
             potion_info,
+            _rebirth_info,
         ) = await self.database.claim_active_pet_income(ctx.author.id)
         if not rows:
             await ctx.send(embed=embeds.error_embed("Tu dois équiper un pet avant de pouvoir collecter ses revenus."))
