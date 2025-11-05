@@ -4,7 +4,13 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass, replace
+from datetime import datetime, time, timedelta, timezone
 from typing import Dict, Final, Tuple
+
+try:  # Python 3.9+ fournit zoneinfo, mais nous gardons un repli.
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover - environnement minimaliste
+    ZoneInfo = None  # type: ignore[misc, assignment]
 
 from dotenv import load_dotenv
 
@@ -31,6 +37,18 @@ def _get_int_env(name: str, default: int, *, minimum: int = 1) -> int:
     except ValueError:
         return default
     return max(minimum, parsed)
+
+
+def _resolve_timezone(name: str, *, fallback_offset_hours: int = 1) -> timezone:
+    """Retourne un fuseau horaire robuste, même si zoneinfo est indisponible."""
+
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo(name)
+        except Exception:  # pragma: no cover - dépend de l'environnement système
+            pass
+    offset = timedelta(hours=fallback_offset_hours)
+    return timezone(offset)
 
 # ---------------------------------------------------------------------------
 # Informations essentielles
@@ -322,6 +340,14 @@ class PetZoneDefinition:
     pet_mastery_required: int = 0
 
 
+EGG_FRENZY_LUCK_BONUS: Final[float] = 0.50
+EGG_FRENZY_START_TIME: Final[time] = time(hour=20, minute=0)
+EGG_FRENZY_END_TIME: Final[time] = time(hour=21, minute=0)
+EGG_FRENZY_TIMEZONE: Final[timezone] = _resolve_timezone(
+    os.getenv("EGG_FRENZY_TIMEZONE", "Europe/Paris")
+)
+
+
 PET_EGG_PRICE: Final[int] = 500
 DEFAULT_PET_EGG_SLUG: Final[str] = "basique"
 STARTER_ZONE_SLUG: Final[str] = "starter"
@@ -354,7 +380,7 @@ HUGE_GRIFF_MULTIPLIER: Final[float] = 2.8
 TITANIC_GRIFF_MULTIPLIER: Final[float] = 70.0
 HUGE_GALE_MULTIPLIER: Final[float] = 56.0
 HUGE_KENJI_ONI_MULTIPLIER: Final[float] = 6.3
-HUGE_BULL_MULTIPLIER: Final[float] = 4.2
+HUGE_BULL_MULTIPLIER: Final[float] = 3.57
 HUGE_BO_NAME: Final[str] = "Huge Bo"
 HUGE_BO_MULTIPLIER: Final[float] = HUGE_PET_MULTIPLIER
 HUGE_SHADE_NAME: Final[str] = "Huge Shade"
@@ -380,7 +406,7 @@ HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
 
 HUGE_PET_MIN_LEVEL_MULTIPLIERS: Final[Dict[str, float]] = {
     TITANIC_GRIFF_NAME: 12.0,
-    HUGE_BULL_NAME: 3.0,
+    HUGE_BULL_NAME: 2.55,
 }
 
 
@@ -457,6 +483,59 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     HUGE_BO_NAME: "Récompense du mode King of the Hill : défends ton trône pour tenter ta chance !",
     TITANIC_MEEPLE_NAME: "Récompense quasi mythique de l'Œuf métallique, au-delà du légendaire.",
 }
+
+def get_egg_frenzy_window(
+    reference: datetime | None = None,
+) -> tuple[datetime, datetime]:
+    """Retourne la prochaine fenêtre Egg Frenzy en heure locale."""
+
+    if reference is None:
+        reference = datetime.now(timezone.utc)
+    elif reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+
+    local_now = reference.astimezone(EGG_FRENZY_TIMEZONE)
+    start_local = local_now.replace(
+        hour=EGG_FRENZY_START_TIME.hour,
+        minute=EGG_FRENZY_START_TIME.minute,
+        second=EGG_FRENZY_START_TIME.second,
+        microsecond=EGG_FRENZY_START_TIME.microsecond,
+    )
+    end_local = local_now.replace(
+        hour=EGG_FRENZY_END_TIME.hour,
+        minute=EGG_FRENZY_END_TIME.minute,
+        second=EGG_FRENZY_END_TIME.second,
+        microsecond=EGG_FRENZY_END_TIME.microsecond,
+    )
+
+    if EGG_FRENZY_END_TIME <= EGG_FRENZY_START_TIME:
+        if local_now < end_local:
+            start_local -= timedelta(days=1)
+        else:
+            end_local += timedelta(days=1)
+    elif local_now >= end_local:
+        start_local += timedelta(days=1)
+        end_local += timedelta(days=1)
+
+    return start_local, end_local
+
+
+def is_egg_frenzy_active(reference: datetime | None = None) -> bool:
+    """Indique si l'Egg Frenzy est actif pour l'instant donné."""
+
+    if reference is None:
+        reference = datetime.now(timezone.utc)
+    elif reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+
+    local_now = reference.astimezone(EGG_FRENZY_TIMEZONE)
+    if EGG_FRENZY_END_TIME <= EGG_FRENZY_START_TIME:
+        return (
+            local_now.time() >= EGG_FRENZY_START_TIME
+            or local_now.time() < EGG_FRENZY_END_TIME
+        )
+    return EGG_FRENZY_START_TIME <= local_now.time() < EGG_FRENZY_END_TIME
+
 
 _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
@@ -765,21 +844,21 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
     PetZoneDefinition(
         name="Forêt enchantée",
         slug=FORET_ZONE_SLUG,
-        grade_required=1,
+        grade_required=3,
         entry_cost=5_000,
         eggs=_eggs_for_zone(FORET_ZONE_SLUG),
     ),
     PetZoneDefinition(
         name="Manoir Hanté",
         slug=MANOIR_ZONE_SLUG,
-        grade_required=8,
+        grade_required=7,
         entry_cost=50_000,
         eggs=_eggs_for_zone(MANOIR_ZONE_SLUG),
     ),
     PetZoneDefinition(
         name="Zone Robotique",
         slug="robotique",
-        grade_required=15,
+        grade_required=12,
         entry_cost=10_000_000,
         eggs=_eggs_for_zone(ROBOT_ZONE_SLUG),
         egg_mastery_required=10,

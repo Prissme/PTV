@@ -27,6 +27,9 @@ from config import (
     PET_EGG_DEFINITIONS,
     PET_RARITY_ORDER,
     PET_ZONES,
+    EGG_FRENZY_LUCK_BONUS,
+    get_egg_frenzy_window,
+    is_egg_frenzy_active,
     RAINBOW_PET_CHANCE,
     RAINBOW_PET_COMBINE_REQUIRED,
     RAINBOW_PET_MULTIPLIER,
@@ -1393,6 +1396,7 @@ class Pets(commands.Cog):
                 description=f"Achat de {egg.name}",
             )
         effective_luck_bonus = 0.0
+        frenzy_active = is_egg_frenzy_active()
         if mastery_perks:
             effective_luck_bonus += max(0.0, float(mastery_perks.luck_bonus))
         if active_potion:
@@ -1402,6 +1406,8 @@ class Pets(commands.Cog):
                 and potion_expires_at > datetime.now(timezone.utc)
             ):
                 effective_luck_bonus += max(0.0, float(potion_definition.effect_value))
+        if frenzy_active:
+            effective_luck_bonus += max(0.0, float(EGG_FRENZY_LUCK_BONUS))
         try:
             pet_definition, pet_id = self._choose_pet(
                 egg, luck_bonus=effective_luck_bonus
@@ -1469,6 +1475,11 @@ class Pets(commands.Cog):
         await self.database.record_pet_opening(ctx.author.id, pet_id)
 
         auto_messages: List[str] = []
+        if frenzy_active:
+            auto_messages.append(
+                "🍀 **Egg Frenzy** : tes chances ont profité d'un bonus de "
+                f"{EGG_FRENZY_LUCK_BONUS * 100:.0f}% !"
+            )
         if pet_mastery_perks is not None and not pet_definition.is_huge:
             auto_settings: Mapping[str, bool] | None = None
             if pet_mastery_perks.auto_goldify or pet_mastery_perks.auto_rainbowify:
@@ -2940,6 +2951,23 @@ class Pets(commands.Cog):
             raffle_pool = 0
 
         special_lines: list[str] = []
+        frenzy_start, frenzy_end = get_egg_frenzy_window()
+        frenzy_active = is_egg_frenzy_active()
+        frenzy_start_utc = frenzy_start.astimezone(timezone.utc)
+        frenzy_end_utc = frenzy_end.astimezone(timezone.utc)
+        if frenzy_active:
+            special_lines.append(
+                "🍀 **Egg Frenzy** — bonus de +50% de chance actif jusqu'à "
+                f"{discord.utils.format_dt(frenzy_end_utc, style='t')} "
+                f"({discord.utils.format_dt(frenzy_end_utc, style='R')})."
+            )
+        else:
+            special_lines.append(
+                "🍀 Egg Frenzy quotidien : +50% de chance entre "
+                f"{discord.utils.format_dt(frenzy_start_utc, style='t')} et "
+                f"{discord.utils.format_dt(frenzy_end_utc, style='t')} "
+                f"({discord.utils.format_dt(frenzy_start_utc, style='R')})."
+            )
         # Huge Bull — daily raffle.
         bull_line = (
             f"{_format_emoji(HUGE_BULL_NAME)} **{HUGE_BULL_NAME}** — tirage quotidien au Mastermind."

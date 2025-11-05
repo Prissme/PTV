@@ -422,40 +422,53 @@ class StandManagementView(discord.ui.View):
 
 class ConsumableFilterSelect(discord.ui.Select):
     def __init__(self, view: "ConsumableListingsView") -> None:
-        options = [
-            discord.SelectOption(
-                label="🌐 Tous les consommables",
-                value="all",
-                description="Voir chaque annonce active.",
-            ),
-            discord.SelectOption(
-                label="🎟️ Tickets",
-                value="ticket",
-                description="Afficher uniquement les tickets.",
-            ),
-        ]
-
-        for slug, name in view.potion_filters[:23]:
-            options.append(
-                discord.SelectOption(
-                    label=f"🧪 {name}",
-                    value=f"potion:{slug}",
-                )
-            )
-
         super().__init__(
             placeholder="Filtre les consommables en vente…",
             min_values=1,
             max_values=1,
-            options=options,
+            options=view._build_filter_options(),
         )
+        for option in self.options:
+            option.default = option.value == view.current_filter
 
     async def callback(self, interaction: discord.Interaction) -> None:
         if self.view is None:
             return
         view = cast(ConsumableListingsView, self.view)
-        embed = view.get_embed(self.values[0])
+        key = self.values[0]
+        view.current_filter = key
+        for option in self.options:
+            option.default = option.value == key
+        embed = view.get_embed(key)
         await interaction.response.edit_message(embed=embed, view=view)
+
+
+class ConsumablePurchaseModal(discord.ui.Modal):
+    def __init__(self, view: "ConsumableListingsView") -> None:
+        super().__init__(title="Acheter un consommable")
+        self.view = view
+        self.listing_id = discord.ui.TextInput(
+            label="ID de l'annonce",
+            placeholder="123",
+            min_length=1,
+            max_length=10,
+        )
+        self.add_item(self.listing_id)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        value = self.listing_id.value.strip()
+        try:
+            listing_id = int(value)
+            if listing_id <= 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Merci d'indiquer un identifiant valide."),
+                ephemeral=True,
+            )
+            return
+
+        await self.view.handle_purchase(interaction, listing_id)
 
 
 class ConsumableListingsView(discord.ui.View):
@@ -473,7 +486,10 @@ class ConsumableListingsView(discord.ui.View):
         self.user_cache = user_cache
         self.message: Optional[discord.Message] = None
         self.potion_filters: list[tuple[str, str]] = self._collect_potion_filters()
-        self.add_item(ConsumableFilterSelect(self))
+        self.current_filter: str = "all"
+        self.filter_select = ConsumableFilterSelect(self)
+        self.add_item(self.filter_select)
+        self.update_filters()
 
     def _collect_potion_filters(self) -> list[tuple[str, str]]:
         filters: dict[str, str] = {}
@@ -485,6 +501,29 @@ class ConsumableListingsView(discord.ui.View):
             name = definition.name if definition else slug
             filters[slug] = name
         return sorted(filters.items(), key=lambda item: item[1].lower())
+
+    def _build_filter_options(self) -> list[discord.SelectOption]:
+        options = [
+            discord.SelectOption(
+                label="🌐 Tous les consommables",
+                value="all",
+                description="Voir chaque annonce active.",
+            ),
+            discord.SelectOption(
+                label="🎟️ Tickets",
+                value="ticket",
+                description="Afficher uniquement les tickets.",
+            ),
+        ]
+
+        for slug, name in self.potion_filters[:23]:
+            options.append(
+                discord.SelectOption(
+                    label=f"🧪 {name}",
+                    value=f"potion:{slug}",
+                )
+            )
+        return options
 
     def _format_line(self, record: Mapping[str, object]) -> str:
         listing_id = int(record.get("id", 0))
@@ -546,6 +585,63 @@ class ConsumableListingsView(discord.ui.View):
         embed.set_footer(text="Utilise le menu pour changer de filtre.")
         return embed
 
+    def update_filters(self) -> None:
+        self.potion_filters = self._collect_potion_filters()
+        valid_filters = {"all", "ticket"}
+        valid_filters.update(f"potion:{slug}" for slug, _ in self.potion_filters)
+        if self.current_filter not in valid_filters:
+            self.current_filter = "all"
+        options = self._build_filter_options()
+        for option in options:
+            option.default = option.value == self.current_filter
+        self.filter_select.options = options
+        if hasattr(self, "purchase_button"):
+            self.purchase_button.disabled = not self.listings
+
+    def remove_listing(self, listing_id: int) -> None:
+        self.listings = tuple(
+            record
+            for record in self.listings
+            if int(record.get("id", 0)) != listing_id
+        )
+        self.update_filters()
+
+    async def refresh(self) -> None:
+        if self.message is None:
+            return
+        embed = self.get_embed(self.current_filter)
+        await self.message.edit(embed=embed, view=self)
+
+    async def handle_purchase(
+        self, interaction: discord.Interaction, listing_id: int
+    ) -> None:
+        success, embed, seller_id = await self.plaza._complete_consumable_purchase(
+            interaction.user,
+            listing_id,
+            guild=interaction.guild,
+        )
+        if not interaction.response.is_done():
+            await interaction.response.send_message(embed=embed, ephemeral=not success)
+        else:
+            await interaction.followup.send(embed=embed, ephemeral=not success)
+
+        if not success:
+            return
+
+        if seller_id is not None:
+            await self.plaza._refresh_active_stand_view(seller_id)
+
+        self.remove_listing(listing_id)
+        await self.refresh()
+
+    @discord.ui.button(
+        label="Acheter un consommable", style=discord.ButtonStyle.success
+    )
+    async def purchase_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.send_modal(ConsumablePurchaseModal(self))
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.author.id:
             return True
@@ -559,8 +655,7 @@ class ConsumableListingsView(discord.ui.View):
         if self.message is None:
             return
         for child in self.children:
-            if isinstance(child, discord.ui.Select):
-                child.disabled = True
+            child.disabled = True
         await self.message.edit(view=self)
 
 class Plaza(commands.Cog):
@@ -906,6 +1001,72 @@ class Plaza(commands.Cog):
         )
         return True, embed
 
+    async def _complete_consumable_purchase(
+        self,
+        buyer: discord.abc.User,
+        listing_id: int,
+        *,
+        guild: discord.Guild | None = None,
+    ) -> tuple[bool, discord.Embed, Optional[int]]:
+        try:
+            consumable = await self.database.get_consumable_listing(listing_id)
+        except DatabaseError as exc:
+            return False, embeds.error_embed(str(exc)), None
+
+        if consumable is None:
+            return (
+                False,
+                embeds.error_embed("Cette annonce n'existe pas ou n'est plus active."),
+                None,
+            )
+
+        seller_id = int(consumable.get("seller_id", 0))
+        if seller_id == buyer.id:
+            return False, embeds.error_embed("Tu ne peux pas acheter ta propre annonce."), None
+
+        try:
+            result = await self.database.purchase_consumable_listing(
+                listing_id, buyer.id
+            )
+        except InsufficientBalanceError as exc:
+            return False, embeds.error_embed(str(exc)), None
+        except DatabaseError as exc:
+            return False, embeds.error_embed(str(exc)), None
+
+        listing_record = result["listing"]
+        price = int(listing_record.get("price", 0))
+        quantity = int(listing_record.get("quantity", 0))
+        item_type = str(listing_record.get("item_type", ""))
+        if item_type == "ticket":
+            item_label = f"🎟️ Tickets ×{quantity}"
+        else:
+            slug = str(listing_record.get("item_slug", ""))
+            definition = POTION_DEFINITION_MAP.get(slug)
+            name = definition.name if definition else slug or "Potion"
+            item_label = f"🧪 {name} ×{quantity}"
+
+        seller = None
+        if guild is not None:
+            seller = guild.get_member(seller_id)
+        if seller is None:
+            seller = self.bot.get_user(seller_id)
+        seller_name = (
+            getattr(seller, "mention", seller.name)
+            if seller is not None
+            else f"Utilisateur {seller_id}"
+        )
+
+        buyer_before = int(result.get("buyer_before", 0))
+        lines = [
+            f"Achat : {item_label}",
+            f"Prix : {embeds.format_currency(price)}",
+            f"Vendeur : {seller_name}",
+            f"Ton solde avant achat : {embeds.format_currency(buyer_before)}",
+        ]
+        embed = embeds.success_embed("\n".join(lines), title="Achat confirmé")
+        seller_id = int(listing_record.get("seller_id", seller_id))
+        return True, embed, seller_id
+
     async def _cancel_listing_embed(
         self, user: discord.abc.User, listing_id: int
     ) -> tuple[bool, discord.Embed]:
@@ -1012,66 +1173,12 @@ class Plaza(commands.Cog):
             return
 
         if listing is None:
-            consumable = await self.database.get_consumable_listing(listing_id)
-            if consumable is None:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Cette annonce n'existe pas ou n'est plus active."
-                    )
-                )
-                return
-
-            seller_id = int(consumable.get("seller_id", 0))
-            if seller_id == ctx.author.id:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Tu ne peux pas acheter ta propre annonce."
-                    )
-                )
-                return
-
-            try:
-                result = await self.database.purchase_consumable_listing(
-                    listing_id, ctx.author.id
-                )
-            except InsufficientBalanceError as exc:
-                await ctx.send(embed=embeds.error_embed(str(exc)))
-                return
-            except DatabaseError as exc:
-                await ctx.send(embed=embeds.error_embed(str(exc)))
-                return
-
-            listing_record = result["listing"]
-            price = int(listing_record.get("price", 0))
-            quantity = int(listing_record.get("quantity", 0))
-            item_type = str(listing_record.get("item_type", ""))
-            if item_type == "ticket":
-                item_label = f"🎟️ Tickets ×{quantity}"
-            else:
-                slug = str(listing_record.get("item_slug", ""))
-                definition = POTION_DEFINITION_MAP.get(slug)
-                name = definition.name if definition else slug or "Potion"
-                item_label = f"🧪 {name} ×{quantity}"
-
-            seller = ctx.guild.get_member(seller_id) if ctx.guild else None
-            if seller is None:
-                seller = self.bot.get_user(seller_id)
-            seller_name = getattr(seller, "mention", seller.name) if seller else f"Utilisateur {seller_id}"
-
-            buyer_before = int(result.get("buyer_before", 0))
-            lines = [
-                f"Achat : {item_label}",
-                f"Prix : {embeds.format_currency(price)}",
-                f"Vendeur : {seller_name}",
-                f"Ton solde avant achat : {embeds.format_currency(buyer_before)}",
-            ]
-            await ctx.send(
-                embed=embeds.success_embed(
-                    "\n".join(lines), title="Achat confirmé"
-                )
+            success, embed, seller_id = await self._complete_consumable_purchase(
+                ctx.author, listing_id, guild=ctx.guild
             )
-            seller_id = int(listing_record.get("seller_id", seller_id))
-            await self._refresh_active_stand_view(seller_id)
+            await ctx.send(embed=embed)
+            if success and seller_id is not None:
+                await self._refresh_active_stand_view(seller_id)
             return
 
         seller_id = int(listing["seller_id"])
