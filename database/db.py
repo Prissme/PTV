@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import math
 import random
+import sys
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -34,7 +35,10 @@ from config import (
     TITANIC_GRIFF_NAME,
     POTION_DEFINITION_MAP,
     PotionDefinition,
+    clamp_income_value,
+    compute_huge_income,
     get_huge_level_multiplier,
+    safe_multiply_income,
     huge_level_required_xp,
 )
 from utils.mastery import get_mastery_definition
@@ -116,6 +120,19 @@ class Database:
         async with self.pool.acquire() as connection:
             async with connection.transaction():
                 yield connection
+
+    @staticmethod
+    def _coerce_positive_ids(values: Sequence[object], *, field: str = "identifiants") -> list[int]:
+        normalized: list[int] = []
+        for raw in values:
+            try:
+                value = int(raw)
+            except (TypeError, ValueError) as exc:
+                raise DatabaseError(f"Les {field} fournis sont invalides.") from exc
+            if value <= 0:
+                raise DatabaseError(f"Les {field} fournis doivent être strictement positifs.")
+            normalized.append(value)
+        return normalized
 
     async def _initialise_schema(self) -> None:
         async with self.pool.acquire() as connection:
@@ -690,6 +707,8 @@ class Database:
                 total_tickets += quantity
             if total_tickets <= 0 or not totals:
                 return None
+            if len(totals) > 1:
+                random.shuffle(totals)
             winning_ticket = random.randint(1, total_tickets)
             cumulative = 0
             winner_id = 0
@@ -1794,9 +1813,10 @@ class Database:
             if bool(row["is_huge"]):
                 level = int(row.get("huge_level") or 1)
                 multiplier = get_huge_level_multiplier(name, level)
-                huge_floor = max(base_income * multiplier * 150, value)
-                value = int(huge_floor)
-            rap_totals[user_id] += max(0, value)
+                bonus_floor = safe_multiply_income(base_income, multiplier * 150)
+                value = max(value, bonus_floor)
+                value = clamp_income_value(value, minimum=HUGE_PET_MIN_INCOME)
+            rap_totals[user_id] += max(0, int(value))
 
         sorted_totals = sorted(rap_totals.items(), key=lambda item: item[1], reverse=True)
         return sorted_totals[:clamped_limit]
@@ -1854,12 +1874,8 @@ class Database:
                 level = int(row.get("huge_level") or 1)
                 multiplier = get_huge_level_multiplier(str(row.get("name", "")), level)
                 reference = best_non_huge.get(user_id, 0)
-                if reference <= 0:
-                    base_income = int(row["base_income_per_hour"])
-                    scaled = int(base_income * multiplier)
-                else:
-                    scaled = int(reference * multiplier)
-                income_value = max(HUGE_PET_MIN_INCOME, scaled)
+                reference_income = reference if reference > 0 else base_income
+                income_value = compute_huge_income(reference_income, multiplier)
             else:
                 if bool(row.get("is_galaxy")):
                     income_value = base_income * GALAXY_PET_MULTIPLIER
@@ -2355,7 +2371,10 @@ class Database:
         result_is_huge: bool | None = None,
     ) -> asyncpg.Record:
         await self.ensure_user(user_id)
-        unique_ids = {int(pet_id) for pet_id in user_pet_ids if int(pet_id) > 0}
+        normalized_ids = self._coerce_positive_ids(
+            user_pet_ids, field="identifiants de pet"
+        )
+        unique_ids = set(normalized_ids)
         if len(unique_ids) < 10:
             raise DatabaseError("La machine de fusion nécessite 10 pets distincts.")
 
@@ -3105,8 +3124,10 @@ class Database:
                     name = str(row.get("name", ""))
                     level = int(row.get("huge_level") or 1)
                     multiplier = get_huge_level_multiplier(name, level)
-                    scaled_income = int(best_non_huge_income * multiplier)
-                    income_value = max(HUGE_PET_MIN_INCOME, scaled_income)
+                    reference_income = (
+                        best_non_huge_income if best_non_huge_income > 0 else base_income
+                    )
+                    income_value = compute_huge_income(reference_income, multiplier)
                 else:
                     if bool(row.get("is_galaxy")):
                         income_value = base_income * GALAXY_PET_MULTIPLIER
@@ -3387,6 +3408,7 @@ class Database:
 
             previous_level = level
             experience += int(amount)
+            experience = max(0, min(experience, sys.maxsize))
             levels_gained = 0
             new_levels: List[int] = []
 

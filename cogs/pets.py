@@ -48,6 +48,7 @@ from config import (
     HUGE_MORTIS_NAME,
     TITANIC_GRIFF_NAME,
     PotionDefinition,
+    compute_huge_income,
     get_huge_level_multiplier,
     get_huge_level_progress,
     huge_level_required_xp,
@@ -419,6 +420,7 @@ class Pets(commands.Cog):
         if self._default_egg_slug:
             self._egg_lookup.setdefault(self._default_egg_slug, self._default_egg_slug)
         self._egg_open_locks: Dict[int, asyncio.Lock] = {}
+        self._last_clock_sample = datetime.now(timezone.utc)
 
     @staticmethod
     def _normalize_pet_key(value: str) -> str:
@@ -594,6 +596,13 @@ class Pets(commands.Cog):
                 return image
         return None
 
+    def _monotonic_now(self) -> datetime:
+        current = datetime.now(timezone.utc)
+        if current < self._last_clock_sample:
+            return self._last_clock_sample
+        self._last_clock_sample = current
+        return current
+
     @staticmethod
     def _compute_huge_income(
         best_non_huge_income: int | None,
@@ -603,10 +612,7 @@ class Pets(commands.Cog):
     ) -> int:
         best_value = max(0, int(best_non_huge_income or 0))
         multiplier = get_huge_level_multiplier(pet_name or "", level)
-        if best_value <= 0:
-            return HUGE_PET_MIN_INCOME
-        scaled = int(best_value * multiplier)
-        return max(HUGE_PET_MIN_INCOME, scaled)
+        return compute_huge_income(best_value, multiplier)
 
     @staticmethod
     def _apply_huge_progress_fields(data: Dict[str, Any], level: int, xp: int) -> None:
@@ -1403,7 +1409,7 @@ class Pets(commands.Cog):
             potion_definition, potion_expires_at = active_potion
             if (
                 potion_definition.effect_type == "egg_luck"
-                and potion_expires_at > datetime.now(timezone.utc)
+                and potion_expires_at > self._monotonic_now()
             ):
                 effective_luck_bonus += max(0.0, float(potion_definition.effect_value))
         if frenzy_active:
