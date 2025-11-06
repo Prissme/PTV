@@ -1976,6 +1976,11 @@ class Economy(commands.Cog):
             result_text=message,
         )
         await ctx.send(embed=embed)
+        net_loss = bet - payout if payout < bet else 0
+        if net_loss > 0:
+            self.bot.dispatch(
+                "grade_quest_progress", ctx.author, "casino_loss", net_loss, ctx.channel
+            )
         await self._maybe_award_potion(ctx, "slots")
         await self._maybe_award_casino_titanic(ctx, bet)
 

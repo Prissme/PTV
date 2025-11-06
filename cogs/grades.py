@@ -135,7 +135,7 @@ class GradeSystem(commands.Cog):
         progress_kwargs = {
             "mastermind_cap": definition.mastermind_goal,
             "egg_cap": definition.egg_goal,
-            "sale_cap": definition.sale_goal,
+            "casino_loss_cap": definition.casino_loss_goal,
             "potion_cap": definition.potion_goal,
         }
 
@@ -144,8 +144,11 @@ class GradeSystem(commands.Cog):
             progress_kwargs["mastermind_delta"] = amount
         elif quest_type in {"egg", "eggs", "oeuf", "oeufs"}:
             progress_kwargs["egg_delta"] = amount
-        elif quest_type in {"sale", "sell", "vente", "vendre"}:
-            progress_kwargs["sale_delta"] = amount
+        elif quest_type in {"casino", "casino_loss", "perte", "casino-perte"}:
+            progress_kwargs["casino_loss_delta"] = amount
+        elif quest_type in {"rap"}:
+            # Aucun suivi direct en base : le RAP est recalculé dynamiquement.
+            pass
         elif quest_type in {"potion", "potions", "boire", "drink"}:
             progress_kwargs["potion_delta"] = amount
         else:
@@ -160,7 +163,13 @@ class GradeSystem(commands.Cog):
             logger.exception("Impossible de mettre à jour les quêtes pour %s", member.id)
             return
 
-        if not self._is_grade_ready(progress_row, definition):
+        try:
+            rap_total = await self.database.get_user_pet_rap(member.id)
+        except Exception:
+            logger.exception("Impossible de récupérer le RAP pour %s", member.id)
+            rap_total = 0
+
+        if not self._is_grade_ready(progress_row, definition, rap_total=rap_total):
             return
 
         try:
@@ -168,8 +177,10 @@ class GradeSystem(commands.Cog):
                 member.id,
                 mastermind_goal=definition.mastermind_goal,
                 egg_goal=definition.egg_goal,
-                sale_goal=definition.sale_goal,
+                casino_loss_goal=definition.casino_loss_goal,
                 potion_goal=definition.potion_goal,
+                rap_goal=definition.rap_goal,
+                current_rap=rap_total,
                 max_grade=self.total_grades,
             )
         except Exception:
@@ -186,12 +197,18 @@ class GradeSystem(commands.Cog):
             )
 
     @staticmethod
-    def _is_grade_ready(row: Mapping[str, object], definition: GradeDefinition) -> bool:
+    def _is_grade_ready(
+        row: Mapping[str, object],
+        definition: GradeDefinition,
+        *,
+        rap_total: int,
+    ) -> bool:
         return (
             int(row["mastermind_progress"]) >= definition.mastermind_goal
             and int(row["egg_progress"]) >= definition.egg_goal
-            and int(row["sale_progress"]) >= definition.sale_goal
+            and int(row["sale_progress"]) >= definition.casino_loss_goal
             and int(row["potion_progress"]) >= definition.potion_goal
+            and rap_total >= definition.rap_goal
         )
 
     async def _handle_grade_completion(
@@ -292,14 +309,22 @@ class GradeSystem(commands.Cog):
             else None
         )
 
-        if next_grade is not None and self._is_grade_ready(row, next_grade):
+        try:
+            rap_total = await self.database.get_user_pet_rap(target.id)
+        except Exception:
+            logger.exception("Impossible de récupérer le RAP pour %s", target.id)
+            rap_total = 0
+
+        if next_grade is not None and self._is_grade_ready(row, next_grade, rap_total=rap_total):
             try:
                 completed, new_row = await self.database.complete_grade_if_ready(
                     target.id,
                     mastermind_goal=next_grade.mastermind_goal,
                     egg_goal=next_grade.egg_goal,
-                    sale_goal=next_grade.sale_goal,
+                    casino_loss_goal=next_grade.casino_loss_goal,
                     potion_goal=next_grade.potion_goal,
+                    rap_goal=next_grade.rap_goal,
+                    current_rap=rap_total,
                     max_grade=self.total_grades,
                 )
             except Exception:
@@ -319,6 +344,11 @@ class GradeSystem(commands.Cog):
                         if grade_level < self.total_grades
                         else None
                     )
+                    try:
+                        rap_total = await self.database.get_user_pet_rap(target.id)
+                    except Exception:
+                        logger.exception("Impossible de récupérer le RAP pour %s", target.id)
+                        rap_total = 0
                     if earned_grade is not None:
                         await self._handle_grade_completion(
                             target,
@@ -336,9 +366,10 @@ class GradeSystem(commands.Cog):
             progress={
                 "mastermind": int(row["mastermind_progress"]),
                 "eggs": int(row["egg_progress"]),
-                "sales": int(row["sale_progress"]),
+                "casino_losses": int(row["sale_progress"]),
                 "potions": int(row["potion_progress"]),
             },
+            rap_total=rap_total,
             pet_slots=BASE_PET_SLOTS + grade_level,
         )
         await ctx.send(embed=embed)

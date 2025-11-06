@@ -123,30 +123,55 @@ class GradeDefinition:
     name: str
     mastermind_goal: int
     egg_goal: int
-    sale_goal: int
+    rap_goal: int
+    casino_loss_goal: int
     potion_goal: int
     reward_pb: int
 
 
 BASE_PET_SLOTS: Final[int] = 4
+RAP_GOAL_UNIT: Final[int] = 50_000
+CASINO_LOSS_GOAL_UNIT: Final[int] = 5_000
 
-GRADE_DEFINITIONS: Tuple[GradeDefinition, ...] = (
-    GradeDefinition("Novice", 0, 3, 1, 1, 250),
-    GradeDefinition("Apprenti", 1, 5, 1, 1, 400),
-    GradeDefinition("Disciple", 1, 8, 2, 1, 550),
-    GradeDefinition("Explorateur", 1, 12, 3, 2, 700),
-    GradeDefinition("Aventurier", 2, 16, 4, 2, 900),
-    GradeDefinition("Expert", 2, 20, 5, 3, 1_100),
-    GradeDefinition("Champion", 2, 25, 6, 3, 1_400),
-    GradeDefinition("Maître", 3, 30, 7, 4, 1_700),
-    GradeDefinition("Prodige", 3, 36, 8, 4, 2_100),
-    GradeDefinition("Élite", 4, 43, 9, 5, 2_600),
-    GradeDefinition("Légende", 5, 51, 10, 5, 3_200),
-    GradeDefinition("Mythique", 6, 60, 11, 6, 3_900),
-    GradeDefinition("Cosmique", 7, 70, 13, 7, 4_700),
-    GradeDefinition("Divin", 8, 81, 15, 8, 5_600),
-    GradeDefinition("Parangon", 9, 93, 17, 9, 6_600),
+_GRADE_BLUEPRINTS: Tuple[tuple[str, int, int, int, int, int], ...] = (
+    ("Novice", 0, 3, 1, 1, 250),
+    ("Apprenti", 1, 5, 1, 1, 400),
+    ("Disciple", 1, 8, 2, 1, 550),
+    ("Explorateur", 1, 12, 3, 2, 700),
+    ("Aventurier", 2, 16, 4, 2, 900),
+    ("Expert", 2, 20, 5, 3, 1_100),
+    ("Champion", 2, 25, 6, 3, 1_400),
+    ("Maître", 3, 30, 7, 4, 1_700),
+    ("Prodige", 3, 36, 8, 4, 2_100),
+    ("Élite", 4, 43, 9, 5, 2_600),
+    ("Légende", 5, 51, 10, 5, 3_200),
+    ("Mythique", 6, 60, 11, 6, 3_900),
+    ("Cosmique", 7, 70, 13, 7, 4_700),
+    ("Divin", 8, 81, 15, 8, 5_600),
+    ("Parangon", 9, 93, 17, 9, 6_600),
 )
+
+
+def _build_grade_definitions() -> Tuple[GradeDefinition, ...]:
+    definitions: list[GradeDefinition] = []
+    for name, mastermind, eggs, sale_goal, potion, reward in _GRADE_BLUEPRINTS:
+        rap_goal = sale_goal * RAP_GOAL_UNIT
+        casino_loss_goal = sale_goal * CASINO_LOSS_GOAL_UNIT
+        definitions.append(
+            GradeDefinition(
+                name,
+                mastermind_goal=mastermind,
+                egg_goal=eggs,
+                rap_goal=rap_goal,
+                casino_loss_goal=casino_loss_goal,
+                potion_goal=potion,
+                reward_pb=reward,
+            )
+        )
+    return tuple(definitions)
+
+
+GRADE_DEFINITIONS: Tuple[GradeDefinition, ...] = _build_grade_definitions()
 
 GRADE_ROLE_IDS: Tuple[int, ...] = (
     1430716817852203128,

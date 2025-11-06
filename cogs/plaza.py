@@ -1217,11 +1217,6 @@ class Plaza(commands.Cog):
                 seller_user = await self.bot.fetch_user(seller_id)
             except discord.HTTPException:
                 seller_user = None
-        if seller_user is not None:
-            self.bot.dispatch(
-                "grade_quest_progress", seller_user, "sale", 1, ctx.channel
-            )
-
         await self._refresh_active_stand_view(seller_id)
 
     @stand.command(name="history")
