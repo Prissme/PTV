@@ -1867,17 +1867,17 @@ class Database:
         *,
         mastermind_delta: int = 0,
         egg_delta: int = 0,
-        sale_delta: int = 0,
+        casino_loss_delta: int = 0,
         potion_delta: int = 0,
         mastermind_cap: int | None = None,
         egg_cap: int | None = None,
-        sale_cap: int | None = None,
+        casino_loss_cap: int | None = None,
         potion_cap: int | None = None,
     ) -> asyncpg.Record:
         if (
             mastermind_delta <= 0
             and egg_delta <= 0
-            and sale_delta <= 0
+            and casino_loss_delta <= 0
             and potion_delta <= 0
         ):
             return await self.get_user_grade(user_id)
@@ -1898,20 +1898,22 @@ class Database:
 
             current_mastermind = int(row["mastermind_progress"])
             current_eggs = int(row["egg_progress"])
-            current_sales = int(row["sale_progress"])
+            current_casino_losses = int(row["sale_progress"])
             current_potions = int(row["potion_progress"])
 
             new_mastermind = max(0, current_mastermind + max(mastermind_delta, 0))
             new_eggs = max(0, current_eggs + max(egg_delta, 0))
-            new_sales = max(0, current_sales + max(sale_delta, 0))
+            new_casino_losses = max(
+                0, current_casino_losses + max(casino_loss_delta, 0)
+            )
             new_potions = max(0, current_potions + max(potion_delta, 0))
 
             if mastermind_cap is not None:
                 new_mastermind = min(new_mastermind, mastermind_cap)
             if egg_cap is not None:
                 new_eggs = min(new_eggs, egg_cap)
-            if sale_cap is not None:
-                new_sales = min(new_sales, sale_cap)
+            if casino_loss_cap is not None:
+                new_casino_losses = min(new_casino_losses, casino_loss_cap)
             if potion_cap is not None:
                 new_potions = min(new_potions, potion_cap)
 
@@ -1928,7 +1930,7 @@ class Database:
                 """,
                 new_mastermind,
                 new_eggs,
-                new_sales,
+                new_casino_losses,
                 new_potions,
                 user_id,
             )
@@ -1943,8 +1945,10 @@ class Database:
         *,
         mastermind_goal: int,
         egg_goal: int,
-        sale_goal: int,
+        casino_loss_goal: int,
         potion_goal: int,
+        rap_goal: int,
+        current_rap: int | None = None,
         max_grade: int,
     ) -> tuple[bool, asyncpg.Record]:
         await self.ensure_user(user_id)
@@ -1960,11 +1964,16 @@ class Database:
             if grade_level >= max_grade:
                 return False, row
 
+            rap_total = current_rap
+            if rap_total is None:
+                rap_total = await self.get_user_pet_rap(user_id, connection=connection)
+
             if (
                 int(row["mastermind_progress"]) < mastermind_goal
                 or int(row["egg_progress"]) < egg_goal
-                or int(row["sale_progress"]) < sale_goal
+                or int(row["sale_progress"]) < casino_loss_goal
                 or int(row["potion_progress"]) < potion_goal
+                or rap_total < rap_goal
             ):
                 return False, row
 
@@ -2028,16 +2037,21 @@ class Database:
             pet_id = int(row["pet_id"])
             base_income = int(row["base_income_per_hour"])
             name = str(row.get("name", ""))
-            value = int(market_values.get(pet_id, 0))
+            value = self._resolve_market_price(
+                pet_id,
+                is_gold=bool(row.get("is_gold")),
+                is_rainbow=bool(row.get("is_rainbow")),
+                is_galaxy=bool(row.get("is_galaxy")),
+                is_shiny=bool(row.get("is_shiny")),
+                market_values=market_values,
+            )
             if value <= 0:
                 value = max(base_income * 120, 1_000)
-            is_galaxy = bool(row.get("is_galaxy"))
-            is_rainbow = bool(row.get("is_rainbow"))
-            if is_galaxy:
+            if bool(row.get("is_galaxy")):
                 value = int(value * GALAXY_PET_MULTIPLIER)
-            elif is_rainbow:
+            elif bool(row.get("is_rainbow")):
                 value = int(value * RAINBOW_PET_MULTIPLIER)
-            elif bool(row["is_gold"]):
+            elif bool(row.get("is_gold")):
                 value = int(value * GOLD_PET_MULTIPLIER)
             if bool(row.get("is_shiny")):
                 value = int(value * SHINY_PET_MULTIPLIER)
@@ -2051,6 +2065,63 @@ class Database:
 
         sorted_totals = sorted(rap_totals.items(), key=lambda item: item[1], reverse=True)
         return sorted_totals[:clamped_limit]
+
+    async def get_user_pet_rap(
+        self,
+        user_id: int,
+        *,
+        connection: asyncpg.Connection | None = None,
+    ) -> int:
+        market_values = await self.get_pet_market_values()
+        query = """
+            SELECT
+                up.pet_id,
+                up.is_gold,
+                up.is_huge,
+                up.is_rainbow,
+                up.is_galaxy,
+                up.is_shiny,
+                up.huge_level,
+                p.base_income_per_hour,
+                p.name
+            FROM user_pets AS up
+            JOIN pets AS p ON p.pet_id = up.pet_id
+            WHERE up.user_id = $1
+        """
+        fetcher = connection.fetch if connection is not None else self.pool.fetch
+        rows = await fetcher(query, user_id)
+
+        rap_total = 0
+        for row in rows:
+            pet_id = int(row["pet_id"])
+            base_income = int(row["base_income_per_hour"])
+            name = str(row.get("name", ""))
+            value = self._resolve_market_price(
+                pet_id,
+                is_gold=bool(row.get("is_gold")),
+                is_rainbow=bool(row.get("is_rainbow")),
+                is_galaxy=bool(row.get("is_galaxy")),
+                is_shiny=bool(row.get("is_shiny")),
+                market_values=market_values,
+            )
+            if value <= 0:
+                value = max(base_income * 120, 1_000)
+            if bool(row.get("is_galaxy")):
+                value = int(value * GALAXY_PET_MULTIPLIER)
+            elif bool(row.get("is_rainbow")):
+                value = int(value * RAINBOW_PET_MULTIPLIER)
+            elif bool(row.get("is_gold")):
+                value = int(value * GOLD_PET_MULTIPLIER)
+            if bool(row.get("is_shiny")):
+                value = int(value * SHINY_PET_MULTIPLIER)
+            if bool(row.get("is_huge")):
+                level = int(row.get("huge_level") or 1)
+                multiplier = get_huge_level_multiplier(name, level)
+                bonus_floor = safe_multiply_income(base_income, multiplier * 150)
+                value = max(value, bonus_floor)
+                value = clamp_income_value(value, minimum=HUGE_PET_MIN_INCOME)
+            rap_total += max(0, int(value))
+        return rap_total
 
     async def get_hourly_income_leaderboard(self, limit: int) -> list[tuple[int, int]]:
         clamped_limit = max(0, int(limit))
@@ -3696,6 +3767,55 @@ class Database:
         if is_shiny:
             return f"{base}+shiny"
         return base
+
+    @classmethod
+    def _market_variant_candidates(
+        cls,
+        *,
+        is_gold: bool,
+        is_rainbow: bool,
+        is_galaxy: bool,
+        is_shiny: bool,
+    ) -> tuple[str, ...]:
+        primary = cls._build_variant_code(is_gold, is_rainbow, is_galaxy, is_shiny)
+        candidates: list[str] = [primary]
+        if is_shiny:
+            candidates.append(cls._build_variant_code(is_gold, is_rainbow, is_galaxy, False))
+        if is_galaxy:
+            candidates.append(cls._build_variant_code(is_gold, is_rainbow, False, is_shiny))
+        if is_rainbow or is_gold:
+            candidates.append(cls._build_variant_code(False, False, False, is_shiny))
+        candidates.append(cls._build_variant_code(False, False, False, False))
+
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for code in candidates:
+            if code not in seen:
+                seen.add(code)
+                ordered.append(code)
+        return tuple(ordered)
+
+    @classmethod
+    def _resolve_market_price(
+        cls,
+        pet_id: int,
+        *,
+        is_gold: bool,
+        is_rainbow: bool,
+        is_galaxy: bool,
+        is_shiny: bool,
+        market_values: Mapping[tuple[int, str], int],
+    ) -> int:
+        for code in cls._market_variant_candidates(
+            is_gold=is_gold,
+            is_rainbow=is_rainbow,
+            is_galaxy=is_galaxy,
+            is_shiny=is_shiny,
+        ):
+            key = (pet_id, code)
+            if key in market_values:
+                return int(market_values[key])
+        return 0
 
     async def record_pet_trade_value(
         self,

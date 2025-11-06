@@ -370,6 +370,15 @@ def _quest_progress_line(label: str, current: int, goal: int) -> str:
     return f"{status} {label} : **{current}/{goal}**"
 
 
+def _quest_currency_progress_line(label: str, current: int, goal: int) -> str:
+    if goal <= 0:
+        return f"✅ {label} : aucune exigence"
+    status = "✅" if current >= goal else "▫️"
+    return (
+        f"{status} {label} : **{format_currency(current)} / {format_currency(goal)}**"
+    )
+
+
 def grade_profile_embed(
     *,
     member: discord.Member,
@@ -378,6 +387,7 @@ def grade_profile_embed(
     current_grade: GradeDefinition | None,
     next_grade: GradeDefinition | None,
     progress: Mapping[str, int],
+    rap_total: int,
     pet_slots: int,
 ) -> discord.Embed:
     if next_grade is None:
@@ -407,10 +417,15 @@ def grade_profile_embed(
                 progress.get("eggs", 0),
                 next_grade.egg_goal,
             ),
-            _quest_progress_line(
-                "Vendre des pets",
-                progress.get("sales", 0),
-                next_grade.sale_goal,
+            _quest_currency_progress_line(
+                "Atteindre un RAP total",
+                rap_total,
+                next_grade.rap_goal,
+            ),
+            _quest_currency_progress_line(
+                "Perdre des Prissbucks au casino",
+                progress.get("casino_losses", 0),
+                next_grade.casino_loss_goal,
             ),
             _quest_progress_line(
                 "Boire des potions",

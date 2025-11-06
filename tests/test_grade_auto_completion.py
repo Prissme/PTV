@@ -58,9 +58,10 @@ class _FakeDatabase:
         self.progress = {
             "mastermind_progress": 0,
             "egg_progress": 3,
-            "sale_progress": 1,
+            "sale_progress": 5_000,
             "potion_progress": 1,
         }
+        self.rap_total = 50_000
 
     async def get_user_grade(self, _user_id: int) -> _FakeRecord:
         return _FakeRecord({"grade_level": self.grade_level, **self.progress})
@@ -71,15 +72,19 @@ class _FakeDatabase:
         *,
         mastermind_goal: int,
         egg_goal: int,
-        sale_goal: int,
+        casino_loss_goal: int,
         potion_goal: int,
+        rap_goal: int,
+        current_rap: int | None,
         max_grade: int,  # noqa: ARG002 - conforms to real signature
     ):
+        rap_total = current_rap if current_rap is not None else self.rap_total
         ready = (
             self.progress["mastermind_progress"] >= mastermind_goal
             and self.progress["egg_progress"] >= egg_goal
-            and self.progress["sale_progress"] >= sale_goal
+            and self.progress["sale_progress"] >= casino_loss_goal
             and self.progress["potion_progress"] >= potion_goal
+            and rap_total >= rap_goal
         )
         if ready and self.grade_level < max_grade:
             self.grade_level += 1
@@ -94,6 +99,9 @@ class _FakeDatabase:
 
     async def increment_balance(self, *_args, **_kwargs):  # pragma: no cover - simple stub
         return 0, 0
+
+    async def get_user_pet_rap(self, _user_id: int, *, connection=None) -> int:  # noqa: ARG002
+        return self.rap_total
 
 def test_grade_command_auto_claims_ready_grade(monkeypatch) -> None:
     monkeypatch.setattr(grades.discord, "Member", _DummyMember, raising=False)
