@@ -2240,6 +2240,10 @@ class Database:
             if user_row is None:
                 raise DatabaseError("Utilisateur introuvable pour le rebirth")
 
+            current_rebirths = int(user_row.get("rebirth_count", 0))
+            if current_rebirths >= 1:
+                raise DatabaseError("Limite de rebirth atteinte pour cet utilisateur")
+
             await connection.execute(
                 """
                 UPDATE users
@@ -2265,6 +2269,10 @@ class Database:
             )
             await connection.execute(
                 "DELETE FROM user_zones WHERE user_id = $1",
+                user_id,
+            )
+            await connection.execute(
+                "DELETE FROM user_pets WHERE user_id = $1 AND NOT is_huge",
                 user_id,
             )
             await connection.execute(

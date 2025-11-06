@@ -15,6 +15,7 @@ from config import (
     LEADERBOARD_LIMIT,
     GradeDefinition,
 )
+from database.db import DatabaseError
 from utils import embeds
 
 logger = logging.getLogger(__name__)
@@ -394,15 +395,23 @@ class GradeSystem(commands.Cog):
             return
 
         rebirth_count = await self.database.get_rebirth_count(ctx.author.id)
+        if rebirth_count >= 1:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Tu as déjà utilisé le rebirth unique disponible."
+                )
+            )
+            return
         description_lines = [
             f"• Tu es sur le point de lancer ton rebirth #{rebirth_count + 1}",
             "• Retour à la zone 1 et au grade 1",
             "• Tes PB, potions actives et tickets de tombola seront perdus",
-            "• Tu conserves l'intégralité de tes pets",
+            "• Tes pets seront tous supprimés, sauf tes Huge et Titanic",
             "• Bonus permanent : +50% de PB gagnés",
             "• Accès au gold garanti en payant 100× le prix d'un œuf",
             "• Double ouverture récapitulée dans un seul embed",
             "• Nouvelle zone : *Coming soon*",
+            "• Limite absolue : 1 rebirth par joueur",
         ]
         prompt_embed = embeds.warning_embed(
             "\n".join(description_lines),
@@ -429,7 +438,16 @@ class GradeSystem(commands.Cog):
                 )
             return
 
-        new_count = await self.database.perform_rebirth(ctx.author.id)
+        try:
+            new_count = await self.database.perform_rebirth(ctx.author.id)
+        except DatabaseError as exc:
+            logger.exception("Erreur lors du rebirth pour %s", ctx.author.id)
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Impossible de finaliser le rebirth : {message}".format(message=str(exc))
+                )
+            )
+            return
         if isinstance(ctx.author, discord.Member):
             await self._assign_grade_role(ctx.author, 1)
 
@@ -437,7 +455,8 @@ class GradeSystem(commands.Cog):
         success_lines = [
             "✅ Nouveau départ en zone 1, grade 1",
             "• Solde, potions et tickets ont été réinitialisés",
-            "• Tes pets restent intacts",
+            "• Tous tes pets non-Huge ont été relâchés",
+            "• Tes Huge et Titanic ont été préservés",
             f"• Multiplicateur PB actuel : x{multiplier:.1f}",
             "• Utilise `e!openbox <œuf> gold` pour un pet or garanti",
             "• Les doubles ouvertures s'affichent maintenant dans un seul embed",
