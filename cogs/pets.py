@@ -1325,7 +1325,7 @@ class Pets(commands.Cog):
                         f"Tu dois atteindre le niveau {zone.egg_mastery_required} de {EGG_MASTERY.display_name} pour accéder à {zone.name}."
                     )
                 )
-                return None
+                return False
 
         if zone.pet_mastery_required > 0:
             pet_mastery = await self.database.get_mastery_progress(
@@ -1336,6 +1336,18 @@ class Pets(commands.Cog):
                 await ctx.send(
                     embed=embeds.error_embed(
                         f"Tu dois atteindre le niveau {zone.pet_mastery_required} de {PET_MASTERY.display_name} pour accéder à {zone.name}."
+                    )
+                )
+                return False
+
+        if zone.rebirth_required > 0:
+            rebirth_count = await self.database.get_rebirth_count(ctx.author.id)
+            if rebirth_count < zone.rebirth_required:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Tu dois effectuer au moins "
+                        f"{zone.rebirth_required} rebirth{'s' if zone.rebirth_required > 1 else ''} "
+                        f"pour accéder à {zone.name}."
                     )
                 )
                 return False
@@ -1386,9 +1398,14 @@ class Pets(commands.Cog):
             meets_grade = grade_level >= zone.grade_required
             meets_egg_mastery = egg_level >= zone.egg_mastery_required
             meets_pet_mastery = pet_level >= zone.pet_mastery_required
+            meets_rebirth = rebirth_count >= zone.rebirth_required
             status = (
                 "✅"
-                if zone_unlocked and meets_grade and meets_egg_mastery and meets_pet_mastery
+                if zone_unlocked
+                and meets_grade
+                and meets_egg_mastery
+                and meets_pet_mastery
+                and meets_rebirth
                 else "🔒"
             )
             requirements: List[str] = []
@@ -1403,6 +1420,10 @@ class Pets(commands.Cog):
             if zone.pet_mastery_required > 0 and not meets_pet_mastery:
                 requirements.append(
                     f"{PET_MASTERY.display_name} niveau {zone.pet_mastery_required}"
+                )
+            if zone.rebirth_required > 0 and not meets_rebirth:
+                requirements.append(
+                    f"{zone.rebirth_required} rebirth{'s' if zone.rebirth_required > 1 else ''}"
                 )
             if zone.entry_cost > 0:
                 if zone.slug in unlocked_zones:
@@ -1527,7 +1548,7 @@ class Pets(commands.Cog):
                         "Réessaie dans quelques instants."
                     )
                 )
-                return False
+                return None
         is_gold = False
         is_rainbow = False
         is_galaxy = False
