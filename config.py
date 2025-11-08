@@ -988,7 +988,7 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         name="Animalerie",
         slug=ANIMALERIE_ZONE_SLUG,
         grade_required=12,
-        entry_cost=500_000_000,
+        entry_cost=50_000_000,
         eggs=_eggs_for_zone(ANIMALERIE_ZONE_SLUG),
         rebirth_required=1,
     ),
