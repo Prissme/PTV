@@ -65,7 +65,7 @@ from cogs.economy import (
     MASTERMIND_HUGE_MAX_CHANCE,
     MASTERMIND_HUGE_MIN_CHANCE,
 )
-from utils.mastery import EGG_MASTERY, PET_MASTERY, MasteryDefinition
+from utils.mastery import EGG_MASTERY, PET_MASTERY, MasteryDefinition, iter_masteries
 from database.db import ActivePetLimitError, DatabaseError, InsufficientBalanceError
 
 logger = logging.getLogger(__name__)
@@ -427,6 +427,7 @@ class Pets(commands.Cog):
             egg.slug: egg for egg in PET_EGG_DEFINITIONS
         }
         self._zones: Dict[str, PetZoneDefinition] = {zone.slug: zone for zone in PET_ZONES}
+        self._mastery_definitions: tuple[MasteryDefinition, ...] = tuple(iter_masteries())
         self._default_egg_slug: str = (
             DEFAULT_PET_EGG_SLUG if DEFAULT_PET_EGG_SLUG in self._eggs else next(iter(self._eggs), "")
         )
@@ -640,6 +641,27 @@ class Pets(commands.Cog):
             "Catalogue de pets resynchronisé (%d entrées)",
             len(self._definition_by_id),
         )
+
+    async def _ensure_pet_registered(self, pet_name: str) -> bool:
+        definition = self._definition_by_name.get(pet_name)
+        if definition is None:
+            return False
+        try:
+            new_ids = await self.database.sync_pets([definition])
+        except Exception:
+            logger.exception(
+                "Impossible de synchroniser le pet manquant",
+                extra={"pet_name": pet_name},
+            )
+            return False
+        if not new_ids:
+            return False
+        self._pet_ids.update(new_ids)
+        for name, identifier in new_ids.items():
+            matched = self._definition_by_name.get(name)
+            if matched is not None:
+                self._definition_by_id[identifier] = matched
+        return pet_name in self._pet_ids
 
     # ------------------------------------------------------------------
     # Utilitaires internes
@@ -1524,22 +1546,31 @@ class Pets(commands.Cog):
                 effective_luck_bonus += max(0.0, float(potion_definition.effect_value))
         if frenzy_active:
             effective_luck_bonus += max(0.0, float(EGG_FRENZY_LUCK_BONUS))
-        try:
-            pet_definition, pet_id = self._choose_pet(
-                egg, luck_bonus=effective_luck_bonus
-            )
-        except KeyError:
-            await self._resync_pets()
+        pet_definition: PetDefinition | None = None
+        pet_id: int | None = None
+        last_missing_name = ""
+        for attempt in range(3):
             try:
                 pet_definition, pet_id = self._choose_pet(
                     egg, luck_bonus=effective_luck_bonus
                 )
-            except KeyError:
+                break
+            except KeyError as exc:
+                missing_name = exc.args[0] if exc.args else ""
+                last_missing_name = str(missing_name)
+                if attempt == 0:
+                    await self._resync_pets()
+                    continue
+                if attempt == 1 and last_missing_name:
+                    ensured = await self._ensure_pet_registered(last_missing_name)
+                    if ensured:
+                        continue
                 logger.exception(
                     "Pet introuvable lors de l'ouverture d'œuf",
                     extra={
                         "user_id": ctx.author.id,
                         "egg": egg.slug,
+                        "missing_pet": last_missing_name,
                     },
                 )
                 await ctx.send(
@@ -1549,6 +1580,23 @@ class Pets(commands.Cog):
                     )
                 )
                 return None
+
+        if pet_definition is None or pet_id is None:
+            logger.error(
+                "Aucun pet sélectionné après plusieurs tentatives",
+                extra={
+                    "user_id": ctx.author.id,
+                    "egg": egg.slug,
+                    "missing_pet": last_missing_name,
+                },
+            )
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Impossible d'ouvrir cet œuf pour le moment. "
+                    "Réessaie dans quelques instants."
+                )
+            )
+            return None
         is_gold = False
         is_rainbow = False
         is_galaxy = False
@@ -2131,6 +2179,42 @@ class Pets(commands.Cog):
             )
             return
 
+        await ctx.send(embed=embed)
+
+    @commands.command(
+        name="mastery",
+        aliases=("masteries", "maitrise", "maitrises"),
+    )
+    async def mastery_overview(self, ctx: commands.Context) -> None:
+        definitions = self._mastery_definitions
+        try:
+            progress_rows = await asyncio.gather(
+                *[
+                    self.database.get_mastery_progress(ctx.author.id, mastery.slug)
+                    for mastery in definitions
+                ]
+            )
+        except Exception:
+            logger.exception(
+                "Impossible de récupérer la progression des maîtrises",
+                extra={"user_id": ctx.author.id},
+            )
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Impossible de récupérer tes maîtrises pour le moment. "
+                    "Réessaie plus tard."
+                )
+            )
+            return
+
+        progress_map = {
+            mastery.slug: data for mastery, data in zip(definitions, progress_rows)
+        }
+        embed = embeds.mastery_overview_embed(
+            member=ctx.author,
+            masteries=definitions,
+            progress=progress_map,
+        )
         await ctx.send(embed=embed)
 
     @commands.command(name="pets", aliases=("collection", "inventory"))
