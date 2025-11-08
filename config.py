@@ -927,7 +927,7 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
     PetEggDefinition(
         name="Œuf métallique",
         slug="metallique",
-        price=100_000_000,
+        price=5_000_000,
         pets=_ROBOT_EGG_PETS,
         zone_slug=ROBOT_ZONE_SLUG,
         aliases=(
@@ -941,7 +941,7 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
     PetEggDefinition(
         name="Œuf vivant",
         slug="vivant",
-        price=500_000_000,
+        price=90_000_000,
         pets=_ANIMALERIE_EGG_PETS,
         zone_slug=ANIMALERIE_ZONE_SLUG,
         aliases=("oeuf vivant", "vivant", "living", "animalerie"),
@@ -979,7 +979,7 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         name="Zone Robotique",
         slug="robotique",
         grade_required=12,
-        entry_cost=80_000_000,
+        entry_cost=20_000_000,
         eggs=_eggs_for_zone(ROBOT_ZONE_SLUG),
         egg_mastery_required=10,
         pet_mastery_required=10,
@@ -988,7 +988,7 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         name="Animalerie",
         slug=ANIMALERIE_ZONE_SLUG,
         grade_required=12,
-        entry_cost=50_000_000,
+        entry_cost=500_000_000,
         eggs=_eggs_for_zone(ANIMALERIE_ZONE_SLUG),
         rebirth_required=1,
     ),
