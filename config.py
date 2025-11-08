@@ -396,8 +396,8 @@ HUGE_PET_NAME: Final[str] = "Huge Shelly"
 HUGE_PET_MULTIPLIER: Final[float] = 4.2
 HUGE_PET_MIN_INCOME: Final[int] = 600
 HUGE_PET_LEVEL_CAP: Final[int] = 80
-HUGE_PET_LEVEL_BASE_XP: Final[int] = 120
-HUGE_PET_LEVEL_EXPONENT: Final[float] = 1.5
+HUGE_PET_LEVEL_BASE_XP: Final[int] = 200
+HUGE_PET_LEVEL_EXPONENT: Final[float] = 2
 HUGE_GALE_NAME: Final[str] = "Huge Gale"
 HUGE_GRIFF_NAME: Final[str] = "Huge Griff"
 HUGE_BULL_NAME: Final[str] = "Huge Bull"
@@ -405,19 +405,19 @@ TITANIC_GRIFF_NAME: Final[str] = "Titanic Griff"
 HUGE_KENJI_ONI_NAME: Final[str] = "Huge Kenji Oni"
 HUGE_GRIFF_MULTIPLIER: Final[float] = 2.8
 TITANIC_GRIFF_MULTIPLIER: Final[float] = 70.0
-HUGE_GALE_MULTIPLIER: Final[float] = 56.0
-HUGE_KENJI_ONI_MULTIPLIER: Final[float] = 6.3
+HUGE_GALE_MULTIPLIER: Final[float] = 10
+HUGE_KENJI_ONI_MULTIPLIER: Final[float] = 7
 HUGE_BULL_MULTIPLIER: Final[float] = 3.57
 HUGE_BO_NAME: Final[str] = "Huge Bo"
 HUGE_BO_MULTIPLIER: Final[float] = HUGE_PET_MULTIPLIER
 HUGE_SHADE_NAME: Final[str] = "Huge Shade"
-HUGE_SHADE_MULTIPLIER: Final[float] = 4.2
+HUGE_SHADE_MULTIPLIER: Final[float] = 2.5
 HUGE_MORTIS_NAME: Final[str] = "Huge Mortis"
-HUGE_MORTIS_MULTIPLIER: Final[float] = 6.3
+HUGE_MORTIS_MULTIPLIER: Final[float] = 15
 HUGE_SURGE_NAME: Final[str] = "Huge Surge"
-HUGE_SURGE_MULTIPLIER: Final[float] = 25.9
+HUGE_SURGE_MULTIPLIER: Final[float] = 6
 TITANIC_MEEPLE_NAME: Final[str] = "Titanic Meeple"
-TITANIC_MEEPLE_MULTIPLIER: Final[float] = 448.0
+TITANIC_MEEPLE_MULTIPLIER: Final[float] = 100
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
     HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
@@ -683,14 +683,14 @@ _FOREST_EGG_PETS: Tuple[PetDefinition, ...] = (
         rarity="Rare",
         image_url="https://example.com/document51.png",
         base_income_per_hour=280,
-        drop_rate=0.095,
+        drop_rate=0.0995,
     ),
     PetDefinition(
         name="Huge Trunk",
         rarity="Secret",
         image_url="https://example.com/document53.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.004,
+        drop_rate=0.0005,
         is_huge=True,
     ),
 )
@@ -911,7 +911,7 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
     PetEggDefinition(
         name="Œuf Spectral",
         slug="spectral",
-        price=8_000,
+        price=80_000,
         pets=_SPECTRAL_EGG_PETS,
         zone_slug=MANOIR_ZONE_SLUG,
         aliases=("oeuf spectral", "spectral", "ghost", "fantome"),
@@ -919,7 +919,7 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
     PetEggDefinition(
         name="Œuf Maudit",
         slug="maudit",
-        price=25_000,
+        price=250_000,
         pets=_CURSED_EGG_PETS,
         zone_slug=MANOIR_ZONE_SLUG,
         aliases=("oeuf maudit", "maudit", "cursed"),
@@ -927,7 +927,7 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
     PetEggDefinition(
         name="Œuf métallique",
         slug="metallique",
-        price=1_000_000,
+        price=100_000_000,
         pets=_ROBOT_EGG_PETS,
         zone_slug=ROBOT_ZONE_SLUG,
         aliases=(
@@ -941,7 +941,7 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
     PetEggDefinition(
         name="Œuf vivant",
         slug="vivant",
-        price=5_000_000,
+        price=500_000_000,
         pets=_ANIMALERIE_EGG_PETS,
         zone_slug=ANIMALERIE_ZONE_SLUG,
         aliases=("oeuf vivant", "vivant", "living", "animalerie"),
@@ -965,21 +965,21 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         name="Forêt enchantée",
         slug=FORET_ZONE_SLUG,
         grade_required=3,
-        entry_cost=5_000,
+        entry_cost=50_000,
         eggs=_eggs_for_zone(FORET_ZONE_SLUG),
     ),
     PetZoneDefinition(
         name="Manoir Hanté",
         slug=MANOIR_ZONE_SLUG,
         grade_required=7,
-        entry_cost=50_000,
+        entry_cost=500_000,
         eggs=_eggs_for_zone(MANOIR_ZONE_SLUG),
     ),
     PetZoneDefinition(
         name="Zone Robotique",
         slug="robotique",
         grade_required=12,
-        entry_cost=10_000_000,
+        entry_cost=80_000_000,
         eggs=_eggs_for_zone(ROBOT_ZONE_SLUG),
         egg_mastery_required=10,
         pet_mastery_required=10,
@@ -988,7 +988,7 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         name="Animalerie",
         slug=ANIMALERIE_ZONE_SLUG,
         grade_required=12,
-        entry_cost=50_000_000,
+        entry_cost=500_000_000,
         eggs=_eggs_for_zone(ANIMALERIE_ZONE_SLUG),
         rebirth_required=1,
     ),
