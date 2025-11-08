@@ -363,6 +363,7 @@ class PetZoneDefinition:
     eggs: Tuple[PetEggDefinition, ...]
     egg_mastery_required: int = 0
     pet_mastery_required: int = 0
+    rebirth_required: int = 0
 
 
 EGG_FRENZY_LUCK_BONUS: Final[float] = 0.50
@@ -379,6 +380,7 @@ STARTER_ZONE_SLUG: Final[str] = "starter"
 FORET_ZONE_SLUG: Final[str] = "foret"
 MANOIR_ZONE_SLUG: Final[str] = "manoir_hante"
 ROBOT_ZONE_SLUG: Final[str] = "robotique"
+ANIMALERIE_ZONE_SLUG: Final[str] = "animalerie"
 GOLD_PET_MULTIPLIER: Final[int] = 3
 GOLD_PET_CHANCE: Final[float] = _get_float_env("PET_GOLD_CHANCE", 0.0)
 GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
@@ -550,6 +552,7 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     HUGE_SURGE_NAME: "Apparaît dans l'Œuf métallique pour les stratèges les plus assidus.",
     HUGE_BO_NAME: "Récompense du mode King of the Hill : défends ton trône pour tenter ta chance !",
     TITANIC_MEEPLE_NAME: "Récompense quasi mythique de l'Œuf métallique, au-delà du légendaire.",
+    "Huge Clancy": "Se trouve dans l'Œuf vivant de l'Animalerie après ton premier rebirth.",
 }
 
 def get_egg_frenzy_window(
@@ -849,6 +852,45 @@ _ROBOT_EGG_PETS: Tuple[PetDefinition, ...] = (
     ),
 )
 
+_ANIMALERIE_EGG_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="Kit",
+        rarity="Commun",
+        image_url="https://cdn.discordapp.com/emojis/1433582351702818897.png",
+        base_income_per_hour=120_000,
+        drop_rate=0.55,
+    ),
+    PetDefinition(
+        name="Crow",
+        rarity="Rare",
+        image_url="https://cdn.discordapp.com/emojis/1433582901081018458.png",
+        base_income_per_hour=240_000,
+        drop_rate=0.33,
+    ),
+    PetDefinition(
+        name="Ruffs",
+        rarity="Épique",
+        image_url="https://cdn.discordapp.com/emojis/1433583510861385759.png",
+        base_income_per_hour=520_000,
+        drop_rate=0.11,
+    ),
+    PetDefinition(
+        name="Spike",
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1433581944255287377.png",
+        base_income_per_hour=1_200_000,
+        drop_rate=0.00999,
+    ),
+    PetDefinition(
+        name="Huge Clancy",
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1433616256522649712.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.00001,
+        is_huge=True,
+    ),
+)
+
 PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
     PetEggDefinition(
         name="Œuf basique",
@@ -896,6 +938,14 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
             "robot",
         ),
     ),
+    PetEggDefinition(
+        name="Œuf vivant",
+        slug="vivant",
+        price=5_000_000,
+        pets=_ANIMALERIE_EGG_PETS,
+        zone_slug=ANIMALERIE_ZONE_SLUG,
+        aliases=("oeuf vivant", "vivant", "living", "animalerie"),
+    ),
 )
 
 
@@ -933,6 +983,14 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         eggs=_eggs_for_zone(ROBOT_ZONE_SLUG),
         egg_mastery_required=10,
         pet_mastery_required=10,
+    ),
+    PetZoneDefinition(
+        name="Animalerie",
+        slug=ANIMALERIE_ZONE_SLUG,
+        grade_required=12,
+        entry_cost=50_000_000,
+        eggs=_eggs_for_zone(ANIMALERIE_ZONE_SLUG),
+        rebirth_required=1,
     ),
 )
 
@@ -978,6 +1036,11 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Rico": os.getenv("PET_EMOJI_RICO", "<:Rico:1433376959127228436>"),
     "Nani": os.getenv("PET_EMOJI_NANI", "<:Nani:1433377774122303582>"),
     "RT": os.getenv("PET_EMOJI_RT", "<:RT:1433378374650429522>"),
+    "Kit": os.getenv("PET_EMOJI_KIT", "<:Kit:1433582351702818897>"),
+    "Crow": os.getenv("PET_EMOJI_CROW", "<:Crow:1433582901081018458>"),
+    "Ruffs": os.getenv("PET_EMOJI_RUFFS", "<:Ruffs:1433583510861385759>"),
+    "Spike": os.getenv("PET_EMOJI_SPIKE", "<:Spike:1433581944255287377>"),
+    "Huge Clancy": os.getenv("PET_EMOJI_HUGE_CLANCY", "<:HugeClancy:1433616256522649712>"),
     # FIX: Ensure default emoji falls back when the environment variable is empty.
     "default": os.getenv("PET_EMOJI_DEFAULT") or "🐾",
 }
