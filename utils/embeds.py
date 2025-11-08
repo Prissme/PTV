@@ -1,6 +1,7 @@
 """Fonctions utilitaires pour créer des embeds cohérents."""
 from __future__ import annotations
 
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Collection, Iterable, Mapping, Optional, Sequence
 
@@ -19,6 +20,7 @@ from config import (
 
 from utils.formatting import format_currency
 from utils.pet_formatting import PetDisplay, pet_emoji
+from utils.mastery import MasteryDefinition
 
 _BRANDING_REPLACEMENTS: dict[str, str] = {
     "Freescape": "PrissCup",
@@ -91,7 +93,24 @@ __all__ = [
     "pet_claim_embed",
     "egg_index_embed",
     "clan_overview_embed",
+    "mastery_overview_embed",
 ]
+
+
+def _format_number(value: int) -> str:
+    return f"{int(value):,}".replace(",", " ")
+
+
+def _progress_bar(ratio: float, *, length: int = 12) -> str:
+    clamped = max(0.0, min(1.0, float(ratio)))
+    filled = int(round(clamped * length))
+    if filled == 0 and clamped > 0.0:
+        filled = 1
+    filled = min(length, max(0, filled))
+    empty = max(0, length - filled)
+    return "▰" * filled + "▱" * empty
+
+
 def _base_embed(title: str, description: str, *, color: int) -> discord.Embed:
     embed = discord.Embed(title=title, description=description, color=color)
     embed.timestamp = datetime.utcnow()
@@ -553,13 +572,23 @@ def pet_collection_embed(
 
     displays = [PetDisplay.from_mapping(pet) for pet in pets]
     active_count = sum(1 for pet in displays if pet.is_active)
+    grouped: OrderedDict[tuple[object, ...], tuple[PetDisplay, int]] = OrderedDict()
+    for display in displays:
+        key = display.collection_key()
+        if key in grouped:
+            existing_display, count = grouped[key]
+            grouped[key] = (existing_display, count + 1)
+        else:
+            grouped[key] = (display, 1)
     header = [
         f"Total : {total_count}",
         f"Actifs : {active_count}",
         f"Revenu actif : {format_currency(total_income_per_hour)}/h",
     ]
 
-    description_lines = [pet.collection_line() for pet in displays]
+    description_lines = [
+        display.collection_line(quantity=count) for display, count in grouped.values()
+    ]
 
     embed_description = " • ".join(header)
     if description_lines:
@@ -816,37 +845,65 @@ def pet_claim_embed(
     embed = _base_embed("Gains des pets", description_text, color=color)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
 
-    shares: list[int] = []
-    if amount > 0 and displays:
-        weights = [max(0, display.income_per_hour) for display in displays]
-        weight_total = sum(weights)
-        if total_income <= 0 or weight_total <= 0:
-            base_share, remainder = divmod(amount, len(displays))
-            for index in range(len(displays)):
-                share = base_share + (1 if index < remainder else 0)
-                shares.append(share)
+    summary_lines: list[str] = []
+    if displays:
+        summary_lines.append(
+            f"Revenus horaires totaux : **{format_currency(total_income)}**/h"
+        )
+        active_count = sum(1 for display in displays if display.is_active)
+        if active_count:
+            summary_lines.append(f"Pets actifs : **{active_count}**")
+    if summary_lines:
+        embed.description += "\n\n" + "\n".join(f"• {line}" for line in summary_lines)
+
+    return _finalize_embed(embed)
+
+
+def mastery_overview_embed(
+    *,
+    member: discord.abc.User,
+    masteries: Sequence[MasteryDefinition],
+    progress: Mapping[str, Mapping[str, int]],
+) -> discord.Embed:
+    embed = _base_embed(
+        "Progression des maîtrises",
+        "Voici un aperçu de tes progrès sur les différentes maîtrises.",
+        color=Colors.INFO,
+    )
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+
+    total_levels = 0
+    for definition in masteries:
+        data = progress.get(definition.slug, {})
+        level = int(data.get("level", 1))
+        max_level = int(data.get("max_level", definition.max_level))
+        experience = int(data.get("experience", 0))
+        xp_to_next = int(data.get("xp_to_next_level", definition.required_xp(level)))
+        total_levels += level
+
+        if xp_to_next > 0:
+            ratio = experience / xp_to_next if xp_to_next else 0.0
         else:
-            remaining = amount
-            for index, income in enumerate(weights):
-                if index == len(weights) - 1:
-                    share = remaining
-                else:
-                    ratio = income / weight_total if weight_total else 0.0
-                    share = int(round(amount * ratio)) if ratio > 0 else 0
-                    share = max(0, min(remaining, share))
-                    remaining -= share
-                shares.append(max(0, share))
-            if shares:
-                diff = amount - sum(shares)
-                if diff != 0:
-                    shares[-1] += diff
-    else:
-        shares = [0 for _ in displays]
+            ratio = 1.0
+        ratio = max(0.0, min(1.0, ratio))
+        bar = _progress_bar(ratio)
 
-    lines = [display.claim_line(share) for display, share in zip(displays, shares)]
+        lines = [f"Niveau **{level}/{max_level}**"]
+        lines.append(bar)
+        if xp_to_next > 0:
+            remaining = max(0, xp_to_next - experience)
+            lines.append(
+                f"{_format_number(experience)} XP / {_format_number(xp_to_next)}"
+                f" ({ratio:.0%})"
+            )
+            lines.append(f"Reste {_format_number(remaining)} XP pour le prochain niveau")
+        else:
+            lines.append("Niveau maximal atteint ✅")
 
-    if lines:
-        embed.description += "\n\n" + "\n".join(f"• {line}" for line in lines)
+        embed.add_field(name=definition.display_name, value="\n".join(lines), inline=False)
+
+    if total_levels:
+        embed.description += f"\n\nNiveau cumulé : **{_format_number(total_levels)}**"
 
     return _finalize_embed(embed)
 

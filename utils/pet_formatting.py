@@ -181,9 +181,25 @@ class PetDisplay:
             lines.append(f"Valeur : {format_currency(self.market_value)}")
         return field_name, "\n".join(lines)
 
-    def collection_line(self) -> str:
+    def collection_key(self) -> tuple[object, ...]:
+        """Return a hashable key representing this pet in collections."""
+
+        return (
+            bool(self.is_active),
+            self.name,
+            self.rarity,
+            bool(self.is_huge),
+            self.huge_level if self.is_huge else None,
+            bool(self.is_gold),
+            bool(self.is_rainbow),
+            bool(self.is_galaxy),
+            bool(self.is_shiny),
+            int(self.income_per_hour),
+        )
+
+    def collection_line(self, *, quantity: int = 1) -> str:
         parts: list[str] = []
-        if self.identifier:
+        if quantity == 1 and self.identifier:
             parts.append(f"#{self.identifier}")
         if self.is_active:
             parts.append("⭐")
@@ -203,6 +219,8 @@ class PetDisplay:
             flags.append("Shiny")
         if flags:
             parts.append(" ".join(flags))
+        if quantity > 1:
+            parts.append(f"x{quantity}")
         return " ".join(part for part in parts if part).replace("  ", " ")
 
     def equipment_lines(self, activated: bool, active_count: int, slot_limit: int) -> list[str]:
