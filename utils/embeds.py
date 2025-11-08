@@ -10,17 +10,15 @@ from discord.ext import commands
 from config import (
     Colors,
     Emojis,
-    GALAXY_PET_MULTIPLIER,
-    GOLD_PET_MULTIPLIER,
-    PET_EMOJIS,
     PET_RARITY_COLORS,
     PREFIX,
     GradeDefinition,
     PetDefinition,
     PetEggDefinition,
-    RAINBOW_PET_MULTIPLIER,
-    SHINY_PET_MULTIPLIER,
 )
+
+from utils.formatting import format_currency
+from utils.pet_formatting import PetDisplay, pet_emoji
 
 _BRANDING_REPLACEMENTS: dict[str, str] = {
     "Freescape": "PrissCup",
@@ -94,14 +92,6 @@ __all__ = [
     "egg_index_embed",
     "clan_overview_embed",
 ]
-
-
-def format_currency(amount: int) -> str:
-    """Formate un montant d'argent avec séparateur des milliers."""
-
-    return f"{amount:,} PB".replace(",", " ")
-
-
 def _base_embed(title: str, description: str, *, color: int) -> discord.Embed:
     embed = discord.Embed(title=title, description=description, color=color)
     embed.timestamp = datetime.utcnow()
@@ -470,38 +460,9 @@ def pet_animation_embed(
 
 
 def _pet_emoji(name: str) -> str:
-    return PET_EMOJIS.get(name, PET_EMOJIS.get("default", "🐾"))
+    """Compatibilité pour les anciens appels internes."""
 
-
-def _pet_title(
-    name: str,
-    rarity: str,
-    is_huge: bool,
-    is_gold: bool,
-    *,
-    is_galaxy: bool = False,
-    is_rainbow: bool = False,
-    is_shiny: bool = False,
-) -> str:
-    galaxy_marker = " 🌌" if is_galaxy else ""
-    rainbow_marker = " 🌈" if is_rainbow else ""
-    gold_marker = " 🥇" if is_gold and not (is_rainbow or is_galaxy) else ""
-    shiny_marker = " ✨" if is_shiny else ""
-    display_name = f"{_pet_emoji(name)} {name}{galaxy_marker}{rainbow_marker}{gold_marker}{shiny_marker}".strip()
-    if is_galaxy:
-        rarity_label = f"{rarity} Galaxy"
-    elif is_rainbow:
-        rarity_label = f"{rarity} Rainbow"
-    elif is_gold:
-        rarity_label = f"{rarity} Or"
-    elif is_shiny:
-        rarity_label = f"{rarity} Shiny"
-    else:
-        rarity_label = rarity
-    title = f"{display_name} ({rarity_label})"
-    if is_huge:
-        return f"✨ {title} ✨"
-    return title
+    return pet_emoji(name)
 
 
 def pet_reveal_embed(
@@ -517,39 +478,29 @@ def pet_reveal_embed(
     is_shiny: bool = False,
     market_value: int = 0,
 ) -> discord.Embed:
-    if is_galaxy:
+    pet = PetDisplay(
+        name=name,
+        rarity=rarity,
+        income_per_hour=income_per_hour,
+        is_huge=is_huge,
+        is_gold=is_gold,
+        is_galaxy=is_galaxy,
+        is_rainbow=is_rainbow,
+        is_shiny=is_shiny,
+        market_value=market_value,
+        image_url=image_url or None,
+    )
+
+    if pet.is_galaxy:
         base_color = Colors.ACCENT
-    elif is_gold or is_rainbow:
+    elif pet.is_gold or pet.is_rainbow:
         base_color = Colors.GOLD
     else:
-        base_color = PET_RARITY_COLORS.get(rarity, Colors.INFO)
-    description = f"Revenus passifs : **{income_per_hour:,} PB/h**".replace(",", " ")
-    if is_huge:
-        description += f"\n🎉 Incroyable ! Tu as obtenu **{name}** ! 🎉"
-    if is_galaxy:
-        description += f"\n🌌 Variante galaxy ! Puissance x{GALAXY_PET_MULTIPLIER}."
-    elif is_rainbow:
-        description += f"\n🌈 Variante rainbow ! Puissance x{RAINBOW_PET_MULTIPLIER}."
-    elif is_gold:
-        description += f"\n🥇 Variante or ! Puissance x{GOLD_PET_MULTIPLIER}."
-    if is_shiny:
-        description += f"\n✨ Variante shiny ! Puissance x{SHINY_PET_MULTIPLIER}."
-    if market_value > 0 and not is_huge:
-        description += f"\nValeur marché : **{format_currency(market_value)}**"
-    embed = _base_embed(
-        _pet_title(
-            name,
-            rarity,
-            is_huge,
-            is_gold,
-            is_galaxy=is_galaxy,
-            is_rainbow=is_rainbow,
-            is_shiny=is_shiny,
-        ),
-        description,
-        color=base_color,
-    )
-    embed.set_image(url=image_url)
+        base_color = PET_RARITY_COLORS.get(pet.rarity, Colors.INFO)
+
+    embed = _base_embed(pet.title(), "\n".join(pet.reveal_lines()), color=base_color)
+    if pet.image_url:
+        embed.set_image(url=pet.image_url)
     return _finalize_embed(embed)
 
 
@@ -558,7 +509,8 @@ def pet_multi_reveal_embed(
     egg_name: str,
     pets: Sequence[Mapping[str, object]],
 ) -> discord.Embed:
-    count = len(pets)
+    displays = [PetDisplay.from_mapping(entry) for entry in pets]
+    count = len(displays)
     if count <= 0:
         return pet_reveal_embed(
             name="Mystère",
@@ -572,51 +524,15 @@ def pet_multi_reveal_embed(
     description = f"Tu obtiens **{count}** pets !"
     embed = _base_embed(f"🎁 {egg_name}", description, color=Colors.PRIMARY)
 
-    for entry in pets:
-        name = str(entry.get("name", "Pet"))
-        rarity = str(entry.get("rarity", ""))
-        income = int(entry.get("income_per_hour", 0))
-        is_huge = bool(entry.get("is_huge"))
-        is_gold = bool(entry.get("is_gold"))
-        is_galaxy = bool(entry.get("is_galaxy"))
-        is_rainbow = bool(entry.get("is_rainbow"))
-        is_shiny = bool(entry.get("is_shiny"))
-        market_value = int(entry.get("market_value") or 0)
-        bonus = bool(entry.get("bonus"))
-        forced = bool(entry.get("forced"))
+    for display in displays:
+        field_name, field_value = display.multi_reveal_field()
+        embed.add_field(name=field_name, value=field_value, inline=False)
 
-        emoji = PET_EMOJIS.get(name, "🐾")
-        field_name = f"{emoji} {name}"
-        lines = [
-            f"Rareté : **{rarity}**",
-            f"Revenus : **{income:,} PB/h**".replace(",", " "),
-        ]
-        flags: list[str] = []
-        if is_huge:
-            flags.append("Huge")
-        if is_galaxy:
-            flags.append("Galaxy")
-        if is_rainbow:
-            flags.append("Rainbow")
-        elif is_gold:
-            flags.append("Gold")
-        if is_shiny:
-            flags.append("Shiny")
-        if bonus:
-            flags.append("Bonus")
-        if forced:
-            flags.append("Gold garanti")
-        if flags:
-            lines.append(" · ".join(flags))
-        if market_value > 0 and not is_huge:
-            lines.append(f"Valeur : {format_currency(market_value)}")
-        embed.add_field(name=field_name, value="\n".join(lines), inline=False)
-
-    first_image = str(pets[0].get("image_url") or "")
+    first_image = displays[0].image_url
     if first_image:
         embed.set_thumbnail(url=first_image)
     if count >= 2:
-        second_image = str(pets[1].get("image_url") or "")
+        second_image = displays[1].image_url
         if second_image:
             embed.set_image(url=second_image)
 
@@ -635,50 +551,15 @@ def pet_collection_embed(
 ) -> discord.Embed:
     del huge_descriptions  # Non utilisé dans la version minimaliste
 
-    active_count = sum(1 for pet in pets if bool(pet.get("is_active")))
+    displays = [PetDisplay.from_mapping(pet) for pet in pets]
+    active_count = sum(1 for pet in displays if pet.is_active)
     header = [
         f"Total : {total_count}",
         f"Actifs : {active_count}",
         f"Revenu actif : {format_currency(total_income_per_hour)}/h",
     ]
 
-    description_lines: list[str] = []
-    for pet in pets:
-        name = str(pet.get("name", "Pet"))
-        rarity = str(pet.get("rarity", "?"))
-        is_active = bool(pet.get("is_active"))
-        is_huge = bool(pet.get("is_huge"))
-        is_gold = bool(pet.get("is_gold"))
-        is_galaxy = bool(pet.get("is_galaxy"))
-        is_rainbow = bool(pet.get("is_rainbow"))
-        is_shiny = bool(pet.get("is_shiny"))
-        income = int(pet.get("income", pet.get("base_income_per_hour", 0)))
-        identifier = int(pet.get("id") or pet.get("user_pet_id") or 0)
-        tags: list[str] = []
-        if is_huge:
-            level = int(pet.get("huge_level", 1))
-            tags.append(f"Niv. {level}")
-        if is_galaxy:
-            tags.append("Galaxy")
-        elif is_rainbow:
-            tags.append("Rainbow")
-        elif is_gold:
-            tags.append("Gold")
-        if is_shiny:
-            tags.append("Shiny")
-        line_parts = [
-            f"#{identifier}" if identifier else "",
-            "⭐" if is_active else "",
-            _pet_emoji(name),
-            name,
-            rarity,
-            f"{income:,} PB/h".replace(",", " "),
-        ]
-        if tags:
-            line_parts.append(" ".join(tags))
-        description_lines.append(
-            " ".join(part for part in line_parts if part).replace("  ", " ")
-        )
+    description_lines = [pet.collection_line() for pet in displays]
 
     embed_description = " • ".join(header)
     if description_lines:
@@ -848,34 +729,15 @@ def pet_equip_embed(
     active_count: int,
     slot_limit: int,
 ) -> discord.Embed:
-    name = str(pet["name"])
-    rarity = str(pet["rarity"])
-    image_url = str(pet["image_url"])
-    income = int(pet["base_income_per_hour"])
-    is_huge = bool(pet.get("is_huge", False))
-    is_gold = bool(pet.get("is_gold", False))
-    is_rainbow = bool(pet.get("is_rainbow", False))
-    market_value = int(pet.get("market_value", 0))
-
+    display = PetDisplay.from_mapping(pet)
     status_symbol = "✅" if activated else "🛌"
-    title = f"{status_symbol} {_pet_title(name, rarity, is_huge, is_gold, is_rainbow=is_rainbow)}"
+    title = f"{status_symbol} {display.title()}"
     color = Colors.SUCCESS if activated else Colors.INFO
-    lines = [
-        "Ce pet génère désormais des revenus passifs !" if activated else "Ce pet se repose pour le moment.",
-        f"Rareté : {rarity}",
-        f"Revenus : {income:,} PB/h".replace(",", " "),
-    ]
-    if is_rainbow:
-        lines.append(f"Variante rainbow : puissance x{RAINBOW_PET_MULTIPLIER}")
-    elif is_gold:
-        lines.append(f"Variante or : puissance x{GOLD_PET_MULTIPLIER}")
-    if market_value > 0 and not is_huge:
-        lines.append(f"Valeur marché : {format_currency(market_value)}")
-    lines.append(f"Pets actifs : **{active_count}/{slot_limit}**")
+    lines = display.equipment_lines(activated, active_count, slot_limit)
 
     embed = _base_embed(title, "\n".join(lines), color=color)
-    if image_url:
-        embed.set_thumbnail(url=image_url)
+    if display.image_url:
+        embed.set_thumbnail(url=display.image_url)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
     return _finalize_embed(embed)
 
@@ -904,7 +766,8 @@ def pet_claim_embed(
     clan: Mapping[str, object] | None = None,
     potion: Mapping[str, object] | None = None,
 ) -> discord.Embed:
-    total_income = sum(int(pet.get("base_income_per_hour", 0)) for pet in pets)
+    displays = [PetDisplay.from_mapping(pet) for pet in pets]
+    total_income = sum(display.income_per_hour for display in displays)
     duration = _format_duration(elapsed_seconds)
     if amount > 0:
         description = f"+{format_currency(amount)} en {duration}"
@@ -954,12 +817,12 @@ def pet_claim_embed(
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
 
     shares: list[int] = []
-    if amount > 0 and pets:
-        weights = [max(0, int(pet.get("base_income_per_hour", 0))) for pet in pets]
+    if amount > 0 and displays:
+        weights = [max(0, display.income_per_hour) for display in displays]
         weight_total = sum(weights)
         if total_income <= 0 or weight_total <= 0:
-            base_share, remainder = divmod(amount, len(pets))
-            for index in range(len(pets)):
+            base_share, remainder = divmod(amount, len(displays))
+            for index in range(len(displays)):
                 share = base_share + (1 if index < remainder else 0)
                 shares.append(share)
         else:
@@ -978,46 +841,9 @@ def pet_claim_embed(
                 if diff != 0:
                     shares[-1] += diff
     else:
-        shares = [0 for _ in pets]
+        shares = [0 for _ in displays]
 
-    lines: list[str] = []
-    for pet, share in zip(pets, shares):
-        name = str(pet.get("name", "Pet"))
-        income = int(pet.get("base_income_per_hour", 0))
-        is_active = bool(pet.get("is_active", False))
-        is_huge = bool(pet.get("is_huge", False))
-        is_gold = bool(pet.get("is_gold", False))
-        is_rainbow = bool(pet.get("is_rainbow", False))
-        is_shiny = bool(pet.get("is_shiny", False))
-        level = int(pet.get("huge_level", 1)) if is_huge else 0
-        acquired_at = pet.get("acquired_at")
-        acquired_text = ""
-        if isinstance(acquired_at, datetime):
-            # FIX: Surface the acquisition date in the claim embed when available.
-            acquired_text = acquired_at.strftime("%d/%m/%Y")
-        tags: list[str] = []
-        if is_active:
-            tags.append("Actif")
-        if is_huge:
-            tags.append(f"Niv. {level}")
-        if is_rainbow:
-            tags.append("Rainbow")
-        elif is_gold:
-            tags.append("Gold")
-        if is_shiny:
-            tags.append("Shiny")
-        share_text = f"+{format_currency(share)}" if share > 0 else "0 PB"
-        line_parts = [
-            _pet_emoji(name),
-            name,
-            f"{income:,} PB/h".replace(",", " "),
-            share_text,
-        ]
-        if tags:
-            line_parts.append(" ".join(tags))
-        if acquired_text:
-            line_parts.append(f"Obtenu le {acquired_text}")
-        lines.append(" ".join(part for part in line_parts if part).replace("  ", " "))
+    lines = [display.claim_line(share) for display, share in zip(displays, shares)]
 
     if lines:
         embed.description += "\n\n" + "\n".join(f"• {line}" for line in lines)
