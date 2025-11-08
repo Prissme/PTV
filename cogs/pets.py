@@ -40,6 +40,7 @@ from config import (
     HUGE_PET_LEVEL_CAP,
     HUGE_PET_NAME,
     HUGE_PET_MIN_INCOME,
+    HUGE_PET_NAMES,
     HUGE_PET_SOURCES,
     HUGE_BULL_NAME,
     HUGE_GALE_NAME,
@@ -3275,6 +3276,72 @@ class Pets(commands.Cog):
                 f"Un fil de trade a été ouvert : {thread.mention}"
             )
         )
+
+    @commands.command(name="multi")
+    async def huge_multipliers(self, ctx: commands.Context) -> None:
+        """Affiche le multiplicateur maximal de chaque Huge et Titanic."""
+
+        multiplier_entries: list[tuple[float, str]] = []
+        for name in HUGE_PET_NAMES:
+            multiplier = float(
+                get_huge_level_multiplier(name, HUGE_PET_LEVEL_CAP)
+            )
+            multiplier_entries.append((multiplier, name))
+
+        if not multiplier_entries:
+            await ctx.send(
+                embed=embeds.info_embed(
+                    "Aucun pet Huge ou Titanic n'est configuré pour le moment.",
+                    title="📈 Multiplicateurs Huge & Titanic",
+                )
+            )
+            return
+
+        multiplier_entries.sort(key=lambda entry: (-entry[0], entry[1]))
+
+        lines: list[str] = []
+        for multiplier, name in multiplier_entries:
+            emoji = PET_EMOJIS.get(name, PET_EMOJIS.get("default", "🐾"))
+            label = f"x{multiplier:.2f}".rstrip("0").rstrip(".")
+            lines.append(f"{emoji} **{name}** — {label}")
+
+        header = (
+            "Les multiplicateurs ci-dessous correspondent au niveau"
+            f" {HUGE_PET_LEVEL_CAP} (maximum)."
+        )
+        embed = embeds.info_embed(
+            header,
+            title="📈 Multiplicateurs Huge & Titanic",
+        )
+
+        field_buffer: list[str] = []
+        field_length = 0
+        for line in lines:
+            line_length = len(line)
+            if field_buffer and field_length + 1 + line_length > 1024:
+                embed.add_field(
+                    name="\u200b",
+                    value="\n".join(field_buffer),
+                    inline=False,
+                )
+                field_buffer = [line]
+                field_length = line_length
+                continue
+
+            if field_buffer:
+                field_length += 1 + line_length
+            else:
+                field_length = line_length
+            field_buffer.append(line)
+
+        if field_buffer:
+            embed.add_field(
+                name="\u200b",
+                value="\n".join(field_buffer),
+                inline=False,
+            )
+
+        await ctx.send(embed=embed)
 
     @commands.command(name="luck")
     async def luck(self, ctx: commands.Context) -> None:
