@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Mapping, MutableMapping
+from typing import Mapping, MutableMapping, Sequence
 
 from config import (
     GALAXY_PET_MULTIPLIER,
@@ -197,10 +197,39 @@ class PetDisplay:
             int(self.income_per_hour),
         )
 
-    def collection_line(self, *, quantity: int = 1) -> str:
+    def collection_line(
+        self,
+        *,
+        quantity: int = 1,
+        identifiers: Sequence[int] | None = None,
+    ) -> str:
         parts: list[str] = []
-        if quantity == 1 and self.identifier:
-            parts.append(f"#{self.identifier}")
+        identifier_tokens: list[str] = []
+        if identifiers:
+            normalized = []
+            for raw in identifiers:
+                try:
+                    value = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                if value > 0:
+                    normalized.append(value)
+            if normalized:
+                normalized = list(dict.fromkeys(normalized))
+                preview = [f"#{value}" for value in normalized[:5]]
+                remaining = len(normalized) - len(preview)
+                if remaining > 0:
+                    preview.append(f"+{remaining}")
+                identifier_tokens = preview
+
+        if quantity == 1:
+            if identifier_tokens:
+                parts.append(identifier_tokens[0])
+            elif self.identifier:
+                parts.append(f"#{self.identifier}")
+        elif identifier_tokens:
+            label = "ID :" if len(identifier_tokens) == 1 else "IDs :"
+            parts.append(f"{label} {', '.join(identifier_tokens)}")
         if self.is_active:
             parts.append("⭐")
         parts.extend([self.emoji, self.name, self.rarity, self.income_text])

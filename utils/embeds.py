@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
-from typing import Collection, Iterable, Mapping, Optional, Sequence
+from typing import Collection, Iterable, Mapping, Optional, Sequence, cast
 
 import discord
 from discord.ext import commands
@@ -572,23 +572,46 @@ def pet_collection_embed(
 
     displays = [PetDisplay.from_mapping(pet) for pet in pets]
     active_count = sum(1 for pet in displays if pet.is_active)
-    grouped: OrderedDict[tuple[object, ...], tuple[PetDisplay, int]] = OrderedDict()
+    grouped: OrderedDict[
+        tuple[object, ...], dict[str, object]
+    ] = OrderedDict()
     for display in displays:
         key = display.collection_key()
-        if key in grouped:
-            existing_display, count = grouped[key]
-            grouped[key] = (existing_display, count + 1)
-        else:
-            grouped[key] = (display, 1)
+        entry = grouped.get(key)
+        if entry is None:
+            identifiers: list[int] = []
+            if display.identifier:
+                identifiers.append(int(display.identifier))
+            grouped[key] = {
+                "display": display,
+                "count": 1,
+                "identifiers": identifiers,
+            }
+            continue
+
+        entry["count"] = int(entry.get("count", 0)) + 1
+        if display.identifier:
+            identifiers = entry.setdefault("identifiers", [])
+            if isinstance(identifiers, list):
+                identifiers.append(int(display.identifier))
     header = [
         f"Total : {total_count}",
         f"Actifs : {active_count}",
         f"Revenu actif : {format_currency(total_income_per_hour)}/h",
     ]
 
-    description_lines = [
-        display.collection_line(quantity=count) for display, count in grouped.values()
-    ]
+    description_lines = []
+    for entry in grouped.values():
+        display = cast(PetDisplay | None, entry.get("display"))
+        if display is None:
+            continue
+        count = int(entry.get("count", 0))
+        identifiers = entry.get("identifiers")
+        if isinstance(identifiers, list):
+            line = display.collection_line(quantity=count, identifiers=identifiers)
+        else:
+            line = display.collection_line(quantity=count)
+        description_lines.append(line)
 
     embed_description = " • ".join(header)
     if description_lines:

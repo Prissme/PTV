@@ -3602,10 +3602,37 @@ class Pets(commands.Cog):
             clan=clan_info if clan_info else None,
             potion=potion_info if potion_info else None,
         )
-        await ctx.send(embed=embed)
-
         if level_up_lines:
-            await ctx.send("\n".join(level_up_lines))
+            embed.add_field(
+                name="🎉 Nouveaux niveaux",
+                value="\n".join(level_up_lines),
+                inline=False,
+            )
+
+        try:
+            await ctx.send(embed=embed)
+        except discord.HTTPException:
+            logger.exception(
+                "Impossible d'envoyer l'embed de claim des pets",
+                extra={
+                    "user_id": ctx.author.id,
+                    "pet_count": len(pets_data),
+                    "amount": amount,
+                },
+            )
+            fallback_parts = [embed.title or "Gains des pets"]
+            if embed.description:
+                fallback_parts.append(embed.description)
+            if level_up_lines:
+                fallback_parts.extend(level_up_lines)
+            fallback_message = "\n".join(part for part in fallback_parts if part)
+            if not fallback_message:
+                fallback_message = (
+                    "Tu récupères des PB avec tes pets, mais un problème est survenu "
+                    "lors de l'affichage de l'embed."
+                )
+            await ctx.send(fallback_message)
+
 
 
 
