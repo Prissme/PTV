@@ -74,6 +74,7 @@ logger = logging.getLogger(__name__)
 
 HUGE_SHELLY_ALERT_CHANNEL_ID = 1236724293631611022
 EGG_OPEN_EMOJI = "<:Egg:1433411763944296518>"
+FALLBACK_EGG_EMOJI = "🐣"
 
 HUGE_GOLD_CHANCE = 0.1
 HUGE_RAINBOW_CHANCE = 0.01
@@ -472,6 +473,37 @@ class Pets(commands.Cog):
             _add_variant(without_diacritics)
 
         return variants
+
+    def _can_use_external_emojis(self, ctx: commands.Context) -> bool:
+        """Return True if the bot can use external emojis in the channel."""
+
+        guild = ctx.guild
+        channel = getattr(ctx, "channel", None)
+        if guild is None or channel is None:
+            return True
+
+        permissions_for = getattr(channel, "permissions_for", None)
+        if permissions_for is None:
+            return True
+
+        member = getattr(guild, "me", None)
+        if member is None:
+            bot_user = getattr(self.bot, "user", None)
+            if bot_user is not None:
+                get_member = getattr(guild, "get_member", None)
+                if callable(get_member):
+                    member = get_member(bot_user.id)
+        if member is None:
+            return True
+
+        try:
+            permissions = permissions_for(member)
+        except Exception:  # pragma: no cover - defensive branch for exotic channels
+            return True
+        return getattr(permissions, "use_external_emojis", True)
+
+    def _egg_emoji(self, ctx: commands.Context) -> str:
+        return EGG_OPEN_EMOJI if self._can_use_external_emojis(ctx) else FALLBACK_EGG_EMOJI
 
     @staticmethod
     def _market_variant_code(
@@ -1721,6 +1753,7 @@ class Pets(commands.Cog):
         mastery_perks: EggMasteryPerks | None = None,
     ) -> None:
         egg_title = egg.name
+        egg_emoji = self._egg_emoji(ctx)
         animation_steps = (
             (egg_title, "L'œuf commence à bouger…"),
             (egg_title, "Des fissures apparaissent !"),
@@ -1733,21 +1766,21 @@ class Pets(commands.Cog):
         reveal_delay = max(0.2, 1.2 / speed_factor)
 
         message = await ctx.send(
-            content=EGG_OPEN_EMOJI,
+            content=egg_emoji,
             embed=embeds.pet_animation_embed(
                 title=animation_steps[0][0],
                 description=animation_steps[0][1],
-                emoji=EGG_OPEN_EMOJI,
+                emoji=egg_emoji,
             ),
         )
         for title, description in animation_steps[1:]:
             await asyncio.sleep(step_delay)
             await message.edit(
-                content=EGG_OPEN_EMOJI,
+                content=egg_emoji,
                 embed=embeds.pet_animation_embed(
                     title=title,
                     description=description,
-                    emoji=EGG_OPEN_EMOJI,
+                    emoji=egg_emoji,
                 ),
             )
 
@@ -1814,7 +1847,7 @@ class Pets(commands.Cog):
                     )
                 embed.set_footer(text=footer_text)
 
-        await message.edit(content=EGG_OPEN_EMOJI, embed=embed)
+        await message.edit(content=egg_emoji, embed=embed)
 
     async def _open_pet_egg(
         self,
@@ -2055,13 +2088,14 @@ class Pets(commands.Cog):
             bonus_eggs = 1
 
         if bonus_eggs:
+            egg_emoji = self._egg_emoji(ctx)
             if triple_triggered:
                 await ctx.send(
-                    f"{EGG_OPEN_EMOJI} 🎉 **Chance triple !** Tu ouvres deux œufs bonus gratuitement !"
+                    f"{egg_emoji} 🎉 **Chance triple !** Tu ouvres deux œufs bonus gratuitement !"
                 )
             else:
                 await ctx.send(
-                    f"{EGG_OPEN_EMOJI} 🎉 **Chance !** Tu ouvres un œuf bonus gratuitement !"
+                    f"{egg_emoji} 🎉 **Chance !** Tu ouvres un œuf bonus gratuitement !"
                 )
             for _ in range(bonus_eggs):
                 bonus_result = await self._hatch_pet(
