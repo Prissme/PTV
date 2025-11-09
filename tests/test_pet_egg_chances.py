@@ -214,6 +214,38 @@ def test_huge_variant_rolls_respect_rainbow_priority(monkeypatch):
     asyncio.run(_run())
 
 
+def _build_fake_context(*, allow_external: bool) -> SimpleNamespace:
+    bot_user = SimpleNamespace(id=999)
+    bot = SimpleNamespace(database=SimpleNamespace(), user=bot_user)
+    cog = pets_module.Pets(bot)
+
+    permissions = SimpleNamespace(use_external_emojis=allow_external)
+
+    def _permissions_for(_member):
+        return permissions
+
+    channel = SimpleNamespace(permissions_for=_permissions_for)
+    guild_member = SimpleNamespace(id=bot_user.id)
+    guild = SimpleNamespace(
+        me=guild_member,
+        get_member=lambda _id: guild_member,
+    )
+    ctx = SimpleNamespace(guild=guild, channel=channel)
+    return SimpleNamespace(cog=cog, ctx=ctx)
+
+
+def test_egg_emoji_falls_back_without_external_permission():
+    bundle = _build_fake_context(allow_external=False)
+    emoji = bundle.cog._egg_emoji(bundle.ctx)
+    assert emoji == pets_module.FALLBACK_EGG_EMOJI
+
+
+def test_egg_emoji_keeps_custom_when_permitted():
+    bundle = _build_fake_context(allow_external=True)
+    emoji = bundle.cog._egg_emoji(bundle.ctx)
+    assert emoji == pets_module.EGG_OPEN_EMOJI
+
+
 def test_huge_reference_uses_shiny_variants():
     async def _run():
         cog, _database, bot = await _create_cog()
