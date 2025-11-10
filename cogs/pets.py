@@ -2127,162 +2127,245 @@ class Pets(commands.Cog):
             await self._openbox_impl(ctx, egg)
 
     async def _openbox_impl(self, ctx: commands.Context, egg: str | None) -> None:
-        raw_request = (egg or "").strip()
-        double_request = False
-        force_gold_request = False
-        if raw_request:
-            tokens = raw_request.split()
-            while tokens:
-                token = tokens[-1].lower()
-                if token in {"x2", "2", "double"}:
-                    double_request = True
-                    tokens.pop()
-                    continue
-                if token in {"gold", "golden", "garanti", "garantie", "guaranteed", "100x", "x100"}:
-                    force_gold_request = True
-                    tokens.pop()
-                    continue
-                break
-            raw_request = " ".join(tokens).strip()
+        log_context: Dict[str, Any] = {
+            "user_id": ctx.author.id,
+            "guild_id": getattr(ctx.guild, "id", None),
+            "channel_id": getattr(getattr(ctx, "channel", None), "id", None),
+            "raw_request": egg,
+            "stage": "start",
+        }
+        try:
+            log_context["stage"] = "normalize_request"
+            raw_request = (egg or "").strip()
+            double_request = False
+            force_gold_request = False
+            if raw_request:
+                tokens = raw_request.split()
+                while tokens:
+                    token = tokens[-1].lower()
+                    if token in {"x2", "2", "double"}:
+                        double_request = True
+                        tokens.pop()
+                        continue
+                    if token in {"gold", "golden", "garanti", "garantie", "guaranteed", "100x", "x100"}:
+                        force_gold_request = True
+                        tokens.pop()
+                        continue
+                    break
+                raw_request = " ".join(tokens).strip()
 
-        normalized_request = raw_request or None
+            log_context["double_request"] = double_request
+            log_context["force_gold_initial"] = force_gold_request
 
-        if normalized_request and normalized_request.lower() in {"list", "liste", "eggs", "oeufs"}:
-            await self._send_egg_overview(ctx)
-            return
+            normalized_request = raw_request or None
+            log_context["normalized_request"] = normalized_request
 
-        egg_definition = self._resolve_egg(normalized_request)
-        if egg_definition is None:
-            if normalized_request:
-                await ctx.send(
-                    embed=embeds.error_embed("Œuf introuvable. Voici les options disponibles :")
-                )
+            if normalized_request and normalized_request.lower() in {"list", "liste", "eggs", "oeufs"}:
+                log_context["stage"] = "send_overview"
                 await self._send_egg_overview(ctx)
-            else:
-                await ctx.send(
-                    embed=embeds.error_embed("Aucun œuf n'est disponible pour le moment.")
+                return
+
+            log_context["stage"] = "resolve_egg"
+            egg_definition = self._resolve_egg(normalized_request)
+            if egg_definition is None:
+                if normalized_request:
+                    await ctx.send(
+                        embed=embeds.error_embed("Œuf introuvable. Voici les options disponibles :")
+                    )
+                    await self._send_egg_overview(ctx)
+                else:
+                    await ctx.send(
+                        embed=embeds.error_embed("Aucun œuf n'est disponible pour le moment.")
+                    )
+                return
+
+            log_context["resolved_egg"] = egg_definition.slug
+
+            log_context["stage"] = "resolve_zone"
+            zone = self._get_zone_for_egg(egg_definition)
+            if zone is None:
+                await ctx.send(embed=embeds.error_embed("La zone associée à cet œuf est introuvable."))
+                return
+
+            log_context["zone"] = zone.slug
+
+            log_context["stage"] = "ensure_zone_access"
+            if not await self._ensure_zone_access(ctx, zone):
+                return
+
+            log_context["stage"] = "load_egg_mastery"
+            mastery_progress = await self.database.get_mastery_progress(
+                ctx.author.id, EGG_MASTERY.slug
+            )
+            mastery_level = int(mastery_progress.get("level", 1))
+            log_context["egg_mastery_level"] = mastery_level
+            egg_perks = _compute_egg_mastery_perks(mastery_level)
+
+            log_context["stage"] = "load_pet_mastery"
+            pet_mastery_progress = await self.database.get_mastery_progress(
+                ctx.author.id, PET_MASTERY.slug
+            )
+            pet_mastery_level = int(pet_mastery_progress.get("level", 1))
+            log_context["pet_mastery_level"] = pet_mastery_level
+            pet_perks = _compute_pet_mastery_perks(pet_mastery_level)
+
+            log_context["stage"] = "fetch_clan"
+            clan_row = await self.database.get_user_clan(ctx.author.id)
+            clan_shiny_multiplier = 1.0
+            if clan_row is not None:
+                clan_shiny_multiplier = max(
+                    1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
                 )
-            return
+            log_context["clan_shiny_multiplier"] = clan_shiny_multiplier
 
-        zone = self._get_zone_for_egg(egg_definition)
-        if zone is None:
-            await ctx.send(embed=embeds.error_embed("La zone associée à cet œuf est introuvable."))
-            return
+            if double_request:
+                log_context["stage"] = "inform_double_request"
+                if egg_perks.double_chance > 0:
+                    await ctx.send(
+                        embed=embeds.info_embed(
+                            "Le mode double est désormais automatique : tu as "
+                            f"{egg_perks.double_chance * 100:.0f}% de chances d'obtenir un œuf bonus gratuitement à chaque ouverture."
+                        )
+                    )
+                else:
+                    await ctx.send(
+                        embed=embeds.warning_embed(
+                            "Atteins le niveau 5 de Maîtrise des œufs pour débloquer 5% de chance d'obtenir un deuxième œuf gratuit."
+                        )
+                    )
 
-        if not await self._ensure_zone_access(ctx, zone):
-            return
+            log_context["stage"] = "fetch_rebirth_count"
+            rebirth_count = await self.database.get_rebirth_count(ctx.author.id)
+            log_context["rebirth_count"] = rebirth_count
+            price_multiplier = 1
+            if force_gold_request:
+                log_context["stage"] = "handle_force_gold"
+                if rebirth_count <= 0:
+                    await ctx.send(
+                        embed=embeds.warning_embed(
+                            "Le gold garanti se débloque après ton premier rebirth."
+                        )
+                    )
+                    force_gold_request = False
+                else:
+                    price_multiplier = 100
+                    await ctx.send(
+                        embed=embeds.info_embed(
+                            f"Tu choisis de payer **{embeds.format_currency(egg_definition.price * price_multiplier)}** pour garantir un pet or.",
+                            title="Gold garanti activé",
+                        )
+                    )
 
-        mastery_progress = await self.database.get_mastery_progress(
-            ctx.author.id, EGG_MASTERY.slug
-        )
-        mastery_level = int(mastery_progress.get("level", 1))
-        egg_perks = _compute_egg_mastery_perks(mastery_level)
+            log_context["price_multiplier"] = price_multiplier
+            log_context["force_gold_final"] = force_gold_request
 
-        pet_mastery_progress = await self.database.get_mastery_progress(
-            ctx.author.id, PET_MASTERY.slug
-        )
-        pet_mastery_level = int(pet_mastery_progress.get("level", 1))
-        pet_perks = _compute_pet_mastery_perks(pet_mastery_level)
+            log_context["stage"] = "fetch_active_potion"
+            active_potion = await self.database.get_active_potion(ctx.author.id)
+            if active_potion is not None:
+                potion_definition, potion_expires_at = active_potion
+                log_context["active_potion"] = getattr(potion_definition, "slug", None)
+                log_context["potion_expires_at"] = getattr(
+                    potion_expires_at, "isoformat", lambda: None
+                )()
+            else:
+                log_context["active_potion"] = None
 
-        clan_row = await self.database.get_user_clan(ctx.author.id)
-        clan_shiny_multiplier = 1.0
-        if clan_row is not None:
-            clan_shiny_multiplier = max(
-                1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
+            log_context["stage"] = "hatch_primary"
+            primary_result = await self._hatch_pet(
+                ctx,
+                egg_definition,
+                pet_mastery_perks=pet_perks,
+                clan_shiny_multiplier=clan_shiny_multiplier,
+                active_potion=active_potion,
+                mastery_perks=egg_perks,
+                price_multiplier=price_multiplier,
+                force_gold=force_gold_request,
+            )
+            if primary_result is None:
+                return
+
+            results: List[PetHatchResult] = [primary_result]
+
+            log_context["stage"] = "compute_bonus_eggs"
+            bonus_eggs = 0
+            triple_triggered = False
+            if egg_perks.triple_chance > 0 and random.random() < egg_perks.triple_chance:
+                bonus_eggs = 2
+                triple_triggered = True
+            elif egg_perks.double_chance > 0 and random.random() < egg_perks.double_chance:
+                bonus_eggs = 1
+
+            log_context["bonus_eggs"] = bonus_eggs
+            log_context["triple_triggered"] = triple_triggered
+
+            if bonus_eggs:
+                egg_emoji = self._egg_emoji(ctx)
+                if triple_triggered:
+                    await ctx.send(
+                        f"{egg_emoji} 🎉 **Chance triple !** Tu ouvres deux œufs bonus gratuitement !"
+                    )
+                else:
+                    await ctx.send(
+                        f"{egg_emoji} 🎉 **Chance !** Tu ouvres un œuf bonus gratuitement !"
+                    )
+                for bonus_index in range(bonus_eggs):
+                    log_context["stage"] = "hatch_bonus"
+                    log_context["bonus_iteration"] = bonus_index + 1
+                    bonus_result = await self._hatch_pet(
+                        ctx,
+                        egg_definition,
+                        pet_mastery_perks=pet_perks,
+                        clan_shiny_multiplier=clan_shiny_multiplier,
+                        active_potion=active_potion,
+                        mastery_perks=egg_perks,
+                        charge_cost=False,
+                        bonus=True,
+                    )
+                    if bonus_result is not None:
+                        results.append(bonus_result)
+                log_context.pop("bonus_iteration", None)
+
+            log_context["stage"] = "display_results"
+            await self._display_hatch_results(
+                ctx,
+                egg_definition,
+                results,
+                mastery_perks=egg_perks,
             )
 
-        if double_request:
-            if egg_perks.double_chance > 0:
+            log_context["stage"] = "send_auto_messages"
+            for result in results:
+                for auto_message in result.auto_messages:
+                    await ctx.send(auto_message)
+
+            log_context["stage"] = "completed"
+        except asyncio.CancelledError:
+            raise
+        except commands.CommandError:
+            raise
+        except Exception as exc:  # pragma: no cover - diagnostic logging
+            error_reference = (
+                f"egg-{ctx.author.id}-{int(datetime.now(timezone.utc).timestamp())}"
+            )
+            log_context["error_reference"] = error_reference
+            log_context["exception_type"] = type(exc).__name__
+            logger.exception(
+                "Erreur inattendue lors de l'ouverture d'œuf",
+                extra=log_context,
+            )
+            try:
                 await ctx.send(
-                    embed=embeds.info_embed(
-                        "Le mode double est désormais automatique : tu as "
-                        f"{egg_perks.double_chance * 100:.0f}% de chances d'obtenir un œuf bonus gratuitement à chaque ouverture."
+                    embed=embeds.error_embed(
+                        "Une erreur inattendue est survenue pendant l'ouverture de l'œuf. "
+                        f"Merci de réessayer plus tard. (code : `{error_reference}`)"
                     )
                 )
-            else:
-                await ctx.send(
-                    embed=embeds.warning_embed(
-                        "Atteins le niveau 5 de Maîtrise des œufs pour débloquer 5% de chance d'obtenir un deuxième œuf gratuit."
-                    )
+            except Exception:  # pragma: no cover - fallback logging
+                logger.error(
+                    "Impossible d'envoyer le message d'erreur à l'utilisateur",
+                    exc_info=True,
+                    extra=log_context,
                 )
-
-        rebirth_count = await self.database.get_rebirth_count(ctx.author.id)
-        price_multiplier = 1
-        if force_gold_request:
-            if rebirth_count <= 0:
-                await ctx.send(
-                    embed=embeds.warning_embed(
-                        "Le gold garanti se débloque après ton premier rebirth."
-                    )
-                )
-                force_gold_request = False
-            else:
-                price_multiplier = 100
-                await ctx.send(
-                    embed=embeds.info_embed(
-                        f"Tu choisis de payer **{embeds.format_currency(egg_definition.price * price_multiplier)}** pour garantir un pet or.",
-                        title="Gold garanti activé",
-                    )
-                )
-
-        active_potion = await self.database.get_active_potion(ctx.author.id)
-        primary_result = await self._hatch_pet(
-            ctx,
-            egg_definition,
-            pet_mastery_perks=pet_perks,
-            clan_shiny_multiplier=clan_shiny_multiplier,
-            active_potion=active_potion,
-            mastery_perks=egg_perks,
-            price_multiplier=price_multiplier,
-            force_gold=force_gold_request,
-        )
-        if primary_result is None:
-            return
-
-        results: List[PetHatchResult] = [primary_result]
-
-        bonus_eggs = 0
-        triple_triggered = False
-        if egg_perks.triple_chance > 0 and random.random() < egg_perks.triple_chance:
-            bonus_eggs = 2
-            triple_triggered = True
-        elif egg_perks.double_chance > 0 and random.random() < egg_perks.double_chance:
-            bonus_eggs = 1
-
-        if bonus_eggs:
-            egg_emoji = self._egg_emoji(ctx)
-            if triple_triggered:
-                await ctx.send(
-                    f"{egg_emoji} 🎉 **Chance triple !** Tu ouvres deux œufs bonus gratuitement !"
-                )
-            else:
-                await ctx.send(
-                    f"{egg_emoji} 🎉 **Chance !** Tu ouvres un œuf bonus gratuitement !"
-                )
-            for _ in range(bonus_eggs):
-                bonus_result = await self._hatch_pet(
-                    ctx,
-                    egg_definition,
-                    pet_mastery_perks=pet_perks,
-                    clan_shiny_multiplier=clan_shiny_multiplier,
-                    active_potion=active_potion,
-                    mastery_perks=egg_perks,
-                    charge_cost=False,
-                    bonus=True,
-                )
-                if bonus_result is not None:
-                    results.append(bonus_result)
-
-        await self._display_hatch_results(
-            ctx,
-            egg_definition,
-            results,
-            mastery_perks=egg_perks,
-        )
-
-        for result in results:
-            for auto_message in result.auto_messages:
-                await ctx.send(auto_message)
 
     @commands.group(
         name="petauto",
