@@ -193,6 +193,7 @@ class EcoBot(commands.Bot):
             "eggs": "eggs",
             "claim": "claim",
         }
+        self._shutting_down = False
 
     @staticmethod
     def _prune_tip_cooldowns(storage: Dict[int, float], *, threshold: float, now: float) -> None:
@@ -245,6 +246,17 @@ class EcoBot(commands.Bot):
                 )
 
     async def close(self) -> None:  # pragma: no cover - cycle de vie discord.py
+        if self._shutting_down:
+            return
+
+        self._shutting_down = True
+
+        for extension in tuple(self.extensions):
+            try:
+                await self.unload_extension(extension)
+            except Exception:
+                logger.exception("Impossible de décharger l'extension %s", extension)
+
         if self.health_server is not None:
             try:
                 # FIX: Bound the health server shutdown to avoid indefinite waits.
@@ -253,6 +265,11 @@ class EcoBot(commands.Bot):
                 )
             except Exception:
                 logger.exception("Impossible d'arrêter proprement le serveur de health check")
+
+        try:
+            await self.database.close()
+        except Exception:
+            logger.exception("Impossible de fermer la base de données proprement")
 
         await super().close()
 
@@ -263,6 +280,11 @@ class EcoBot(commands.Bot):
 
     async def on_command_error(self, context: commands.Context, exception: Exception) -> None:
         await ErrorHandler.handle_command_error(context, exception)
+
+    async def process_commands(self, message: discord.Message) -> None:
+        if self._shutting_down:
+            return
+        await super().process_commands(message)
 
     async def get_user_language(self, user_id: int) -> str:
         try:
@@ -454,8 +476,8 @@ async def start_bot() -> None:
 async def main() -> None:
     try:
         await start_bot()
-    except DatabaseError:
-        logger.critical("Impossible de démarrer le bot: base de données inaccessible")
+    except DatabaseError as exc:
+        logger.critical("Impossible de démarrer le bot: %s", exc)
     except KeyboardInterrupt:  # pragma: no cover - arrêt manuel
         logger.info("Arrêt manuel reçu")
 

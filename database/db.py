@@ -136,6 +136,8 @@ class ActivePetLimitError(DatabaseError):
 class Database:
     """Gestionnaire de connexion PostgreSQL réduit aux besoins essentiels."""
 
+    _INSTANCE_LOCK_KEY = 0x45534f424f54504c  # "ESOBOTPL" packed into 64 bits
+
     def __init__(self, dsn: str, *, min_size: int = 1, max_size: int = 10) -> None:
         if not dsn:
             raise ValueError("Le DSN PostgreSQL est obligatoire")
@@ -144,6 +146,7 @@ class Database:
         self._pool: Optional[asyncpg.Pool] = None
         self._min_size = min_size
         self._max_size = max_size
+        self._lock_connection: asyncpg.Connection | None = None
 
     @staticmethod
     def _rebirth_multiplier(count: int) -> float:
@@ -327,9 +330,15 @@ class Database:
 
         logger.info("Connexion PostgreSQL établie — initialisation du schéma")
         await self._initialise_schema()
+        try:
+            await self._acquire_instance_lock()
+        except Exception:
+            await self.close()
+            raise
 
     async def close(self) -> None:
         if self._pool is not None:
+            await self._release_instance_lock()
             await self._pool.close()
             self._pool = None
             logger.info("Pool PostgreSQL fermé")
@@ -352,6 +361,44 @@ class Database:
                 raise DatabaseError(f"Les {field} fournis doivent être strictement positifs.")
             normalized.append(value)
         return normalized
+
+    async def _acquire_instance_lock(self) -> None:
+        if self._lock_connection is not None:
+            return
+
+        connection = await self.pool.acquire()
+        try:
+            locked = await connection.fetchval(
+                "SELECT pg_try_advisory_lock($1)", self._INSTANCE_LOCK_KEY
+            )
+        except Exception as exc:
+            await self.pool.release(connection)
+            logger.exception("Impossible de récupérer le verrou d'instance")
+            raise DatabaseError("Vérification d'instance échouée") from exc
+
+        if not locked:
+            await self.pool.release(connection)
+            raise DatabaseError(
+                "Une autre instance du bot est déjà en cours d'exécution."
+            )
+
+        self._lock_connection = connection
+        logger.info("Verrou d'instance PostgreSQL acquis")
+
+    async def _release_instance_lock(self) -> None:
+        if self._lock_connection is None:
+            return
+
+        try:
+            await self._lock_connection.execute(
+                "SELECT pg_advisory_unlock($1)", self._INSTANCE_LOCK_KEY
+            )
+        except Exception:  # pragma: no cover - log only
+            logger.exception("Impossible de libérer le verrou d'instance")
+        finally:
+            await self.pool.release(self._lock_connection)
+            self._lock_connection = None
+            logger.info("Verrou d'instance PostgreSQL libéré")
 
     async def _initialise_schema(self) -> None:
         async with self.pool.acquire() as connection:
