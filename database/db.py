@@ -368,17 +368,18 @@ class Database:
             return
 
         connection = await self.pool.acquire()
+        lock_key = int(self._INSTANCE_LOCK_KEY)
         try:
             # D'abord, vérifier si un verrou existe déjà
             existing_lock = await connection.fetchval(
                 """
-                SELECT pid 
-                FROM pg_locks 
-                WHERE locktype = 'advisory' 
-                  AND objid = $1 
+                SELECT pid
+                FROM pg_locks
+                WHERE locktype = 'advisory'
+                  AND objid = $1
                 LIMIT 1
                 """,
-                self._INSTANCE_LOCK_KEY
+                lock_key
             )
 
             if existing_lock is not None:
@@ -389,7 +390,7 @@ class Database:
                         SELECT 1 FROM pg_stat_activity WHERE pid = $1
                     )
                     """,
-                    existing_lock
+                    int(existing_lock)
                 )
 
                 if not process_exists:
@@ -400,13 +401,13 @@ class Database:
                     )
                     await connection.execute(
                         "SELECT pg_advisory_unlock($1)",
-                        self._INSTANCE_LOCK_KEY
+                        lock_key
                     )
 
             # Tenter d'acquérir le verrou
             locked = await connection.fetchval(
-                "SELECT pg_try_advisory_lock($1)", 
-                self._INSTANCE_LOCK_KEY
+                "SELECT pg_try_advisory_lock($1)",
+                lock_key
             )
         except Exception as exc:
             await self.pool.release(connection)
