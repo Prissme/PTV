@@ -3860,6 +3860,9 @@ class TradeSession:
         self.message: discord.Message | None = None
         self.view: TradeView | None = None
         self.completed = False
+        self._refresh_lock = asyncio.Lock()
+        self._last_refresh: float = 0.0
+        self._refresh_interval = 0.8
 
     @property
     def participants(self) -> tuple[discord.Member, discord.Member]:
@@ -3977,7 +3980,20 @@ class TradeSession:
     async def refresh(self) -> None:
         if self.message is None or self.view is None:
             return
-        await self.message.edit(embed=self.build_embed(), view=self.view)
+        async with self._refresh_lock:
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            delay = self._refresh_interval - (now - self._last_refresh)
+            if delay > 0:
+                await asyncio.sleep(delay)
+                now = loop.time()
+
+            try:
+                await self.message.edit(embed=self.build_embed(), view=self.view)
+            except discord.HTTPException as exc:
+                logger.warning("Impossible de rafraîchir le trade", exc_info=exc)
+            finally:
+                self._last_refresh = loop.time()
 
     async def complete_trade(
         self, interaction: discord.Interaction, view: "TradeView"
