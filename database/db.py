@@ -363,13 +363,50 @@ class Database:
         return normalized
 
     async def _acquire_instance_lock(self) -> None:
+        """Acquiert le verrou d'instance avec option de force."""
         if self._lock_connection is not None:
             return
 
         connection = await self.pool.acquire()
         try:
+            # D'abord, vérifier si un verrou existe déjà
+            existing_lock = await connection.fetchval(
+                """
+                SELECT pid 
+                FROM pg_locks 
+                WHERE locktype = 'advisory' 
+                  AND objid = $1 
+                LIMIT 1
+                """,
+                self._INSTANCE_LOCK_KEY
+            )
+
+            if existing_lock is not None:
+                # Vérifier si le processus qui détient le verrou existe toujours
+                process_exists = await connection.fetchval(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM pg_stat_activity WHERE pid = $1
+                    )
+                    """,
+                    existing_lock
+                )
+
+                if not process_exists:
+                    # Le processus est mort, forcer la libération du verrou
+                    logger.warning(
+                        "Verrou orphelin détecté (PID %s mort), libération forcée...",
+                        existing_lock
+                    )
+                    await connection.execute(
+                        "SELECT pg_advisory_unlock($1)",
+                        self._INSTANCE_LOCK_KEY
+                    )
+
+            # Tenter d'acquérir le verrou
             locked = await connection.fetchval(
-                "SELECT pg_try_advisory_lock($1)", self._INSTANCE_LOCK_KEY
+                "SELECT pg_try_advisory_lock($1)", 
+                self._INSTANCE_LOCK_KEY
             )
         except Exception as exc:
             await self.pool.release(connection)
@@ -378,27 +415,51 @@ class Database:
 
         if not locked:
             await self.pool.release(connection)
+            logger.error(
+                "Une autre instance du bot est en cours d'exécution. "
+                "Si vous êtes certain qu'aucune autre instance ne tourne, "
+                "connectez-vous à PostgreSQL et exécutez : SELECT pg_advisory_unlock_all();"
+            )
             raise DatabaseError(
                 "Une autre instance du bot est déjà en cours d'exécution."
             )
 
         self._lock_connection = connection
-        logger.info("Verrou d'instance PostgreSQL acquis")
+        logger.info(
+            "Verrou d'instance PostgreSQL acquis (PID: %s)",
+            await connection.fetchval("SELECT pg_backend_pid()"),
+        )
 
     async def _release_instance_lock(self) -> None:
+        """Libère le verrou d'instance de manière robuste."""
         if self._lock_connection is None:
             return
 
         try:
-            await self._lock_connection.execute(
-                "SELECT pg_advisory_unlock($1)", self._INSTANCE_LOCK_KEY
-            )
-        except Exception:  # pragma: no cover - log only
-            logger.exception("Impossible de libérer le verrou d'instance")
+            # Vérifier que la connexion est toujours active
+            if not self._lock_connection.is_closed():
+                try:
+                    await self._lock_connection.execute(
+                        "SELECT pg_advisory_unlock($1)", 
+                        self._INSTANCE_LOCK_KEY
+                    )
+                    logger.info("Verrou d'instance PostgreSQL libéré")
+                except Exception:
+                    logger.exception("Erreur lors de la libération du verrou")
+                    # En cas d'échec, forcer la libération
+                    try:
+                        await self._lock_connection.execute(
+                            "SELECT pg_advisory_unlock_all()"
+                        )
+                        logger.warning("Libération forcée de tous les verrous advisory")
+                    except Exception:
+                        logger.exception("Impossible de forcer la libération des verrous")
         finally:
-            await self.pool.release(self._lock_connection)
+            try:
+                await self.pool.release(self._lock_connection)
+            except Exception:
+                logger.exception("Erreur lors de la libération de la connexion")
             self._lock_connection = None
-            logger.info("Verrou d'instance PostgreSQL libéré")
 
     async def _initialise_schema(self) -> None:
         async with self.pool.acquire() as connection:
