@@ -976,7 +976,7 @@ class Pets(commands.Cog):
         def _roll_shiny(base_chance: float) -> bool:
             chance = max(0.0, float(base_chance))
             if chance <= 0:
-                return None
+                return False
             chance *= float(pet_perks.egg_shiny_multiplier)
             chance *= shiny_multiplier
             chance = min(1.0, chance)
