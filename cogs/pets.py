@@ -58,6 +58,7 @@ from config import (
     PetZoneDefinition,
 )
 from utils import embeds
+from utils.pet_formatting import pet_emoji
 from cogs.economy import (
     CASINO_HUGE_CHANCE_PER_PB,
     CASINO_HUGE_MAX_CHANCE,
@@ -294,6 +295,67 @@ class PetInventoryView(discord.ui.View):
     async def on_timeout(self) -> None:
         for item in self.children:
             item.disabled = True
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=self)
+
+
+class ZoneOverviewView(discord.ui.View):
+    """Interface paginée pour présenter les zones et œufs disponibles."""
+
+    def __init__(self, ctx: commands.Context, embeds: Sequence[discord.Embed]) -> None:
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self._embeds: List[discord.Embed] = [embed for embed in embeds]
+        self.page = 0
+        self.page_count = max(1, len(self._embeds))
+        self.message: discord.Message | None = None
+        self._sync_buttons()
+
+    def current_embed(self) -> discord.Embed:
+        if not self._embeds:
+            return embeds.info_embed("Aucune zone disponible pour le moment.")
+        return self._embeds[self.page]
+
+    def _sync_buttons(self) -> None:
+        has_multiple_pages = self.page_count > 1
+        if hasattr(self, "previous_page"):
+            self.previous_page.disabled = not has_multiple_pages or self.page <= 0
+        if hasattr(self, "next_page"):
+            self.next_page.disabled = (
+                not has_multiple_pages or self.page >= self.page_count - 1
+            )
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul le propriétaire de la commande peut changer de page.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary)
+    async def previous_page(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if self.page > 0:
+            self.page -= 1
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.current_embed(), view=self)
+
+    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary)
+    async def next_page(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if self.page < self.page_count - 1:
+            self.page += 1
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.current_embed(), view=self)
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
         if self.message:
             with contextlib.suppress(discord.HTTPException):
                 await self.message.edit(view=self)
@@ -1439,6 +1501,113 @@ class Pets(commands.Cog):
         )
         return True
 
+    def _build_zone_overview_embed(
+        self,
+        ctx: commands.Context,
+        zone: PetZoneDefinition,
+        *,
+        has_unlocked: bool,
+        meets_grade: bool,
+        meets_egg_mastery: bool,
+        meets_pet_mastery: bool,
+        meets_rebirth: bool,
+    ) -> discord.Embed:
+        status_emoji = "✅" if has_unlocked else "🔒"
+        title = f"{status_emoji} {zone.name}"
+        cost_text = (
+            "Gratuit"
+            if zone.entry_cost <= 0
+            else embeds.format_currency(zone.entry_cost)
+        )
+        cost_suffix = ""
+        if zone.entry_cost > 0 and has_unlocked:
+            cost_suffix = " (déjà payé)"
+        description_lines = [
+            f"Statut : {'Débloquée' if has_unlocked else 'Verrouillée'}",
+            f"Prix d'accès : {cost_text}{cost_suffix}",
+        ]
+        accessible = (
+            has_unlocked
+            and meets_grade
+            and meets_egg_mastery
+            and meets_pet_mastery
+            and meets_rebirth
+        )
+        description_lines.append(
+            f"Accès actuel : {'Disponible' if accessible else 'Conditions à remplir'}"
+        )
+
+        requirements: List[str] = []
+        if zone.grade_required > 0:
+            requirements.append(
+                f"{'✅' if meets_grade else '❌'} Grade {zone.grade_required} "
+                f"({self._grade_label(zone.grade_required)})"
+            )
+        if zone.egg_mastery_required > 0:
+            requirements.append(
+                f"{'✅' if meets_egg_mastery else '❌'} {EGG_MASTERY.display_name} niveau {zone.egg_mastery_required}"
+            )
+        if zone.pet_mastery_required > 0:
+            requirements.append(
+                f"{'✅' if meets_pet_mastery else '❌'} {PET_MASTERY.display_name} niveau {zone.pet_mastery_required}"
+            )
+        if zone.rebirth_required > 0:
+            plural = "s" if zone.rebirth_required > 1 else ""
+            requirements.append(
+                f"{'✅' if meets_rebirth else '❌'} {zone.rebirth_required} rebirth{plural}"
+            )
+        if zone.entry_cost > 0:
+            requirements.append(
+                f"{'✅' if has_unlocked else '❌'} {embeds.format_currency(zone.entry_cost)}"
+            )
+
+        embed = embeds.info_embed(
+            "\n".join(description_lines),
+            title=title,
+        )
+        embed.set_author(
+            name=ctx.author.display_name,
+            icon_url=ctx.author.display_avatar.url,
+        )
+
+        if requirements:
+            embed.add_field(
+                name="Conditions",
+                value="\n".join(requirements),
+                inline=False,
+            )
+
+        if has_unlocked:
+            if zone.eggs:
+                for egg in zone.eggs:
+                    emoji_sequence = [pet_emoji(pet.name) for pet in egg.pets]
+                    unique_emojis = list(dict.fromkeys(emoji_sequence))
+                    field_lines = [
+                        f"Prix : {embeds.format_currency(egg.price)}",
+                        f"Commande : `e!openbox {egg.slug}`",
+                    ]
+                    if unique_emojis:
+                        field_lines.append(
+                            f"Pets : {' '.join(unique_emojis)}"
+                        )
+                    embed.add_field(
+                        name=egg.name,
+                        value="\n".join(field_lines),
+                        inline=False,
+                    )
+            else:
+                embed.add_field(
+                    name="Œufs disponibles",
+                    value="Aucun œuf n'est proposé ici.",
+                    inline=False,
+                )
+        else:
+            embed.add_field(name="Prix des œufs", value="???", inline=False)
+            embed.add_field(name="Commande", value="???", inline=False)
+            embed.add_field(name="Pets possibles", value="???", inline=False)
+
+        return embed
+
     async def _send_egg_overview(self, ctx: commands.Context) -> None:
         grade_level = await self.database.get_grade_level(ctx.author.id)
         unlocked_zones = await self.database.get_unlocked_zones(ctx.author.id)
@@ -1447,64 +1616,57 @@ class Pets(commands.Cog):
         egg_level = int(egg_mastery.get("level", 1))
         pet_level = int(pet_mastery.get("level", 1))
         rebirth_count = await self.database.get_rebirth_count(ctx.author.id)
-        lines: List[str] = []
+
+        zone_embeds: List[discord.Embed] = []
         for zone in PET_ZONES:
-            zone_unlocked = zone.entry_cost <= 0 or zone.slug in unlocked_zones
+            has_unlocked = zone.entry_cost <= 0 or zone.slug in unlocked_zones
             meets_grade = grade_level >= zone.grade_required
             meets_egg_mastery = egg_level >= zone.egg_mastery_required
             meets_pet_mastery = pet_level >= zone.pet_mastery_required
             meets_rebirth = rebirth_count >= zone.rebirth_required
-            status = (
-                "✅"
-                if zone_unlocked
-                and meets_grade
-                and meets_egg_mastery
-                and meets_pet_mastery
-                and meets_rebirth
-                else "🔒"
+
+            zone_embeds.append(
+                self._build_zone_overview_embed(
+                    ctx,
+                    zone,
+                    has_unlocked=has_unlocked,
+                    meets_grade=meets_grade,
+                    meets_egg_mastery=meets_egg_mastery,
+                    meets_pet_mastery=meets_pet_mastery,
+                    meets_rebirth=meets_rebirth,
+                )
             )
-            requirements: List[str] = []
-            if not meets_grade:
-                requirements.append(
-                    f"Grade {zone.grade_required} ({self._grade_label(zone.grade_required)})"
-                )
-            if zone.egg_mastery_required > 0 and not meets_egg_mastery:
-                requirements.append(
-                    f"{EGG_MASTERY.display_name} niveau {zone.egg_mastery_required}"
-                )
-            if zone.pet_mastery_required > 0 and not meets_pet_mastery:
-                requirements.append(
-                    f"{PET_MASTERY.display_name} niveau {zone.pet_mastery_required}"
-                )
-            if zone.rebirth_required > 0 and not meets_rebirth:
-                requirements.append(
-                    f"{zone.rebirth_required} rebirth{'s' if zone.rebirth_required > 1 else ''}"
-                )
-            if zone.entry_cost > 0:
-                if zone.slug in unlocked_zones:
-                    requirements.append("Accès payé")
-                else:
-                    requirements.append(
-                        f"Entrée {embeds.format_currency(zone.entry_cost)}"
-                    )
-            if not requirements:
-                requirements.append("Accessible")
-            lines.append(f"**{status} {zone.name}** — {', '.join(requirements)}")
-            for egg in zone.eggs:
-                lines.append(
-                    f"  • {egg.name} — {embeds.format_currency(egg.price)} (`e!openbox {egg.slug}`)"
-                )
 
         if rebirth_count > 0:
-            lines.append("**✅ Zone Mystérieuse** — Coming soon")
-            lines.append("  • Contenu en préparation…")
+            mystery_embed = embeds.info_embed(
+                "Zone encore mystérieuse... Revenez bientôt pour en savoir plus !",
+                title="✨ Zone Mystérieuse",
+            )
+            mystery_embed.set_author(
+                name=ctx.author.display_name,
+                icon_url=ctx.author.display_avatar.url,
+            )
+            zone_embeds.append(mystery_embed)
 
-        description = (
-            "\n".join(lines) if lines else "Aucun œuf n'est disponible pour le moment."
-        )
-        embed = embeds.info_embed(description, title="Œufs & zones disponibles")
-        embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
-        await ctx.send(embed=embed)
+        if not zone_embeds:
+            embed = embeds.info_embed(
+                "Aucun œuf n'est disponible pour le moment.",
+                title="Œufs & zones disponibles",
+            )
+            embed.set_author(
+                name=ctx.author.display_name,
+                icon_url=ctx.author.display_avatar.url,
+            )
+            await ctx.send(embed=embed)
+            return
+
+        total_pages = len(zone_embeds)
+        for index, embed in enumerate(zone_embeds, start=1):
+            embed.set_footer(text=f"Page {index}/{total_pages}")
+
+        view = ZoneOverviewView(ctx, zone_embeds)
+        message = await ctx.send(embed=zone_embeds[0], view=view)
+        view.message = message
 
     async def _send_huge_shelly_alert(self, ctx: commands.Context) -> None:
         channel = self.bot.get_channel(HUGE_SHELLY_ALERT_CHANNEL_ID)
