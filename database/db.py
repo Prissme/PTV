@@ -136,7 +136,7 @@ class ActivePetLimitError(DatabaseError):
 class Database:
     """Gestionnaire de connexion PostgreSQL réduit aux besoins essentiels."""
 
-    _INSTANCE_LOCK_KEY = 0x45534f424f54504c  # "ESOBOTPL" packed into 64 bits
+    _INSTANCE_LOCK_KEY = (0x45534F42, 0x4F54504C)  # "ESOB"/"OTPL" packed into int32 pairs
 
     def __init__(self, dsn: str, *, min_size: int = 1, max_size: int = 10) -> None:
         if not dsn:
@@ -368,7 +368,7 @@ class Database:
             return
 
         connection = await self.pool.acquire()
-        lock_key = int(self._INSTANCE_LOCK_KEY)
+        key_class, key_object = self._INSTANCE_LOCK_KEY
         try:
             # D'abord, vérifier si un verrou existe déjà
             existing_lock = await connection.fetchval(
@@ -376,10 +376,12 @@ class Database:
                 SELECT pid
                 FROM pg_locks
                 WHERE locktype = 'advisory'
-                  AND objid = $1
+                  AND classid = $1::integer
+                  AND objid = $2::integer
                 LIMIT 1
                 """,
-                lock_key
+                key_class,
+                key_object,
             )
 
             if existing_lock is not None:
@@ -400,14 +402,16 @@ class Database:
                         existing_lock
                     )
                     await connection.execute(
-                        "SELECT pg_advisory_unlock($1)",
-                        lock_key
+                        "SELECT pg_advisory_unlock($1::integer, $2::integer)",
+                        key_class,
+                        key_object,
                     )
 
             # Tenter d'acquérir le verrou
             locked = await connection.fetchval(
-                "SELECT pg_try_advisory_lock($1)",
-                lock_key
+                "SELECT pg_try_advisory_lock($1::integer, $2::integer)",
+                key_class,
+                key_object,
             )
         except Exception as exc:
             await self.pool.release(connection)
@@ -441,8 +445,8 @@ class Database:
             if not self._lock_connection.is_closed():
                 try:
                     await self._lock_connection.execute(
-                        "SELECT pg_advisory_unlock($1)", 
-                        self._INSTANCE_LOCK_KEY
+                        "SELECT pg_advisory_unlock($1::integer, $2::integer)",
+                        *self._INSTANCE_LOCK_KEY,
                     )
                     logger.info("Verrou d'instance PostgreSQL libéré")
                 except Exception:
