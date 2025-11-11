@@ -220,11 +220,11 @@ class GradeSystem(commands.Cog):
         new_grade_level: int,
         channel: QuestChannel,
     ) -> None:
-        reward = grade_definition.reward_pb
+        reward = grade_definition.reward_gems
         pet_slots = BASE_PET_SLOTS + new_grade_level
 
         try:
-            _, balance_after = await self.database.increment_balance(
+            _, gems_after = await self.database.increment_gems(
                 member.id,
                 reward,
                 transaction_type="grade_reward",
@@ -232,7 +232,7 @@ class GradeSystem(commands.Cog):
             )
         except Exception:
             logger.exception("Impossible de créditer la récompense de grade pour %s", member.id)
-            balance_after = 0
+            gems_after = 0
 
         await self._assign_grade_role(member, new_grade_level)
 
@@ -241,8 +241,8 @@ class GradeSystem(commands.Cog):
             grade_name=grade_definition.name,
             grade_level=new_grade_level,
             total_grades=self.total_grades,
-            reward_pb=reward,
-            balance_after=balance_after,
+            reward_gems=reward,
+            gems_after=gems_after,
             pet_slots=pet_slots,
         )
 

@@ -21,6 +21,7 @@ from config import (
     DAILY_COOLDOWN,
     DAILY_REWARD,
     GRADE_DEFINITIONS,
+    Emojis,
     HUGE_GALE_NAME,
     HUGE_BULL_NAME,
     HUGE_BO_NAME,
@@ -107,7 +108,7 @@ KOTH_HUGE_LABEL = f"{KOTH_HUGE_EMOJI} {HUGE_BO_NAME}"
 class MillionaireRaceStage:
     label: str
     success_rate: float
-    prissbucks: int
+    gem_reward: int
     pet_choices: tuple[str, ...]
     potion_slugs: tuple[str, ...] = ()
 
@@ -117,34 +118,34 @@ MILLIONAIRE_RACE_COOLDOWN: int = 1_800
 # Mode Hardcore : 20 étapes avec une difficulté décroissant par paliers jusqu'à Huge Gale
 MILLIONAIRE_RACE_STAGES: tuple[MillionaireRaceStage, ...] = (
     # Étapes 1-5 : 95% → 75%
-    MillionaireRaceStage("Sprint Émeraude", 0.95, 1_000, ()),
+    MillionaireRaceStage("Sprint Émeraude", 0.95, 5, ()),
     MillionaireRaceStage("Relais Rubis", 0.90, 0, ("Shelly",)),
     MillionaireRaceStage("Virage Saphir", 0.85, 0, (), ("fortune_i",)),
-    MillionaireRaceStage("Montée Jade", 0.80, 1_500, ()),
+    MillionaireRaceStage("Montée Jade", 0.80, 7, ()),
     MillionaireRaceStage("Ascension Ambrée", 0.75, 0, ("Colt",)),
 
     # Étapes 6-10 : 70% → 50%
     MillionaireRaceStage("Échappée Turquoise", 0.70, 0, (), ("luck_i",)),
-    MillionaireRaceStage("Secteur Améthyste", 0.65, 2_000, ()),
+    MillionaireRaceStage("Secteur Améthyste", 0.65, 8, ()),
     MillionaireRaceStage("Piste Onyx", 0.60, 0, ("Barley",)),
     MillionaireRaceStage("Canyon Rubis", 0.55, 0, (), ("fortune_ii",)),
-    MillionaireRaceStage("Vallée Cristal", 0.50, 3_000, ()),
+    MillionaireRaceStage("Vallée Cristal", 0.50, 10, ()),
 
     # Étapes 11-15 : 45% → 25%
     MillionaireRaceStage("Ciel Prisme", 0.45, 0, ("Poco",)),
     MillionaireRaceStage("Spirale Stellaire", 0.40, 0, (), ("luck_ii",)),
-    MillionaireRaceStage("Portail Titan", 0.35, 4_000, ()),
+    MillionaireRaceStage("Portail Titan", 0.35, 12, ()),
     MillionaireRaceStage("Faille Temporelle", 0.30, 0, ("Rosa",)),
     MillionaireRaceStage("Nexus Éternel", 0.25, 0, (), ("fortune_iii",)),
 
     # Étapes 16-19 : 20% → 5%
-    MillionaireRaceStage("Abîme Infini", 0.20, 6_000, ()),
+    MillionaireRaceStage("Abîme Infini", 0.20, 15, ()),
     MillionaireRaceStage("Dimension Chaos", 0.15, 0, ("Angelo",)),
     MillionaireRaceStage("Royaume Perdu", 0.10, 0, (), ("luck_iii",)),
-    MillionaireRaceStage("Faille Légendaire", 0.05, 10_000, (), ("fortune_iv",)),
+    MillionaireRaceStage("Faille Légendaire", 0.05, 20, (), ("fortune_iv",)),
 
     # Étape 20 : FINALE - Huge Gale à 5%
-    MillionaireRaceStage("Couronne Millionnaire", 0.05, 0, (HUGE_GALE_NAME,), ("fortune_v",)),
+    MillionaireRaceStage("Couronne Millionnaire", 0.05, 25, (HUGE_GALE_NAME,), ("fortune_v",)),
 )
 
 PET_DEFINITION_MAP: dict[str, object] = {pet.name: pet for pet in PET_DEFINITIONS}
@@ -163,8 +164,8 @@ class MastermindConfig:
     code_length: int = 4
     max_attempts: int = 8
     response_timeout: int = 60
-    base_reward: tuple[int, int] = (170, 250)
-    attempt_bonus: int = 20
+    base_reward: tuple[int, int] = (3, 5)
+    attempt_bonus: int = 1
     cancel_words: frozenset[str] = frozenset({"stop", "annuler", "cancel"})
     cooldown: int = 60
 
@@ -434,7 +435,7 @@ class MastermindSession:
         raw_reward = base_reward + attempts_left * self.helper.config.attempt_bonus
         reward_multiplier = max(1.0, float(self.mastery_perks.reward_multiplier))
         reward = int(round(raw_reward * reward_multiplier))
-        _, balance_after = await self.database.increment_balance(
+        _, gems_after = await self.database.increment_gems(
             self.ctx.author.id,
             reward,
             transaction_type="mastermind_win",
@@ -445,8 +446,8 @@ class MastermindSession:
             f"Code craqué en **{self.attempts}** tentative(s) !",
             f"Tentatives restantes : **{attempts_left}**",
             f"Combinaison : {self._secret_display()}",
-            f"Récompense : **{embeds.format_currency(reward)}**",
-            f"Solde actuel : {embeds.format_currency(balance_after)}",
+            f"Récompense : **{embeds.format_gems(reward)}**",
+            f"Gemmes actuelles : {embeds.format_gems(gems_after)}",
         ]
         if reward_multiplier != 1.0:
             multiplier_label = f"x{reward_multiplier:.2f}".rstrip("0").rstrip(".")
@@ -515,7 +516,7 @@ class MastermindSession:
         self.status_lines = [
             "Temps écoulé !",
             f"Code secret : {self._secret_display()}",
-            "Reviens tenter ta chance pour gagner des PB !",
+            "Reviens tenter ta chance pour gagner des gemmes !",
         ]
         await self._award_mastery_xp(MASTERMIND_TIMEOUT_XP, "timeout")
         self._logger.debug(
@@ -532,7 +533,7 @@ class MastermindSession:
         self.status_lines = [
             "Toutes les tentatives ont été utilisées.",
             f"Code secret : {self._secret_display()}",
-            "Reviens tenter ta chance pour gagner des PB !",
+            "Reviens tenter ta chance pour gagner des gemmes !",
         ]
         await self._award_mastery_xp(MASTERMIND_FAILURE_XP, "failure")
         self._logger.debug(
@@ -829,7 +830,7 @@ class MillionaireRaceSession:
         self.ctx = ctx
         self.database = database
         self.stage_index = 0
-        self.total_pb = 0
+        self.total_gems = 0
         self.pets_awarded: list[str] = []
         self.potions_awarded: list[str] = []
         self.finished = False
@@ -856,17 +857,17 @@ class MillionaireRaceSession:
             self.failed = True
             self.finished = True
 
-            if self.total_pb > 0:
+            if self.total_gems > 0:
                 try:
-                    await self.database.increment_balance(
+                    await self.database.increment_gems(
                         self.ctx.author.id,
-                        -self.total_pb,
+                        -self.total_gems,
                         transaction_type="millionaire_race_loss",
                         description="Échec Millionaire Race - Perte des gains",
                     )
                 except Exception:
                     logger.exception(
-                        "Impossible de retirer les PrissBucks de %s après un échec de la Millionaire Race",
+                        "Impossible de retirer les gemmes de %s après un échec de la Millionaire Race",
                         self.ctx.author.id,
                     )
 
@@ -893,12 +894,12 @@ class MillionaireRaceSession:
             self.last_feedback = [
                 f"❌ ÉCHEC sur **{stage.label}** (chance de {chance_label}).",
                 "💀 **TU PERDS TOUT !**",
-                f"PrissBucks perdus : {embeds.format_currency(self.total_pb)}",
+                f"Gemmes perdues : {embeds.format_gems(self.total_gems)}",
                 f"Pets perdus : {len(self.pets_awarded)}",
                 "Retente ta chance après le cooldown !",
             ]
 
-            self.total_pb = 0
+            self.total_gems = 0
             self.pets_awarded = []
             self.potions_awarded = []
             return False
@@ -906,16 +907,16 @@ class MillionaireRaceSession:
         feedback = [f"✅ **{stage.label}** franchie !"]
         pet_name: str | None = None
 
-        if stage.prissbucks > 0:
+        if stage.gem_reward > 0:
             try:
-                await self.database.increment_balance(
+                await self.database.increment_gems(
                     self.ctx.author.id,
-                    stage.prissbucks,
+                    stage.gem_reward,
                     transaction_type="millionaire_race",
                     description=f"Épreuve {self.stage_index + 1} - {stage.label}",
                 )
-                self.total_pb += stage.prissbucks
-                feedback.append(f"💰 +{embeds.format_currency(stage.prissbucks)} remportés.")
+                self.total_gems += stage.gem_reward
+                feedback.append(f"{Emojis.GEM} +{embeds.format_gems(stage.gem_reward)} remportées.")
             except Exception:
                 logger.exception(
                     "Erreur lors du crédit de la Millionaire Race pour %s",
@@ -1018,9 +1019,9 @@ class MillionaireRaceSession:
                 "20 étapes jusqu'au Huge Gale",
                 f"Chance de réussite : **{chance_pct}%**",
             ]
-            if stage.prissbucks:
+            if stage.gem_reward:
                 reward_lines.append(
-                    f"PrissBucks : +{embeds.format_currency(stage.prissbucks)}"
+                    f"Gemmes : +{embeds.format_gems(stage.gem_reward)}"
                 )
             if stage.pet_choices:
                 pets_text = ", ".join(self._format_pet_name(name) for name in stage.pet_choices)
@@ -1036,7 +1037,7 @@ class MillionaireRaceSession:
         else:
             embed.description = "La course s'arrête ici pour cette fois."
 
-        summary_lines = [f"PrissBucks cumulés : {embeds.format_currency(self.total_pb)}"]
+        summary_lines = [f"Gemmes cumulées : {embeds.format_gems(self.total_gems)}"]
         if self.pets_awarded:
             summary_lines.append(
                 "Pets obtenus : "
@@ -1986,7 +1987,7 @@ class Economy(commands.Cog):
 
     @commands.command(name="mastermind", aliases=("mm", "code"))
     async def mastermind(self, ctx: commands.Context) -> None:
-        """Mini-jeu de Mastermind pour gagner quelques PB."""
+        """Mini-jeu de Mastermind pour gagner quelques gemmes."""
         grade_level = await self.database.get_grade_level(ctx.author.id)
         if grade_level < 1:
             required_name = (
