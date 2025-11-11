@@ -126,7 +126,7 @@ class GradeDefinition:
     rap_goal: int
     casino_loss_goal: int
     potion_goal: int
-    reward_pb: int
+    reward_gems: int
 
 
 BASE_PET_SLOTS: Final[int] = 4
@@ -165,7 +165,7 @@ def _build_grade_definitions() -> Tuple[GradeDefinition, ...]:
                 rap_goal=rap_goal,
                 casino_loss_goal=casino_loss_goal,
                 potion_goal=potion,
-                reward_pb=reward,
+                reward_gems=reward,
             )
         )
     return tuple(definitions)
@@ -218,6 +218,7 @@ class Colors:
 
 class Emojis:
     MONEY = "💰"
+    GEM = os.getenv("GEM_EMOJI", "<:Gem:1437828670923341864>")
     SUCCESS = "✅"
     ERROR = "❌"
     WARNING = "⚠️"
@@ -352,6 +353,7 @@ class PetEggDefinition:
     zone_slug: str
     aliases: Tuple[str, ...] = ()
     image_url: str | None = None
+    currency: str = "pb"
 
 
 @dataclass(frozen=True)
@@ -381,6 +383,7 @@ FORET_ZONE_SLUG: Final[str] = "foret"
 MANOIR_ZONE_SLUG: Final[str] = "manoir_hante"
 ROBOT_ZONE_SLUG: Final[str] = "robotique"
 ANIMALERIE_ZONE_SLUG: Final[str] = "animalerie"
+MEXICO_ZONE_SLUG: Final[str] = "mexico"
 GOLD_PET_MULTIPLIER: Final[int] = 3
 GOLD_PET_CHANCE: Final[float] = _get_float_env("PET_GOLD_CHANCE", 0.0)
 GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
@@ -418,6 +421,12 @@ HUGE_SURGE_NAME: Final[str] = "Huge Surge"
 HUGE_SURGE_MULTIPLIER: Final[float] = 4
 TITANIC_MEEPLE_NAME: Final[str] = "Titanic Meeple"
 TITANIC_MEEPLE_MULTIPLIER: Final[float] = 100
+TITANIC_POCO_NAME: Final[str] = "Titanic Poco"
+TITANIC_POCO_MULTIPLIER: Final[float] = TITANIC_MEEPLE_MULTIPLIER
+HUGE_ROSA_NAME: Final[str] = "Huge Rosa"
+HUGE_ROSA_MULTIPLIER: Final[float] = 15
+HUGE_CLANCY_NAME: Final[str] = "Huge Clancy"
+HUGE_CLANCY_MULTIPLIER: Final[float] = 10
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
     HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
@@ -429,6 +438,9 @@ HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
     TITANIC_MEEPLE_NAME: TITANIC_MEEPLE_MULTIPLIER,
     HUGE_BULL_NAME: HUGE_BULL_MULTIPLIER,
     HUGE_BO_NAME: HUGE_BO_MULTIPLIER,
+    HUGE_CLANCY_NAME: HUGE_CLANCY_MULTIPLIER,
+    HUGE_ROSA_NAME: HUGE_ROSA_MULTIPLIER,
+    TITANIC_POCO_NAME: TITANIC_POCO_MULTIPLIER,
 }
 
 HUGE_PET_MIN_LEVEL_MULTIPLIERS: Final[Dict[str, float]] = {
@@ -552,7 +564,9 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     HUGE_SURGE_NAME: "Apparaît dans l'Œuf métallique pour les stratèges les plus assidus.",
     HUGE_BO_NAME: "Récompense du mode King of the Hill : défends ton trône pour tenter ta chance !",
     TITANIC_MEEPLE_NAME: "Récompense quasi mythique de l'Œuf métallique, au-delà du légendaire.",
-    "Huge Clancy": "Se trouve dans l'Œuf vivant de l'Animalerie après ton premier rebirth.",
+    HUGE_CLANCY_NAME: "Se trouve dans l'Œuf vivant de l'Animalerie après ton premier rebirth.",
+    HUGE_ROSA_NAME: "Ultra rare dans l'Œuf Huevo de Mexico — seuls les plus courageux la rencontrent.",
+    TITANIC_POCO_NAME: "Récompense mythique de l'Œuf Huevo de Mexico, l'égale du Titanic Meeple.",
 }
 
 def get_egg_frenzy_window(
@@ -882,11 +896,51 @@ _ANIMALERIE_EGG_PETS: Tuple[PetDefinition, ...] = (
         drop_rate=0.00999,
     ),
     PetDefinition(
-        name="Huge Clancy",
+        name=HUGE_CLANCY_NAME,
         rarity="Secret",
         image_url="https://cdn.discordapp.com/emojis/1433616256522649712.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.00001,
+        is_huge=True,
+    ),
+)
+
+_MEXICO_EGG_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="El Primo",
+        rarity="Épique",
+        image_url="https://cdn.discordapp.com/emojis/1437826192794321097.png",
+        base_income_per_hour=1_800_000,
+        drop_rate=0.60,
+    ),
+    PetDefinition(
+        name="Amber",
+        rarity="Légendaire",
+        image_url="https://cdn.discordapp.com/emojis/1437826234095636490.png",
+        base_income_per_hour=3_200_000,
+        drop_rate=0.30,
+    ),
+    PetDefinition(
+        name="Rosa",
+        rarity="Mythique",
+        image_url="https://cdn.discordapp.com/emojis/1430584871406928075.png",
+        base_income_per_hour=6_500_000,
+        drop_rate=0.099999,
+    ),
+    PetDefinition(
+        name=HUGE_ROSA_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1437826071503311010.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0000005,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=TITANIC_POCO_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1437826145486770176.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0000001,
         is_huge=True,
     ),
 )
@@ -946,6 +1000,15 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
         zone_slug=ANIMALERIE_ZONE_SLUG,
         aliases=("oeuf vivant", "vivant", "living", "animalerie"),
     ),
+    PetEggDefinition(
+        name="Œuf Huevo",
+        slug="huevo",
+        price=500,
+        pets=_MEXICO_EGG_PETS,
+        zone_slug=MEXICO_ZONE_SLUG,
+        aliases=("oeuf huevo", "huevo"),
+        currency="gem",
+    ),
 )
 
 
@@ -991,6 +1054,13 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         entry_cost=500_000_000,
         eggs=_eggs_for_zone(ANIMALERIE_ZONE_SLUG),
         rebirth_required=1,
+    ),
+    PetZoneDefinition(
+        name="Mexico",
+        slug=MEXICO_ZONE_SLUG,
+        grade_required=15,
+        entry_cost=1_000_000_000_000,
+        eggs=_eggs_for_zone(MEXICO_ZONE_SLUG),
     ),
 )
 
@@ -1040,7 +1110,11 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Crow": os.getenv("PET_EMOJI_CROW", "<:Crow:1433582901081018458>"),
     "Ruffs": os.getenv("PET_EMOJI_RUFFS", "<:Ruffs:1433583510861385759>"),
     "Spike": os.getenv("PET_EMOJI_SPIKE", "<:Spike:1433581944255287377>"),
-    "Huge Clancy": os.getenv("PET_EMOJI_HUGE_CLANCY", "<:HugeClancy:1433616256522649712>"),
+    HUGE_CLANCY_NAME: os.getenv("PET_EMOJI_HUGE_CLANCY", "<:HugeClancy:1433616256522649712>"),
+    "El Primo": os.getenv("PET_EMOJI_EL_PRIMO", "<:ElPrimo:1437826192794321097>"),
+    "Amber": os.getenv("PET_EMOJI_AMBER", "<:Amber:1437826234095636490>"),
+    HUGE_ROSA_NAME: os.getenv("PET_EMOJI_HUGE_ROSA", "<:HugeRosa:1437826071503311010>"),
+    TITANIC_POCO_NAME: os.getenv("PET_EMOJI_TITANIC_POCO", "<:TITANICPOCO:1437826145486770176>"),
     # FIX: Ensure default emoji falls back when the environment variable is empty.
     "default": os.getenv("PET_EMOJI_DEFAULT") or "🐾",
 }

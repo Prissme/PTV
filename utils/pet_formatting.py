@@ -13,7 +13,7 @@ from config import (
     SHINY_PET_MULTIPLIER,
 )
 
-from .formatting import format_currency
+from .formatting import format_currency, format_gems
 
 __all__ = ["PetDisplay", "pet_emoji"]
 
@@ -151,7 +151,7 @@ class PetDisplay:
         if self.is_shiny:
             lines.append(f"✨ Variante shiny ! Puissance x{SHINY_PET_MULTIPLIER}.")
         if self.market_value > 0 and not self.is_huge:
-            lines.append(f"Valeur marché : **{format_currency(self.market_value)}**")
+            lines.append(f"Valeur marché : **{format_gems(self.market_value)}**")
         return lines
 
     def multi_reveal_field(self) -> tuple[str, str]:
@@ -178,7 +178,7 @@ class PetDisplay:
         if flags:
             lines.append(" · ".join(flags))
         if self.market_value > 0 and not self.is_huge:
-            lines.append(f"Valeur : {format_currency(self.market_value)}")
+            lines.append(f"Valeur : {format_gems(self.market_value)}")
         return field_name, "\n".join(lines)
 
     def collection_key(self) -> tuple[object, ...]:
@@ -265,7 +265,7 @@ class PetDisplay:
         elif self.is_gold:
             lines.append(f"Variante or : puissance x{GOLD_PET_MULTIPLIER}")
         if self.market_value > 0 and not self.is_huge:
-            lines.append(f"Valeur marché : {format_currency(self.market_value)}")
+            lines.append(f"Valeur marché : {format_gems(self.market_value)}")
         lines.append(f"Pets actifs : **{active_count}/{slot_limit}**")
         return lines
 

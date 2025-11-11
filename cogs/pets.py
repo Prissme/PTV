@@ -1582,8 +1582,12 @@ class Pets(commands.Cog):
                 for egg in zone.eggs:
                     emoji_sequence = [pet_emoji(pet.name) for pet in egg.pets]
                     unique_emojis = list(dict.fromkeys(emoji_sequence))
+                    if egg.currency == "gem":
+                        price_display = embeds.format_gems(egg.price)
+                    else:
+                        price_display = embeds.format_currency(egg.price)
                     field_lines = [
-                        f"Prix : {embeds.format_currency(egg.price)}",
+                        f"Prix : {price_display}",
                         f"Commande : `e!openbox {egg.slug}`",
                     ]
                     if unique_emojis:
@@ -1712,22 +1716,40 @@ class Pets(commands.Cog):
         await self.database.ensure_user(ctx.author.id)
         if charge_cost:
             effective_price = egg.price * max(1, int(price_multiplier))
-            balance = await self.database.fetch_balance(ctx.author.id)
-            if balance < effective_price:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Tu n'as pas assez de PB. Il te faut "
-                        f"**{embeds.format_currency(effective_price)}** pour acheter {egg.name}."
+            if egg.currency == "gem":
+                balance = await self.database.fetch_gems(ctx.author.id)
+                if balance < effective_price:
+                    await ctx.send(
+                        embed=embeds.error_embed(
+                            "Tu n'as pas assez de gemmes. Il t'en faut "
+                            f"**{embeds.format_gems(effective_price)}** pour acheter {egg.name}."
+                        )
                     )
-                )
-                return None
+                    return None
 
-            await self.database.increment_balance(
-                ctx.author.id,
-                -effective_price,
-                transaction_type="pet_purchase",
-                description=f"Achat de {egg.name}",
-            )
+                await self.database.increment_gems(
+                    ctx.author.id,
+                    -effective_price,
+                    transaction_type="pet_purchase",
+                    description=f"Achat de {egg.name}",
+                )
+            else:
+                balance = await self.database.fetch_balance(ctx.author.id)
+                if balance < effective_price:
+                    await ctx.send(
+                        embed=embeds.error_embed(
+                            "Tu n'as pas assez de PB. Il te faut "
+                            f"**{embeds.format_currency(effective_price)}** pour acheter {egg.name}."
+                        )
+                    )
+                    return None
+
+                await self.database.increment_balance(
+                    ctx.author.id,
+                    -effective_price,
+                    transaction_type="pet_purchase",
+                    description=f"Achat de {egg.name}",
+                )
         effective_luck_bonus = 0.0
         frenzy_active = is_egg_frenzy_active()
         if mastery_perks:
@@ -2249,9 +2271,14 @@ class Pets(commands.Cog):
                     force_gold_request = False
                 else:
                     price_multiplier = 100
+                    price_text = (
+                        embeds.format_gems(egg_definition.price * price_multiplier)
+                        if egg_definition.currency == "gem"
+                        else embeds.format_currency(egg_definition.price * price_multiplier)
+                    )
                     await ctx.send(
                         embed=embeds.info_embed(
-                            f"Tu choisis de payer **{embeds.format_currency(egg_definition.price * price_multiplier)}** pour garantir un pet or.",
+                            f"Tu choisis de payer **{price_text}** pour garantir un pet or.",
                             title="Gold garanti activé",
                         )
                     )

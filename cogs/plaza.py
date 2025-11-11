@@ -148,10 +148,10 @@ class PlazaListingsView(discord.ui.View):
         )
 
         stats_lines = [
-            f"Prix : {embeds.format_currency(seller.cheapest)}",
+            f"Prix : {embeds.format_gems(seller.cheapest)}",
         ]
         if seller.cheapest != seller.priciest:
-            stats_lines[-1] += f" → {embeds.format_currency(seller.priciest)}"
+            stats_lines[-1] += f" → {embeds.format_gems(seller.priciest)}"
 
         if seller.latest_at:
             stats_lines.append(
@@ -244,7 +244,7 @@ class StandTicketListingModal(discord.ui.Modal):
             max_length=5,
         )
         self.price_input = discord.ui.TextInput(
-            label="Prix total (PB)",
+            label="Prix total (Gemmes)",
             placeholder="Ex: 5000",
             min_length=1,
             max_length=18,
@@ -289,7 +289,7 @@ class StandPotionListingModal(discord.ui.Modal):
             max_length=5,
         )
         self.price_input = discord.ui.TextInput(
-            label="Prix total (PB)",
+            label="Prix total (Gemmes)",
             placeholder="Ex: 25000",
             min_length=1,
             max_length=18,
@@ -528,7 +528,7 @@ class ConsumableListingsView(discord.ui.View):
     def _format_line(self, record: Mapping[str, object]) -> str:
         listing_id = int(record.get("id", 0))
         quantity = int(record.get("quantity", 0))
-        price = embeds.format_currency(int(record.get("price", 0)))
+        price = embeds.format_gems(int(record.get("price", 0)))
         seller_id = int(record.get("seller_id", 0))
         seller = self.user_cache.get(seller_id)
         seller_name = seller.display_name if seller else f"Utilisateur {seller_id}"
@@ -806,7 +806,7 @@ class Plaza(commands.Cog):
     def _format_listing_line(self, record: Mapping[str, object]) -> str:
         listing_id = int(record.get("id", 0))
         name = self._format_pet_record(record)
-        price = embeds.format_currency(int(record.get("price", 0)))
+        price = embeds.format_gems(int(record.get("price", 0)))
         created_at = record.get("created_at")
         if isinstance(created_at, datetime):  # pragma: no cover - defensive
             timestamp = discord.utils.format_dt(created_at, style="R")
@@ -934,7 +934,7 @@ class Plaza(commands.Cog):
 
         listing_id = int(listing["id"])
         embed = embeds.success_embed(
-            f"{display} est maintenant en vente pour {embeds.format_currency(price)} (annonce #{listing_id}).",
+            f"{display} est maintenant en vente pour {embeds.format_gems(price)} (annonce #{listing_id}).",
             title="Annonce créée",
         )
         return True, embed
@@ -962,7 +962,7 @@ class Plaza(commands.Cog):
 
         listing_id = int(listing["id"])
         embed = embeds.success_embed(
-            f"🎟️ {quantity} ticket(s) mis en vente pour {embeds.format_currency(price)} (annonce #{listing_id}).",
+            f"🎟️ {quantity} ticket(s) mis en vente pour {embeds.format_gems(price)} (annonce #{listing_id}).",
             title="Annonce créée",
         )
         return True, embed
@@ -996,7 +996,7 @@ class Plaza(commands.Cog):
 
         listing_id = int(listing["id"])
         embed = embeds.success_embed(
-            f"🧪 {definition.name} x{quantity} listé pour {embeds.format_currency(price)} (annonce #{listing_id}).",
+            f"🧪 {definition.name} x{quantity} listé pour {embeds.format_gems(price)} (annonce #{listing_id}).",
             title="Annonce créée",
         )
         return True, embed
@@ -1059,9 +1059,9 @@ class Plaza(commands.Cog):
         buyer_before = int(result.get("buyer_before", 0))
         lines = [
             f"Achat : {item_label}",
-            f"Prix : {embeds.format_currency(price)}",
+            f"Prix : {embeds.format_gems(price)}",
             f"Vendeur : {seller_name}",
-            f"Ton solde avant achat : {embeds.format_currency(buyer_before)}",
+            f"Tes gemmes avant achat : {embeds.format_gems(buyer_before)}",
         ]
         embed = embeds.success_embed("\n".join(lines), title="Achat confirmé")
         seller_id = int(listing_record.get("seller_id", seller_id))
@@ -1204,7 +1204,7 @@ class Plaza(commands.Cog):
 
         pet_display = self._format_pet_record(listing)
         embed = embeds.success_embed(
-            f"Tu as acheté {pet_display} pour {embeds.format_currency(price)} à {seller_name}.",
+            f"Tu as acheté {pet_display} pour {embeds.format_gems(price)} à {seller_name}.",
             title="Achat confirmé",
         )
         await ctx.send(embed=embed)
@@ -1239,7 +1239,7 @@ class Plaza(commands.Cog):
         lines = []
         for row in entries:
             status = str(row["status"])
-            price = embeds.format_currency(int(row["price"]))
+            price = embeds.format_gems(int(row["price"]))
             seller_id = int(row["seller_id"])
             buyer_id = int(row["buyer_id"]) if row["buyer_id"] is not None else None
             pet_display = self._format_pet_record(row)
