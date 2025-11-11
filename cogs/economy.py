@@ -1646,8 +1646,11 @@ class Economy(commands.Cog):
     @commands.command(name="balance", aliases=("bal",))
     async def balance(self, ctx: commands.Context, member: discord.Member | None = None) -> None:
         target = member or ctx.author
-        balance = await self.database.fetch_balance(target.id)
-        embed = embeds.balance_embed(target, balance=balance)
+        balance, gems = await asyncio.gather(
+            self.database.fetch_balance(target.id),
+            self.database.fetch_gems(target.id),
+        )
+        embed = embeds.balance_embed(target, balance=balance, gems=gems)
         await ctx.send(embed=embed)
 
     @commands.command(name="koth")

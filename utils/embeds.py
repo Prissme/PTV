@@ -151,8 +151,13 @@ def info_embed(message: str, *, title: str = "Information") -> discord.Embed:
     return _base_embed(title, message, color=Colors.INFO)
 
 
-def balance_embed(member: discord.Member, *, balance: int) -> discord.Embed:
-    description = f"{Emojis.MONEY} **Solde :** {format_currency(balance)}"
+def balance_embed(
+    member: discord.Member, *, balance: int, gems: int | None = None
+) -> discord.Embed:
+    lines = [f"{Emojis.MONEY} **Solde :** {format_currency(balance)}"]
+    if gems is not None:
+        lines.append(f"{Emojis.GEM} **Gemmes :** {format_gems(gems)}")
+    description = "\n".join(lines)
     embed = _base_embed("Solde", description, color=Colors.SUCCESS if balance else Colors.NEUTRAL)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
     embed.set_footer(text=f"Utilise {PREFIX}daily pour collecter ta récompense")
