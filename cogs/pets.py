@@ -1412,6 +1412,12 @@ class Pets(commands.Cog):
             return GRADE_DEFINITIONS[level - 1].name
         return f"Grade {level}"
 
+    @staticmethod
+    def _format_zone_cost(zone: PetZoneDefinition) -> str:
+        if zone.currency == "gem":
+            return embeds.format_gems(zone.entry_cost)
+        return embeds.format_currency(zone.entry_cost)
+
     async def _ensure_zone_access(
         self, ctx: commands.Context, zone: PetZoneDefinition
     ) -> bool:
@@ -1472,27 +1478,39 @@ class Pets(commands.Cog):
         if zone.entry_cost <= 0:
             return True
 
-        balance = await self.database.fetch_balance(ctx.author.id)
+        if zone.currency == "gem":
+            balance = await self.database.fetch_gems(ctx.author.id)
+        else:
+            balance = await self.database.fetch_balance(ctx.author.id)
+
         if balance < zone.entry_cost:
             await ctx.send(
                 embed=embeds.error_embed(
-                    f"Il te faut {embeds.format_currency(zone.entry_cost)} pour débloquer {zone.name}."
+                    f"Il te faut {self._format_zone_cost(zone)} pour débloquer {zone.name}."
                 )
             )
             return False
 
-        await self.database.increment_balance(
-            ctx.author.id,
-            -zone.entry_cost,
-            transaction_type="zone_unlock",
-            description=f"Déblocage zone {zone.name}",
-        )
+        if zone.currency == "gem":
+            await self.database.increment_gems(
+                ctx.author.id,
+                -zone.entry_cost,
+                transaction_type="zone_unlock",
+                description=f"Déblocage zone {zone.name}",
+            )
+        else:
+            await self.database.increment_balance(
+                ctx.author.id,
+                -zone.entry_cost,
+                transaction_type="zone_unlock",
+                description=f"Déblocage zone {zone.name}",
+            )
         await self.database.unlock_zone(ctx.author.id, zone.slug)
 
         eggs_commands = ", ".join(f"`e!openbox {egg.slug}`" for egg in zone.eggs)
         lines = [
             f"{ctx.author.mention}, tu as débloqué **{zone.name}** !",
-            f"Coût : {embeds.format_currency(zone.entry_cost)}.",
+            f"Coût : {self._format_zone_cost(zone)}.",
         ]
         if eggs_commands:
             lines.append(f"Œufs disponibles : {eggs_commands}")
@@ -1514,11 +1532,7 @@ class Pets(commands.Cog):
     ) -> discord.Embed:
         status_emoji = "✅" if has_unlocked else "🔒"
         title = f"{status_emoji} {zone.name}"
-        cost_text = (
-            "Gratuit"
-            if zone.entry_cost <= 0
-            else embeds.format_currency(zone.entry_cost)
-        )
+        cost_text = "Gratuit" if zone.entry_cost <= 0 else self._format_zone_cost(zone)
         cost_suffix = ""
         if zone.entry_cost > 0 and has_unlocked:
             cost_suffix = " (déjà payé)"
@@ -1558,7 +1572,7 @@ class Pets(commands.Cog):
             )
         if zone.entry_cost > 0:
             requirements.append(
-                f"{'✅' if has_unlocked else '❌'} {embeds.format_currency(zone.entry_cost)}"
+                f"{'✅' if has_unlocked else '❌'} {self._format_zone_cost(zone)}"
             )
 
         embed = embeds.info_embed(

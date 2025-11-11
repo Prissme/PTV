@@ -366,6 +366,7 @@ class PetZoneDefinition:
     egg_mastery_required: int = 0
     pet_mastery_required: int = 0
     rebirth_required: int = 0
+    currency: str = "pb"
 
 
 EGG_FRENZY_LUCK_BONUS: Final[float] = 0.50
@@ -1059,8 +1060,9 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         name="Mexico",
         slug=MEXICO_ZONE_SLUG,
         grade_required=15,
-        entry_cost=1_000_000_000_000,
+        entry_cost=1_000,
         eggs=_eggs_for_zone(MEXICO_ZONE_SLUG),
+        currency="gem",
     ),
 )
 
