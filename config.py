@@ -921,7 +921,7 @@ _MEXICO_EGG_PETS: Tuple[PetDefinition, ...] = (
         drop_rate=0.30,
     ),
     PetDefinition(
-        name="Rosa",
+        name="Mina",
         rarity="Mythique",
         image_url="https://cdn.discordapp.com/emojis/1430584871406928075.png",
         base_income_per_hour=6_500_000,
@@ -1074,12 +1074,16 @@ HUGE_PET_NAMES: Final[frozenset[str]] = frozenset(
     pet.name for pet in PET_DEFINITIONS if getattr(pet, "is_huge", False)
 )
 
+_ROSA_EMOJI: Final[str] = os.getenv("PET_EMOJI_ROSA", "<:Rosa:1430584871406928075>")
+
+
 PET_EMOJIS: Final[dict[str, str]] = {
     "Shelly": os.getenv("PET_EMOJI_SHELLY", "<:Shelly:1430584949215596654>"),
     "Colt": os.getenv("PET_EMOJI_COLT", "<:Colt:1430585480394838196>"),
     "Barley": os.getenv("PET_EMOJI_BARLEY", "<:Barley:1430586754041381036>"),
     "Poco": os.getenv("PET_EMOJI_POCO", "<:Poco:1430586108336672878>"),
-    "Rosa": os.getenv("PET_EMOJI_ROSA", "<:Rosa:1430584871406928075>"),
+    "Rosa": _ROSA_EMOJI,
+    "Mina": os.getenv("PET_EMOJI_MINA", _ROSA_EMOJI),
     HUGE_PET_NAME: os.getenv("PET_EMOJI_HUGE_SHELLY", "<:HugeShelly:1430587331819212831>"),
     "Angelo": os.getenv("PET_EMOJI_ANGELO", "<:Angelo:1430873772583289054>"),
     "Lily": os.getenv("PET_EMOJI_LILY", "<:Lily:1430874351309422674>"),
