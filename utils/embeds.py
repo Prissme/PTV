@@ -18,7 +18,7 @@ from config import (
     PetEggDefinition,
 )
 
-from utils.formatting import format_currency
+from utils.formatting import format_currency, format_gems
 from utils.pet_formatting import PetDisplay, pet_emoji
 from utils.mastery import MasteryDefinition
 
@@ -70,6 +70,7 @@ def _finalize_embed(embed: discord.Embed) -> discord.Embed:
 
 __all__ = [
     "format_currency",
+    "format_gems",
     "cooldown_embed",
     "error_embed",
     "warning_embed",
@@ -413,7 +414,7 @@ def grade_profile_embed(
             f" ({grade_level}/{total_grades})\n"
             f"Prochain grade : **{next_grade.name}**\n"
             f"Slots de pets équipables : **{pet_slots}**\n"
-            f"Prochaine récompense : **{format_currency(next_grade.reward_pb)}** + 1 slot"
+            f"Prochaine récompense : **{format_gems(next_grade.reward_gems)}** + 1 slot"
         )
         quest_lines = [
             _quest_progress_line(
@@ -455,15 +456,15 @@ def grade_completed_embed(
     grade_name: str,
     grade_level: int,
     total_grades: int,
-    reward_pb: int,
-    balance_after: int,
+    reward_gems: int,
+    gems_after: int,
     pet_slots: int,
 ) -> discord.Embed:
     lines = [
         f"Nouveau grade : **{grade_name}** ({grade_level}/{total_grades})",
-        f"Récompense : **{format_currency(reward_pb)}**",
+        f"Récompense : **{format_gems(reward_gems)}**",
         f"Slots de pets disponibles : **{pet_slots}**",
-        f"Solde actuel : {format_currency(balance_after)}",
+        f"Gemmes actuelles : {format_gems(gems_after)}",
     ]
     embed = _base_embed("🎖️ Grade amélioré !", "\n".join(lines), color=Colors.SUCCESS)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
@@ -702,7 +703,7 @@ def pet_index_embed(
             plural = "s" if count != 1 else ""
             details.append(f"{count} existant{plural}")
         if market_value > 0 and not is_huge:
-            details.append(f"Valeur marché : {format_currency(market_value)}")
+            details.append(f"Valeur marché : {format_gems(market_value)}")
         detail_text = " • ".join(details)
         emoji_part = f"{emoji} " if emoji else ""
         line = f"{status} {emoji_part}**{name}** — {detail_text}"

@@ -473,11 +473,16 @@ class Database:
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
                     balance BIGINT NOT NULL DEFAULT 0 CHECK (balance >= 0),
+                    gems BIGINT NOT NULL DEFAULT 0 CHECK (gems >= 0),
                     last_daily TIMESTAMPTZ,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     pet_last_claim TIMESTAMPTZ
                 )
                 """
+            )
+            await connection.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS gems BIGINT NOT NULL DEFAULT 0"
+                " CHECK (gems >= 0)"
             )
             await connection.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS pet_last_claim TIMESTAMPTZ"
@@ -650,6 +655,7 @@ class Database:
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
                     transaction_type VARCHAR(50) NOT NULL,
+                    currency TEXT NOT NULL DEFAULT 'pb',
                     amount BIGINT NOT NULL,
                     balance_before BIGINT NOT NULL,
                     balance_after BIGINT NOT NULL,
@@ -658,6 +664,9 @@ class Database:
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
+            )
+            await connection.execute(
+                "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'pb'"
             )
             await connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id)"
@@ -1368,6 +1377,7 @@ class Database:
         *,
         user_id: int,
         transaction_type: str,
+        currency: str = "pb",
         amount: int,
         balance_before: int,
         balance_after: int,
@@ -1379,17 +1389,19 @@ class Database:
             INSERT INTO transactions (
                 user_id,
                 transaction_type,
+                currency,
                 amount,
                 balance_before,
                 balance_after,
                 description,
                 related_user_id
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         """
         params = (
             user_id,
             transaction_type,
+            currency,
             amount,
             balance_before,
             balance_after,
@@ -1510,6 +1522,11 @@ class Database:
         row = await self.pool.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
         return int(row["balance"]) if row else 0
 
+    async def fetch_gems(self, user_id: int) -> int:
+        await self.ensure_user(user_id)
+        row = await self.pool.fetchrow("SELECT gems FROM users WHERE user_id = $1", user_id)
+        return int(row["gems"]) if row else 0
+
     async def increment_balance(
         self,
         user_id: int,
@@ -1550,6 +1567,53 @@ class Database:
                 connection=connection,
                 user_id=user_id,
                 transaction_type=transaction_type,
+                currency="pb",
+                amount=applied_amount,
+                balance_before=before,
+                balance_after=after,
+                description=description,
+                related_user_id=related_user_id,
+            )
+
+        return before, after
+
+    async def increment_gems(
+        self,
+        user_id: int,
+        amount: int,
+        *,
+        transaction_type: str,
+        description: str | None = None,
+        related_user_id: int | None = None,
+    ) -> tuple[int, int]:
+        await self.ensure_user(user_id)
+
+        if amount == 0:
+            gems = await self.fetch_gems(user_id)
+            return gems, gems
+
+        async with self.transaction() as connection:
+            row = await connection.fetchrow(
+                "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            if row is None:
+                raise DatabaseError("Utilisateur introuvable lors de la mise à jour des gemmes")
+
+            before = int(row["gems"])
+            tentative_after = before + amount
+            after = tentative_after if tentative_after >= 0 else 0
+            applied_amount = after - before
+            await connection.execute(
+                "UPDATE users SET gems = $1 WHERE user_id = $2",
+                after,
+                user_id,
+            )
+            await self.record_transaction(
+                connection=connection,
+                user_id=user_id,
+                transaction_type=transaction_type,
+                currency="gem",
                 amount=applied_amount,
                 balance_before=before,
                 balance_after=after,
@@ -1611,6 +1675,7 @@ class Database:
                 connection=connection,
                 user_id=sender_id,
                 transaction_type=send_transaction_type,
+                currency="pb",
                 amount=-amount,
                 balance_before=sender_before,
                 balance_after=sender_after,
@@ -1627,7 +1692,88 @@ class Database:
                 connection=connection,
                 user_id=recipient_id,
                 transaction_type=receive_transaction_type,
+                currency="pb",
                 amount=recipient_gain,
+                balance_before=recipient_before,
+                balance_after=recipient_after,
+                description=receive_description,
+                related_user_id=sender_id,
+            )
+
+        return {
+            "sender": {"before": sender_before, "after": sender_after},
+            "recipient": {"before": recipient_before, "after": recipient_after},
+        }
+
+    async def transfer_gems(
+        self,
+        *,
+        sender_id: int,
+        recipient_id: int,
+        amount: int,
+        send_transaction_type: str,
+        receive_transaction_type: str,
+        send_description: str | None = None,
+        receive_description: str | None = None,
+    ) -> dict[str, dict[str, int]]:
+        if sender_id == recipient_id:
+            raise DatabaseError("Impossible de transférer des gemmes vers soi-même")
+        if amount <= 0:
+            raise ValueError("Le montant transféré doit être strictement positif")
+
+        await self.ensure_user(sender_id)
+        await self.ensure_user(recipient_id)
+
+        async with self.transaction() as connection:
+            sender_row = await connection.fetchrow(
+                "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
+                sender_id,
+            )
+            recipient_row = await connection.fetchrow(
+                "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
+                recipient_id,
+            )
+
+            if sender_row is None or recipient_row is None:
+                raise DatabaseError("Utilisateur introuvable lors du transfert de gemmes")
+
+            sender_before = int(sender_row["gems"])
+            if sender_before < amount:
+                raise InsufficientBalanceError("Solde de gemmes insuffisant pour effectuer le transfert")
+
+            recipient_before = int(recipient_row["gems"])
+
+            sender_after = sender_before - amount
+            recipient_after = recipient_before + amount
+
+            await connection.execute(
+                "UPDATE users SET gems = $1 WHERE user_id = $2",
+                sender_after,
+                sender_id,
+            )
+            await self.record_transaction(
+                connection=connection,
+                user_id=sender_id,
+                transaction_type=send_transaction_type,
+                currency="gem",
+                amount=-amount,
+                balance_before=sender_before,
+                balance_after=sender_after,
+                description=send_description,
+                related_user_id=recipient_id,
+            )
+
+            await connection.execute(
+                "UPDATE users SET gems = $1 WHERE user_id = $2",
+                recipient_after,
+                recipient_id,
+            )
+            await self.record_transaction(
+                connection=connection,
+                user_id=recipient_id,
+                transaction_type=receive_transaction_type,
+                currency="gem",
+                amount=amount,
                 balance_before=recipient_before,
                 balance_after=recipient_after,
                 description=receive_description,
@@ -4061,6 +4207,7 @@ class Database:
             SELECT
                 id,
                 transaction_type,
+                currency,
                 amount,
                 balance_before,
                 balance_after,
@@ -4380,33 +4527,31 @@ class Database:
 
             price = int(listing["price"])
             seller_balance = await connection.fetchrow(
-                "SELECT balance, rebirth_count FROM users WHERE user_id = $1 FOR UPDATE",
+                "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
                 seller_id,
             )
             buyer_balance = await connection.fetchrow(
-                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
                 buyer_id,
             )
             if seller_balance is None or buyer_balance is None:
                 raise DatabaseError("Impossible de récupérer les soldes.")
 
-            seller_before = int(seller_balance["balance"])
-            buyer_before = int(buyer_balance["balance"])
+            seller_before = int(seller_balance["gems"])
+            buyer_before = int(buyer_balance["gems"])
             if buyer_before < price:
-                raise InsufficientBalanceError("Solde insuffisant pour cet achat.")
+                raise InsufficientBalanceError("Solde de gemmes insuffisant pour cet achat.")
 
-            seller_rebirth = int(seller_balance.get("rebirth_count") or 0)
-            seller_gain, _ = self._apply_rebirth_multiplier(price, seller_rebirth)
-            seller_after = seller_before + seller_gain
+            seller_after = seller_before + price
             buyer_after = buyer_before - price
 
             await connection.execute(
-                "UPDATE users SET balance = $1 WHERE user_id = $2",
+                "UPDATE users SET gems = $1 WHERE user_id = $2",
                 buyer_after,
                 buyer_id,
             )
             await connection.execute(
-                "UPDATE users SET balance = $1 WHERE user_id = $2",
+                "UPDATE users SET gems = $1 WHERE user_id = $2",
                 seller_after,
                 seller_id,
             )
@@ -4447,6 +4592,7 @@ class Database:
                 connection=connection,
                 user_id=buyer_id,
                 transaction_type="stand_purchase",
+                currency="gem",
                 amount=-price,
                 balance_before=buyer_before,
                 balance_after=buyer_after,
@@ -4457,7 +4603,8 @@ class Database:
                 connection=connection,
                 user_id=seller_id,
                 transaction_type="stand_sale",
-                amount=seller_gain,
+                currency="gem",
+                amount=price,
                 balance_before=seller_before,
                 balance_after=seller_after,
                 description=f"Vente annonce #{listing_id}",
@@ -4686,33 +4833,31 @@ class Database:
             item_slug = str(listing.get("item_slug") or "")
 
             seller_balance = await connection.fetchrow(
-                "SELECT balance, rebirth_count FROM users WHERE user_id = $1 FOR UPDATE",
+                "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
                 seller_id,
             )
             buyer_balance = await connection.fetchrow(
-                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
                 buyer_id,
             )
             if seller_balance is None or buyer_balance is None:
                 raise DatabaseError("Impossible de récupérer les soldes.")
 
-            seller_before = int(seller_balance["balance"])
-            buyer_before = int(buyer_balance["balance"])
+            seller_before = int(seller_balance["gems"])
+            buyer_before = int(buyer_balance["gems"])
             if buyer_before < price:
-                raise InsufficientBalanceError("Solde insuffisant pour cet achat.")
+                raise InsufficientBalanceError("Solde de gemmes insuffisant pour cet achat.")
 
-            seller_rebirth = int(seller_balance.get("rebirth_count") or 0)
-            seller_gain, _ = self._apply_rebirth_multiplier(price, seller_rebirth)
-            seller_after = seller_before + seller_gain
+            seller_after = seller_before + price
             buyer_after = buyer_before - price
 
             await connection.execute(
-                "UPDATE users SET balance = $1 WHERE user_id = $2",
+                "UPDATE users SET gems = $1 WHERE user_id = $2",
                 buyer_after,
                 buyer_id,
             )
             await connection.execute(
-                "UPDATE users SET balance = $1 WHERE user_id = $2",
+                "UPDATE users SET gems = $1 WHERE user_id = $2",
                 seller_after,
                 seller_id,
             )
@@ -4744,6 +4889,7 @@ class Database:
                 connection=connection,
                 user_id=buyer_id,
                 transaction_type="stand_purchase",
+                currency="gem",
                 amount=-price,
                 balance_before=buyer_before,
                 balance_after=buyer_after,
@@ -4754,7 +4900,8 @@ class Database:
                 connection=connection,
                 user_id=seller_id,
                 transaction_type="stand_sale",
-                amount=seller_gain,
+                currency="gem",
+                amount=price,
                 balance_before=seller_before,
                 balance_after=seller_after,
                 description=f"Vente consommable #{listing_id}",
