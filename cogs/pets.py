@@ -2966,7 +2966,7 @@ class Pets(commands.Cog):
                 f"• Prochain slot : **{self._format_slot_cost(state.next_cost)}**"
             )
             lines.append(
-                "Appuie sur le bouton ci-dessous pour acheter un slot supplémentaire."
+                "Appuie sur le bouton ci-dessous ou utilise `e!gemshop buy` pour acheter un slot."
             )
         else:
             if state.has_reached_hard_cap or state.base_capacity >= state.hard_cap:
@@ -3081,7 +3081,7 @@ class Pets(commands.Cog):
             lines.append(
                 f"Prochain slot : {self._format_slot_cost(new_state.next_cost)}."
             )
-            lines.append("Utilise le bouton du magasin ou `e!gemshop buy`.")
+            lines.append("Utilise le bouton du magasin ou `e!gemshop buy` (`e!shop buy`).")
         else:
             if new_state.has_reached_hard_cap:
                 lines.append("Tu as atteint la capacité maximale de 40 pets équipés.")
@@ -3093,14 +3093,27 @@ class Pets(commands.Cog):
         embed = embeds.success_embed("\n".join(lines), title="💎 Gemshop")
         return GemshopPurchaseResult(embed=embed, state=new_state, success=True)
 
-    @commands.command(name="gemshop")
+    @commands.command(
+        name="gemshop",
+        aliases=("shop", "gem", "gems", "gemmes"),
+    )
     async def gemshop(self, ctx: commands.Context, action: str | None = None) -> None:
         await self.database.ensure_user(ctx.author.id)
 
         state = await self._fetch_gemshop_state(ctx.author.id)
 
-        normalized_action = (action or "").strip().lower().replace(" ", "")
-        purchase_aliases = {"buy", "acheter", "slot", "buyslot", "acheterslot"}
+        normalized_action = (
+            (action or "").strip().lower().replace(" ", "").replace("-", "")
+        )
+        purchase_aliases = {
+            "buy",
+            "acheter",
+            "slot",
+            "buyslot",
+            "acheterslot",
+            "acheterunslot",
+            "achete",
+        }
         attempting_purchase = normalized_action in purchase_aliases
 
         if attempting_purchase:
