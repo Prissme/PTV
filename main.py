@@ -386,12 +386,24 @@ class EcoBot(commands.Bot):
 
         help_cog = self.get_cog("Help")
         embed: discord.Embed | None = None
-        build_all_embed = getattr(help_cog, "_build_all_embed", None)
-        if callable(build_all_embed):
-            try:
-                embed = build_all_embed()
-            except Exception:
-                logger.exception("Échec de la génération du menu d'aide pour l'envoi automatique")
+        if help_cog is not None:
+            build_overview_embed = getattr(help_cog, "build_overview_embed_for_user", None)
+            if callable(build_overview_embed):
+                try:
+                    embed = await build_overview_embed(author.id)
+                except Exception:
+                    logger.exception(
+                        "Échec de la génération du menu d'aide pour l'envoi automatique"
+                    )
+            else:
+                build_all_embed = getattr(help_cog, "_build_all_embed", None)
+                if callable(build_all_embed):
+                    try:
+                        embed = build_all_embed()
+                    except Exception:
+                        logger.exception(
+                            "Échec de la génération du menu d'aide pour l'envoi automatique"
+                        )
 
         if embed is None:
             embed = discord.Embed(

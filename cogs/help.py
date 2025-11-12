@@ -739,6 +739,9 @@ class Help(commands.Cog):
             self._sections_cache[language] = sections
         return sections
 
+    def _get_strings_for_language(self, language: str) -> HelpLocaleStrings:
+        return _get_strings(language)
+
     async def _resolve_language(self, user_id: int) -> str:
         language = DEFAULT_LANGUAGE
         getter = getattr(self.bot, "get_user_language", None)
@@ -748,6 +751,14 @@ class Help(commands.Cog):
             except Exception:
                 language = DEFAULT_LANGUAGE
         return language
+
+    async def build_overview_embed_for_user(self, user_id: int) -> discord.Embed:
+        """Construit l'embed récapitulatif pour l'utilisateur fourni."""
+
+        language = await self._resolve_language(user_id)
+        strings = self._get_strings_for_language(language)
+        sections = self._get_sections(language)
+        return self._build_all_embed(sections, strings)
 
     @commands.command(name="help")
     async def help_command(self, ctx: commands.Context, *, query: Optional[str] = None) -> None:
