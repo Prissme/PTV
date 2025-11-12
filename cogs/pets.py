@@ -164,6 +164,101 @@ class PetMasteryPerks:
     rainbow_luck_multiplier: float = 1.0
 
 
+@dataclass(frozen=True)
+class GemshopState:
+    """Représente l'état actuel du magasin de slots de pets pour un joueur."""
+
+    grade_level: int
+    base_capacity: int
+    extra_slots: int
+    hard_cap: int
+    total_slots: int
+    max_extra_allowed: int
+    next_cost: int | None
+
+    @property
+    def has_reached_hard_cap(self) -> bool:
+        return self.total_slots >= self.hard_cap
+
+    @property
+    def can_purchase(self) -> bool:
+        return (
+            self.max_extra_allowed > 0
+            and self.extra_slots < self.max_extra_allowed
+            and not self.has_reached_hard_cap
+        )
+
+
+@dataclass(frozen=True)
+class GemshopPurchaseResult:
+    """Résultat d'une tentative d'achat dans le gemshop."""
+
+    embed: discord.Embed
+    state: GemshopState
+    success: bool
+
+
+class GemshopView(discord.ui.View):
+    """Affiche le gemshop avec un bouton d'achat interactif."""
+
+    def __init__(self, cog: "Pets", ctx: commands.Context, state: GemshopState) -> None:
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.ctx = ctx
+        self.state = state
+        self.message: discord.Message | None = None
+        self._lock = asyncio.Lock()
+        self._refresh_buttons()
+
+    def attach_message(self, message: discord.Message) -> None:
+        self.message = message
+
+    def _refresh_buttons(self) -> None:
+        label = "Acheter un slot"
+        if self.state.next_cost is not None:
+            label = f"Acheter un slot ({self.cog._format_slot_cost(self.state.next_cost)})"
+        self.buy_slot.label = label
+        self.buy_slot.disabled = not self.state.can_purchase
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul l'acheteur initial peut utiliser ce magasin.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        self.buy_slot.disabled = True
+        if self.message is None:
+            return
+        with contextlib.suppress(discord.HTTPException):
+            await self.message.edit(view=self)
+
+    @discord.ui.button(
+        label="Acheter un slot",
+        style=discord.ButtonStyle.green,
+        custom_id="gemshop:buy_slot",
+    )
+    async def buy_slot(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        del button
+        async with self._lock:
+            await interaction.response.defer(ephemeral=True, thinking=False)
+            result = await self.cog._attempt_gemshop_purchase(interaction.user)
+            self.state = result.state
+            self._refresh_buttons()
+            updated_embed = self.cog._render_gemshop_embed(
+                self.ctx.author, self.state
+            )
+            if self.message is not None:
+                with contextlib.suppress(discord.HTTPException):
+                    await self.message.edit(embed=updated_embed, view=self)
+            await interaction.followup.send(embed=result.embed, ephemeral=True)
+        
+
 def _compute_pet_mastery_perks(level: int) -> PetMasteryPerks:
     """Calcule les bonus actifs pour la maîtrise des pets."""
 
@@ -2833,145 +2928,190 @@ class Pets(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    @commands.command(name="gemshop")
-    async def gemshop(self, ctx: commands.Context, action: str | None = None) -> None:
-        await self.database.ensure_user(ctx.author.id)
-
-        grade_level = await self.database.get_grade_level(ctx.author.id)
-        extra_slots = await self.database.get_extra_pet_slots(ctx.author.id)
+    async def _fetch_gemshop_state(self, user_id: int) -> GemshopState:
+        grade_level = await self.database.get_grade_level(user_id)
+        extra_slots = await self.database.get_extra_pet_slots(user_id)
         base_capacity = BASE_PET_SLOTS + grade_level
         hard_cap = PET_SLOT_MAX_CAPACITY
         total_slots = min(hard_cap, base_capacity + extra_slots)
         max_extra_allowed = max(0, hard_cap - base_capacity)
+        next_cost: int | None = None
+        if (
+            max_extra_allowed > 0
+            and extra_slots < max_extra_allowed
+            and total_slots < hard_cap
+        ):
+            next_cost = self._compute_slot_purchase_cost(extra_slots)
+        return GemshopState(
+            grade_level=grade_level,
+            base_capacity=base_capacity,
+            extra_slots=extra_slots,
+            hard_cap=hard_cap,
+            total_slots=total_slots,
+            max_extra_allowed=max_extra_allowed,
+            next_cost=next_cost,
+        )
+
+    def _render_gemshop_embed(
+        self, user: discord.abc.User, state: GemshopState
+    ) -> discord.Embed:
+        lines = [
+            f"• Slots équipables : **{state.total_slots}/{state.hard_cap}**",
+            f"• Slots via les grades : **{state.base_capacity}**",
+            f"• Slots achetés : **{state.extra_slots}**",
+        ]
+
+        if state.can_purchase and state.next_cost is not None:
+            lines.append(
+                f"• Prochain slot : **{self._format_slot_cost(state.next_cost)}**"
+            )
+            lines.append(
+                "Appuie sur le bouton ci-dessous pour acheter un slot supplémentaire."
+            )
+        else:
+            if state.has_reached_hard_cap or state.base_capacity >= state.hard_cap:
+                lines.append(
+                    "Tu as déjà atteint la capacité maximale de pets équipés."
+                )
+            elif state.extra_slots >= state.max_extra_allowed:
+                lines.append(
+                    "Tu devras monter en grade pour débloquer de nouveaux achats de slots."
+                )
+            else:
+                lines.append("Le magasin est temporairement indisponible.")
+
+        description = "\n".join(lines)
+        embed = embeds.info_embed(description, title="💎 Gemshop")
+        embed.set_author(
+            name=user.display_name,
+            icon_url=user.display_avatar.url,
+        )
+        if state.can_purchase:
+            embed.set_footer(text="Le prix augmente à chaque slot acheté.")
+        return embed
+
+    async def _attempt_gemshop_purchase(
+        self, user: discord.abc.User
+    ) -> GemshopPurchaseResult:
+        state = await self._fetch_gemshop_state(user.id)
+
+        if state.has_reached_hard_cap or state.base_capacity >= state.hard_cap:
+            embed = embeds.error_embed(
+                "Tu as déjà atteint la capacité maximale de pets équipés."
+            )
+            return GemshopPurchaseResult(embed=embed, state=state, success=False)
+        if state.max_extra_allowed <= 0:
+            embed = embeds.error_embed(
+                "Tes grades te donnent déjà accès à tous les slots disponibles."
+            )
+            return GemshopPurchaseResult(embed=embed, state=state, success=False)
+        if state.extra_slots >= state.max_extra_allowed:
+            embed = embeds.error_embed(
+                "Tu devras monter en grade pour débloquer de nouveaux achats de slots."
+            )
+            return GemshopPurchaseResult(embed=embed, state=state, success=False)
+
+        price = self._compute_slot_purchase_cost(state.extra_slots)
+        balance_after: int | None = None
+
+        if PET_SLOT_SHOP_CURRENCY == "gem":
+            balance = await self.database.fetch_gems(user.id)
+            if balance < price:
+                missing = price - balance
+                embed = embeds.error_embed(
+                    f"Il te manque {self._format_slot_cost(missing)} pour acheter ce slot."
+                )
+                return GemshopPurchaseResult(embed=embed, state=state, success=False)
+            _, balance_after = await self.database.increment_gems(
+                user.id,
+                -price,
+                transaction_type="gemshop_slot",
+                description="Achat slot supplémentaire",
+            )
+        else:
+            balance = await self.database.fetch_balance(user.id)
+            if balance < price:
+                missing = price - balance
+                embed = embeds.error_embed(
+                    f"Il te manque {self._format_slot_cost(missing)} pour acheter ce slot."
+                )
+                return GemshopPurchaseResult(embed=embed, state=state, success=False)
+            _, balance_after = await self.database.increment_balance(
+                user.id,
+                -price,
+                transaction_type="gemshop_slot",
+                description="Achat slot supplémentaire",
+            )
+
+        _new_extra, added = await self.database.add_extra_pet_slot(
+            user.id, grade_level=state.grade_level
+        )
+        if not added:
+            if PET_SLOT_SHOP_CURRENCY == "gem":
+                await self.database.increment_gems(
+                    user.id,
+                    price,
+                    transaction_type="gemshop_refund",
+                    description="Remboursement slot pets",
+                )
+            else:
+                await self.database.increment_balance(
+                    user.id,
+                    price,
+                    transaction_type="gemshop_refund",
+                    description="Remboursement slot pets",
+                )
+            new_state = await self._fetch_gemshop_state(user.id)
+            embed = embeds.error_embed(
+                "Impossible d'ajouter un slot supplémentaire pour le moment. Tes fonds ont été remboursés."
+            )
+            return GemshopPurchaseResult(embed=embed, state=new_state, success=False)
+
+        new_state = await self._fetch_gemshop_state(user.id)
+        lines = [
+            f"Slot acheté pour {self._format_slot_cost(price)}.",
+            f"Tu peux maintenant équiper **{new_state.total_slots}** pet{'s' if new_state.total_slots > 1 else ''}.",
+        ]
+        if PET_SLOT_SHOP_CURRENCY == "gem" and balance_after is not None:
+            lines.append(f"Gemmes restantes : {embeds.format_gems(balance_after)}")
+        elif balance_after is not None:
+            lines.append(f"Solde restant : {embeds.format_currency(balance_after)}")
+
+        if new_state.can_purchase and new_state.next_cost is not None:
+            lines.append(
+                f"Prochain slot : {self._format_slot_cost(new_state.next_cost)}."
+            )
+            lines.append("Utilise le bouton du magasin ou `e!gemshop buy`.")
+        else:
+            if new_state.has_reached_hard_cap:
+                lines.append("Tu as atteint la capacité maximale de 40 pets équipés.")
+            elif new_state.extra_slots >= new_state.max_extra_allowed:
+                lines.append(
+                    "Tu as atteint la limite de slots disponible pour ton grade actuel."
+                )
+
+        embed = embeds.success_embed("\n".join(lines), title="💎 Gemshop")
+        return GemshopPurchaseResult(embed=embed, state=new_state, success=True)
+
+    @commands.command(name="gemshop")
+    async def gemshop(self, ctx: commands.Context, action: str | None = None) -> None:
+        await self.database.ensure_user(ctx.author.id)
+
+        state = await self._fetch_gemshop_state(ctx.author.id)
 
         normalized_action = (action or "").strip().lower().replace(" ", "")
         purchase_aliases = {"buy", "acheter", "slot", "buyslot", "acheterslot"}
         attempting_purchase = normalized_action in purchase_aliases
 
         if attempting_purchase:
-            if base_capacity >= hard_cap or max_extra_allowed <= 0:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Tu as déjà atteint la capacité maximale de pets équipés."
-                    )
-                )
-                return
-            if extra_slots >= max_extra_allowed:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Tu as déjà acheté tous les slots disponibles pour ton grade actuel."
-                    )
-                )
-                return
-
-            price = self._compute_slot_purchase_cost(extra_slots)
-            if PET_SLOT_SHOP_CURRENCY == "gem":
-                balance = await self.database.fetch_gems(ctx.author.id)
-                if balance < price:
-                    await ctx.send(
-                        embed=embeds.error_embed(
-                            f"Il te manque {self._format_slot_cost(price - balance)} pour acheter ce slot."
-                        )
-                    )
-                    return
-                _before, after = await self.database.increment_gems(
-                    ctx.author.id,
-                    -price,
-                    transaction_type="gemshop_slot",
-                    description="Achat slot supplémentaire",
-                )
-            else:
-                balance = await self.database.fetch_balance(ctx.author.id)
-                if balance < price:
-                    await ctx.send(
-                        embed=embeds.error_embed(
-                            f"Il te manque {self._format_slot_cost(price - balance)} pour acheter ce slot."
-                        )
-                    )
-                    return
-                _before, after = await self.database.increment_balance(
-                    ctx.author.id,
-                    -price,
-                    transaction_type="gemshop_slot",
-                    description="Achat slot supplémentaire",
-                )
-
-            new_extra, added = await self.database.add_extra_pet_slot(
-                ctx.author.id, grade_level=grade_level
-            )
-            if not added:
-                if PET_SLOT_SHOP_CURRENCY == "gem":
-                    await self.database.increment_gems(
-                        ctx.author.id,
-                        price,
-                        transaction_type="gemshop_refund",
-                        description="Remboursement slot pets",
-                    )
-                else:
-                    await self.database.increment_balance(
-                        ctx.author.id,
-                        price,
-                        transaction_type="gemshop_refund",
-                        description="Remboursement slot pets",
-                    )
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Impossible d'ajouter un slot supplémentaire pour le moment. Tes fonds ont été remboursés."
-                    )
-                )
-                return
-
-            extra_slots = new_extra
-            total_slots = min(hard_cap, base_capacity + extra_slots)
-            next_cost: int | None = None
-            if extra_slots < max_extra_allowed and total_slots < hard_cap:
-                next_cost = self._compute_slot_purchase_cost(extra_slots)
-
-            lines = [
-                f"Slot acheté pour {self._format_slot_cost(price)}.",
-                f"Tu peux maintenant équiper **{total_slots}** pet{'s' if total_slots > 1 else ''}.",
-            ]
-            if PET_SLOT_SHOP_CURRENCY == "gem":
-                lines.append(f"Gemmes restantes : {embeds.format_gems(after)}")
-            else:
-                lines.append(f"Solde restant : {embeds.format_currency(after)}")
-
-            if total_slots >= hard_cap or max_extra_allowed <= extra_slots:
-                lines.append("Tu as atteint la capacité maximale de 40 pets équipés.")
-            elif next_cost is not None:
-                lines.append(
-                    f"Prochain slot : {self._format_slot_cost(next_cost)} (commande `e!gemshop buy`)."
-                )
-
-            await ctx.send(
-                embed=embeds.success_embed("\n".join(lines), title="💎 Gemshop")
-            )
+            result = await self._attempt_gemshop_purchase(ctx.author)
+            await ctx.send(embed=result.embed)
             return
 
-        next_cost: int | None = None
-        if max_extra_allowed > 0 and extra_slots < max_extra_allowed and total_slots < hard_cap:
-            next_cost = self._compute_slot_purchase_cost(extra_slots)
-
-        info_lines = [
-            f"Slots actuels : **{total_slots}/{hard_cap}**",
-            f"Slots via les grades : **{base_capacity}**",
-            f"Slots achetés : **{extra_slots}**",
-        ]
-
-        if max_extra_allowed <= 0 or base_capacity >= hard_cap:
-            info_lines.append("Tes grades te donnent déjà un accès complet à la limite de slots.")
-        elif extra_slots >= max_extra_allowed:
-            info_lines.append(
-                "Tu devras monter en grade pour débloquer de nouveaux achats de slots."
-            )
-        elif next_cost is not None:
-            info_lines.append(
-                f"Prochain slot : {self._format_slot_cost(next_cost)} — utilise `e!gemshop buy`."
-            )
-
-        await ctx.send(
-            embed=embeds.info_embed("\n".join(info_lines), title="💎 Gemshop")
-        )
+        embed = self._render_gemshop_embed(ctx.author, state)
+        view = GemshopView(self, ctx, state)
+        message = await ctx.send(embed=embed, view=view)
+        view.attach_message(message)
 
     @commands.command(
         name="distributeur",
