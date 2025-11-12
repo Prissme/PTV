@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import logging
 import math
+import asyncio
+import os
 import random
 import sys
 from collections import defaultdict
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
@@ -45,6 +47,7 @@ from config import (
 )
 from utils.mastery import get_mastery_definition
 from utils.localization import DEFAULT_LANGUAGE, normalize_language
+from utils.enchantments import compute_prissbucks_multiplier, summarize_enchantments
 
 __all__ = [
     "Database",
@@ -138,6 +141,8 @@ class Database:
     """Gestionnaire de connexion PostgreSQL réduit aux besoins essentiels."""
 
     _INSTANCE_LOCK_KEY = (0x45534F42, 0x4F54504C)  # "ESOB"/"OTPL" packed into int32 pairs
+    _LOCK_WAIT_SECONDS = max(0, int(os.getenv("DB_LOCK_WAIT", "25")))
+    _LOCK_FORCE_TAKEOVER = os.getenv("DB_LOCK_FORCE", "1").lower() not in {"0", "false", "no"}
 
     def __init__(self, dsn: str, *, min_size: int = 1, max_size: int = 10) -> None:
         if not dsn:
@@ -179,12 +184,14 @@ class Database:
         dict[str, object],
         Dict[int, tuple[int, int]],
         dict[str, object],
+        dict[str, object],
         dict[str, float | int],
     ]:
         return (
             0,
             rows,
             float(elapsed_seconds),
+            {},
             {},
             {},
             {},
@@ -377,49 +384,76 @@ class Database:
         connection = await self.pool.acquire()
         key_class, key_object = self._INSTANCE_LOCK_KEY
         try:
-            # D'abord, vérifier si un verrou existe déjà
-            existing_lock = await connection.fetchval(
-                """
-                SELECT pid
-                FROM pg_locks
-                WHERE locktype = 'advisory'
-                  AND classid = $1::integer
-                  AND objid = $2::integer
-                LIMIT 1
-                """,
-                key_class,
-                key_object,
-            )
+            async def _current_lock_pid() -> Optional[int]:
+                return await connection.fetchval(
+                    """
+                    SELECT pid
+                    FROM pg_locks
+                    WHERE locktype = 'advisory'
+                      AND classid = $1::integer
+                      AND objid = $2::integer
+                    LIMIT 1
+                    """,
+                    key_class,
+                    key_object,
+                )
+
+            existing_lock = await _current_lock_pid()
 
             if existing_lock is not None:
-                # Vérifier si le processus qui détient le verrou existe toujours
                 process_exists = await connection.fetchval(
                     """
                     SELECT EXISTS(
                         SELECT 1 FROM pg_stat_activity WHERE pid = $1
                     )
                     """,
-                    int(existing_lock)
+                    int(existing_lock),
                 )
 
                 if not process_exists:
-                    # Le processus est mort, forcer la libération du verrou
                     logger.warning(
                         "Verrou orphelin détecté (PID %s mort), libération forcée...",
-                        existing_lock
+                        existing_lock,
                     )
                     await connection.execute(
                         "SELECT pg_advisory_unlock($1::integer, $2::integer)",
                         key_class,
                         key_object,
                     )
+                    existing_lock = None
 
-            # Tenter d'acquérir le verrou
             locked = await connection.fetchval(
                 "SELECT pg_try_advisory_lock($1::integer, $2::integer)",
                 key_class,
                 key_object,
             )
+
+            wait_seconds = self._LOCK_WAIT_SECONDS
+            while not locked and wait_seconds > 0:
+                await asyncio.sleep(1)
+                wait_seconds -= 1
+                locked = await connection.fetchval(
+                    "SELECT pg_try_advisory_lock($1::integer, $2::integer)",
+                    key_class,
+                    key_object,
+                )
+
+            if (not locked and existing_lock is not None and self._LOCK_FORCE_TAKEOVER):
+                logger.warning(
+                    "Instance précédente toujours active (PID %s), tentative de prise de contrôle...",
+                    existing_lock,
+                )
+                with suppress(Exception):
+                    await connection.execute(
+                        "SELECT pg_terminate_backend($1::integer)",
+                        int(existing_lock),
+                    )
+                await asyncio.sleep(2)
+                locked = await connection.fetchval(
+                    "SELECT pg_try_advisory_lock($1::integer, $2::integer)",
+                    key_class,
+                    key_object,
+                )
         except Exception as exc:
             await self.pool.release(connection)
             logger.exception("Impossible de récupérer le verrou d'instance")
@@ -788,6 +822,39 @@ class Database:
 
             await connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS plaza_auctions (
+                    id SERIAL PRIMARY KEY,
+                    seller_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    buyer_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
+                    item_type TEXT NOT NULL CHECK (item_type IN ('pet', 'ticket', 'potion', 'enchantment')),
+                    item_slug TEXT,
+                    item_power SMALLINT,
+                    quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+                    user_pet_id BIGINT REFERENCES user_pets(id) ON DELETE SET NULL,
+                    starting_bid BIGINT NOT NULL CHECK (starting_bid > 0),
+                    min_increment BIGINT NOT NULL CHECK (min_increment > 0),
+                    current_bid BIGINT NOT NULL DEFAULT 0 CHECK (current_bid >= 0),
+                    current_bidder_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
+                    buyout_price BIGINT,
+                    status VARCHAR(20) NOT NULL DEFAULT 'active',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    ends_at TIMESTAMPTZ NOT NULL,
+                    completed_at TIMESTAMPTZ
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_plaza_auction_status ON plaza_auctions(status)"
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_plaza_auction_ends ON plaza_auctions(ends_at)"
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_plaza_auction_seller ON plaza_auctions(seller_id)"
+            )
+
+            await connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS clans (
                     clan_id SERIAL PRIMARY KEY,
                     name TEXT UNIQUE NOT NULL,
@@ -886,6 +953,17 @@ class Database:
                     potion_slug TEXT NOT NULL,
                     quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
                     PRIMARY KEY (user_id, potion_slug)
+                )
+                """
+            )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_enchantments (
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    slug TEXT NOT NULL,
+                    power SMALLINT NOT NULL CHECK (power BETWEEN 1 AND 10),
+                    quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+                    PRIMARY KEY (user_id, slug, power)
                 )
                 """
             )
@@ -1230,6 +1308,108 @@ class Database:
                 user_id,
                 potion_slug,
             )
+
+    async def add_user_enchantment(
+        self,
+        user_id: int,
+        slug: str,
+        *,
+        power: int,
+        quantity: int = 1,
+        connection: asyncpg.Connection | None = None,
+    ) -> None:
+        if quantity <= 0:
+            raise ValueError("La quantité doit être positive pour un enchantement")
+        if power < 1 or power > 10:
+            raise ValueError("Le niveau d'enchantement doit être compris entre 1 et 10")
+
+        executor = connection or self.pool
+        await executor.execute(
+            """
+            INSERT INTO user_enchantments (user_id, slug, power, quantity)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (user_id, slug, power)
+            DO UPDATE SET quantity = user_enchantments.quantity + EXCLUDED.quantity
+            """,
+            user_id,
+            slug,
+            power,
+            quantity,
+        )
+
+    async def consume_user_enchantment(
+        self,
+        user_id: int,
+        slug: str,
+        *,
+        power: int,
+        quantity: int = 1,
+        connection: asyncpg.Connection | None = None,
+    ) -> bool:
+        if quantity <= 0:
+            return False
+        if power < 1 or power > 10:
+            return False
+
+        executor = connection or self.pool
+        row = await executor.fetchrow(
+            """
+            SELECT quantity
+            FROM user_enchantments
+            WHERE user_id = $1 AND slug = $2 AND power = $3
+            FOR UPDATE
+            """,
+            user_id,
+            slug,
+            power,
+        )
+        if row is None:
+            return False
+
+        current_qty = int(row.get("quantity") or 0)
+        if current_qty < quantity:
+            return False
+
+        new_qty = current_qty - quantity
+        if new_qty > 0:
+            await executor.execute(
+                """
+                UPDATE user_enchantments
+                SET quantity = $4
+                WHERE user_id = $1 AND slug = $2 AND power = $3
+                """,
+                user_id,
+                slug,
+                power,
+                new_qty,
+            )
+        else:
+            await executor.execute(
+                """
+                DELETE FROM user_enchantments
+                WHERE user_id = $1 AND slug = $2 AND power = $3
+                """,
+                user_id,
+                slug,
+                power,
+            )
+        return True
+
+    async def get_user_enchantments(self, user_id: int) -> Sequence[asyncpg.Record]:
+        await self.ensure_user(user_id)
+        return await self.pool.fetch(
+            """
+            SELECT slug, power, quantity
+            FROM user_enchantments
+            WHERE user_id = $1 AND quantity > 0
+            ORDER BY slug, power
+            """,
+            user_id,
+        )
+
+    async def get_enchantment_powers(self, user_id: int) -> Dict[str, int]:
+        rows = await self.get_user_enchantments(user_id)
+        return summarize_enchantments(rows)
 
         return True
 
@@ -3760,6 +3940,7 @@ class Database:
         dict[str, float | int],
     ]:
         await self.ensure_user(user_id)
+        enchantments = await self.get_enchantment_powers(user_id)
         # FIX: Fetch best non-huge income outside of the critical transaction to limit lock duration.
         best_non_huge_income = await self.get_best_non_huge_income(user_id)
         async with self.transaction() as connection:
@@ -3859,6 +4040,20 @@ class Database:
             raw_income = base_income_int + booster_result.extra_income
             if raw_income <= 0:
                 return self._build_empty_claim_result(rows, elapsed_seconds)
+
+            priss_power = int(enchantments.get("prissbucks", 0))
+            priss_multiplier = compute_prissbucks_multiplier(priss_power)
+            enchantment_info: dict[str, object] = {}
+            if priss_multiplier > 1.0:
+                boosted_by_enchant = int(round(raw_income * priss_multiplier))
+                bonus = max(0, boosted_by_enchant - raw_income)
+                raw_income = boosted_by_enchant
+                enchantment_info = {
+                    "slug": "prissbucks",
+                    "power": priss_power,
+                    "multiplier": priss_multiplier,
+                    "bonus": bonus,
+                }
 
             potion_bonus_amount = 0
             if potion_multiplier > 1.0:
@@ -3988,6 +4183,7 @@ class Database:
                 clan_info,
                 progress_updates,
                 potion_info,
+                enchantment_info,
                 rebirth_info,
             )
 
@@ -5079,6 +5275,522 @@ class Database:
             user_id,
             limit,
         )
+
+    # ------------------------------------------------------------------
+    # Enchères
+    # ------------------------------------------------------------------
+    async def _grant_auction_item(
+        self,
+        connection: asyncpg.Connection,
+        auction: Mapping[str, object],
+        winner_id: int,
+    ) -> None:
+        item_type = str(auction.get("item_type"))
+        quantity = int(auction.get("quantity", 1))
+        slug = auction.get("item_slug")
+        power = auction.get("item_power")
+        if item_type == "pet":
+            user_pet_id = int(auction.get("user_pet_id") or 0)
+            if user_pet_id <= 0:
+                raise DatabaseError("Pet introuvable pour cette enchère.")
+            await connection.execute(
+                """
+                UPDATE user_pets
+                SET user_id = $1, is_active = FALSE, on_market = FALSE
+                WHERE id = $2
+                """,
+                winner_id,
+                user_pet_id,
+            )
+        elif item_type == "ticket":
+            await self.add_raffle_tickets(
+                winner_id, amount=quantity, connection=connection
+            )
+        elif item_type == "potion":
+            if not slug:
+                raise DatabaseError("Potion inconnue pour cette enchère.")
+            await self.add_user_potion(
+                winner_id,
+                str(slug),
+                quantity=quantity,
+                connection=connection,
+            )
+        elif item_type == "enchantment":
+            if not slug or power is None:
+                raise DatabaseError("Enchantement invalide.")
+            await self.add_user_enchantment(
+                winner_id,
+                str(slug),
+                power=int(power),
+                quantity=quantity,
+                connection=connection,
+            )
+
+    async def _release_auction_item(
+        self,
+        connection: asyncpg.Connection,
+        auction: Mapping[str, object],
+    ) -> None:
+        item_type = str(auction.get("item_type"))
+        quantity = int(auction.get("quantity", 1))
+        slug = auction.get("item_slug")
+        power = auction.get("item_power")
+        seller_id = int(auction.get("seller_id") or 0)
+        if item_type == "pet":
+            user_pet_id = int(auction.get("user_pet_id") or 0)
+            if user_pet_id > 0:
+                await connection.execute(
+                    "UPDATE user_pets SET on_market = FALSE WHERE id = $1",
+                    user_pet_id,
+                )
+        elif item_type == "ticket":
+            await self.add_raffle_tickets(
+                seller_id, amount=quantity, connection=connection
+            )
+        elif item_type == "potion":
+            if slug:
+                await self.add_user_potion(
+                    seller_id,
+                    str(slug),
+                    quantity=quantity,
+                    connection=connection,
+                )
+        elif item_type == "enchantment":
+            if slug and power is not None:
+                await self.add_user_enchantment(
+                    seller_id,
+                    str(slug),
+                    power=int(power),
+                    quantity=quantity,
+                    connection=connection,
+                )
+
+    async def _credit_seller_from_auction(
+        self,
+        connection: asyncpg.Connection,
+        auction: Mapping[str, object],
+    ) -> None:
+        price = int(auction.get("current_bid") or 0)
+        if price <= 0:
+            return
+        seller_id = int(auction.get("seller_id") or 0)
+        buyer_id = int(auction.get("current_bidder_id") or 0)
+        seller_row = await connection.fetchrow(
+            "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
+            seller_id,
+        )
+        if seller_row is None:
+            raise DatabaseError("Vendeur introuvable pour l'enchère.")
+        before = int(seller_row.get("gems") or 0)
+        after = before + price
+        await connection.execute(
+            "UPDATE users SET gems = $1 WHERE user_id = $2",
+            after,
+            seller_id,
+        )
+        await self.record_transaction(
+            connection=connection,
+            user_id=seller_id,
+            transaction_type="auction_sale",
+            currency="gem",
+            amount=price,
+            balance_before=before,
+            balance_after=after,
+            description=f"Enchère #{int(auction.get('id') or 0)}",
+            related_user_id=buyer_id or None,
+        )
+
+    async def _finalize_auction_row(
+        self, connection: asyncpg.Connection, auction: Mapping[str, object]
+    ) -> asyncpg.Record:
+        auction_id = int(auction.get("id") or 0)
+        has_bidder = int(auction.get("current_bid") or 0) > 0 and auction.get(
+            "current_bidder_id"
+        )
+        if has_bidder:
+            updated = await connection.fetchrow(
+                """
+                UPDATE plaza_auctions
+                SET status = 'sold', buyer_id = current_bidder_id, completed_at = NOW()
+                WHERE id = $1
+                RETURNING *
+                """,
+                auction_id,
+            )
+            await self._grant_auction_item(
+                connection, updated, int(updated.get("current_bidder_id") or 0)
+            )
+            await self._credit_seller_from_auction(connection, updated)
+            return updated
+
+        await self._release_auction_item(connection, auction)
+        return await connection.fetchrow(
+            """
+            UPDATE plaza_auctions
+            SET status = 'cancelled', completed_at = NOW()
+            WHERE id = $1
+            RETURNING *
+            """,
+            auction_id,
+        )
+
+    async def complete_expired_auctions(self, limit: int = 10) -> int:
+        async with self.transaction() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT *
+                FROM plaza_auctions
+                WHERE status = 'active' AND ends_at <= NOW()
+                FOR UPDATE SKIP LOCKED
+                LIMIT $1
+                """,
+                limit,
+            )
+            for row in rows:
+                await self._finalize_auction_row(connection, row)
+        return len(rows)
+
+    async def list_active_auctions(
+        self, *, limit: int = 25
+    ) -> Sequence[asyncpg.Record]:
+        await self.complete_expired_auctions(limit=limit)
+        return await self.pool.fetch(
+            """
+            SELECT pa.*, p.name AS pet_name, up.is_gold, up.is_rainbow, up.is_shiny
+            FROM plaza_auctions AS pa
+            LEFT JOIN user_pets AS up ON pa.user_pet_id = up.id
+            LEFT JOIN pets AS p ON up.pet_id = p.pet_id
+            WHERE pa.status = 'active'
+            ORDER BY pa.ends_at ASC
+            LIMIT $1
+            """,
+            limit,
+        )
+
+    async def get_auction_listing(self, auction_id: int) -> Optional[asyncpg.Record]:
+        return await self.pool.fetchrow(
+            """
+            SELECT pa.*, p.name AS pet_name, up.is_gold, up.is_rainbow, up.is_shiny
+            FROM plaza_auctions AS pa
+            LEFT JOIN user_pets AS up ON pa.user_pet_id = up.id
+            LEFT JOIN pets AS p ON up.pet_id = p.pet_id
+            WHERE pa.id = $1
+            """,
+            auction_id,
+        )
+
+    async def get_user_auctions(
+        self, seller_id: int, limit: int = 10
+    ) -> Sequence[asyncpg.Record]:
+        return await self.pool.fetch(
+            """
+            SELECT pa.*, p.name AS pet_name, up.is_gold, up.is_rainbow, up.is_shiny
+            FROM plaza_auctions AS pa
+            LEFT JOIN user_pets AS up ON pa.user_pet_id = up.id
+            LEFT JOIN pets AS p ON up.pet_id = p.pet_id
+            WHERE pa.seller_id = $1
+            ORDER BY pa.created_at DESC
+            LIMIT $2
+            """,
+            seller_id,
+            max(1, limit),
+        )
+
+    async def create_pet_auction(
+        self,
+        seller_id: int,
+        user_pet_id: int,
+        *,
+        starting_bid: int,
+        duration_minutes: int,
+        buyout_price: int | None = None,
+        min_increment: int | None = None,
+    ) -> asyncpg.Record:
+        if starting_bid <= 0:
+            raise DatabaseError("Le prix de départ doit être supérieur à zéro.")
+        duration_minutes = max(15, min(duration_minutes, 1440))
+        increment = max(1, min_increment or max(1, starting_bid // 20))
+        if buyout_price is not None and buyout_price < starting_bid:
+            buyout_price = None
+        ends_at = datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
+
+        async with self.transaction() as connection:
+            pet_row = await connection.fetchrow(
+                """
+                SELECT id, user_id, is_active, on_market
+                FROM user_pets
+                WHERE id = $1
+                FOR UPDATE
+                """,
+                user_pet_id,
+            )
+            if pet_row is None:
+                raise DatabaseError("Pet introuvable pour cette enchère.")
+            if int(pet_row["user_id"]) != seller_id:
+                raise DatabaseError("Tu ne possèdes pas ce pet.")
+            if bool(pet_row.get("is_active")):
+                raise DatabaseError("Retire d'abord ce pet de tes actifs avant de lister une enchère.")
+            if bool(pet_row.get("on_market")):
+                raise DatabaseError("Ce pet est déjà listé ailleurs.")
+
+            await connection.execute(
+                "UPDATE user_pets SET on_market = TRUE WHERE id = $1",
+                user_pet_id,
+            )
+
+            record = await connection.fetchrow(
+                """
+                INSERT INTO plaza_auctions (
+                    seller_id, item_type, quantity, user_pet_id,
+                    starting_bid, min_increment, buyout_price, ends_at
+                )
+                VALUES ($1, 'pet', 1, $2, $3, $4, $5, $6)
+                RETURNING *
+                """,
+                seller_id,
+                user_pet_id,
+                starting_bid,
+                increment,
+                buyout_price,
+                ends_at,
+            )
+
+        if record is None:
+            raise DatabaseError("Impossible de créer l'enchère.")
+        return record
+
+    async def create_item_auction(
+        self,
+        seller_id: int,
+        *,
+        item_type: str,
+        quantity: int,
+        starting_bid: int,
+        duration_minutes: int,
+        buyout_price: int | None = None,
+        min_increment: int | None = None,
+        item_slug: str | None = None,
+        enchantment_power: int | None = None,
+    ) -> asyncpg.Record:
+        valid_types = {"ticket", "potion", "enchantment"}
+        if item_type not in valid_types:
+            raise DatabaseError("Type d'objet d'enchère invalide.")
+        if quantity <= 0:
+            raise DatabaseError("La quantité doit être positive.")
+        if starting_bid <= 0:
+            raise DatabaseError("Le prix de départ doit être supérieur à zéro.")
+        duration_minutes = max(15, min(duration_minutes, 1440))
+        increment = max(1, min_increment or max(1, starting_bid // 20))
+        if buyout_price is not None and buyout_price < starting_bid:
+            buyout_price = None
+        ends_at = datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
+
+        async with self.transaction() as connection:
+            if item_type == "ticket":
+                removed = await self.remove_raffle_tickets(
+                    seller_id, amount=quantity, connection=connection
+                )
+                if removed is None:
+                    raise DatabaseError("Tu n'as pas assez de tickets à miser.")
+                slug = "raffle_ticket"
+            elif item_type == "potion":
+                if not item_slug:
+                    raise DatabaseError("Précise la potion à mettre aux enchères.")
+                consumed = await self.consume_user_potion(
+                    seller_id,
+                    item_slug,
+                    quantity=quantity,
+                    connection=connection,
+                )
+                if not consumed:
+                    raise DatabaseError("Tu n'as pas assez d'exemplaires de cette potion.")
+                slug = item_slug
+            else:  # enchantment
+                if not item_slug or enchantment_power is None:
+                    raise DatabaseError("Précise l'enchantement et son niveau.")
+                removed = await self.consume_user_enchantment(
+                    seller_id,
+                    item_slug,
+                    power=enchantment_power,
+                    quantity=quantity,
+                    connection=connection,
+                )
+                if not removed:
+                    raise DatabaseError("Tu ne possèdes pas cet enchantement.")
+                slug = item_slug
+
+            record = await connection.fetchrow(
+                """
+                INSERT INTO plaza_auctions (
+                    seller_id, item_type, item_slug, item_power, quantity,
+                    starting_bid, min_increment, buyout_price, ends_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                RETURNING *
+                """,
+                seller_id,
+                item_type,
+                slug,
+                enchantment_power,
+                quantity,
+                starting_bid,
+                increment,
+                buyout_price,
+                ends_at,
+            )
+
+        if record is None:
+            raise DatabaseError("Impossible de créer l'enchère.")
+        return record
+
+    async def cancel_auction(self, auction_id: int, seller_id: int) -> asyncpg.Record:
+        async with self.transaction() as connection:
+            auction = await connection.fetchrow(
+                "SELECT * FROM plaza_auctions WHERE id = $1 FOR UPDATE",
+                auction_id,
+            )
+            if auction is None:
+                raise DatabaseError("Enchère introuvable.")
+            if str(auction.get("status")) != "active":
+                raise DatabaseError("Cette enchère est déjà terminée.")
+            if int(auction.get("seller_id") or 0) != seller_id:
+                raise DatabaseError("Tu ne peux pas annuler cette enchère.")
+            if auction.get("current_bidder_id"):
+                raise DatabaseError("Impossible d'annuler une enchère qui a déjà reçu une offre.")
+
+            await self._release_auction_item(connection, auction)
+            record = await connection.fetchrow(
+                """
+                UPDATE plaza_auctions
+                SET status = 'cancelled', completed_at = NOW()
+                WHERE id = $1
+                RETURNING *
+                """,
+                auction_id,
+            )
+
+        if record is None:
+            raise DatabaseError("Impossible d'annuler l'enchère.")
+        return record
+
+    async def place_auction_bid(
+        self, auction_id: int, bidder_id: int, amount: int
+    ) -> Mapping[str, object]:
+        if amount <= 0:
+            raise DatabaseError("Ton offre doit être supérieure à zéro.")
+        await self.ensure_user(bidder_id)
+
+        async with self.transaction() as connection:
+            auction = await connection.fetchrow(
+                "SELECT * FROM plaza_auctions WHERE id = $1 FOR UPDATE",
+                auction_id,
+            )
+            if auction is None:
+                raise DatabaseError("Cette enchère n'existe pas.")
+            if str(auction.get("status")) != "active":
+                raise DatabaseError("Cette enchère est déjà terminée.")
+            ends_at = auction.get("ends_at")
+            if isinstance(ends_at, datetime) and ends_at <= datetime.now(timezone.utc):
+                await self._finalize_auction_row(connection, auction)
+                raise DatabaseError("Trop tard, cette enchère vient de se terminer.")
+
+            current_bid = int(auction.get("current_bid") or 0)
+            min_increment = int(auction.get("min_increment") or 1)
+            starting_bid = int(auction.get("starting_bid") or 1)
+            minimum = starting_bid if current_bid <= 0 else current_bid + min_increment
+            if amount < minimum:
+                raise DatabaseError(
+                    "Ton offre doit être supérieure à la mise minimale en cours."
+                )
+
+            buyout_price = auction.get("buyout_price")
+            if buyout_price is not None:
+                buyout_price = int(buyout_price)
+            if buyout_price is not None and amount >= buyout_price:
+                amount = buyout_price
+
+            bidder_row = await connection.fetchrow(
+                "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
+                bidder_id,
+            )
+            if bidder_row is None:
+                raise DatabaseError("Impossible de récupérer ton solde.")
+            bidder_before = int(bidder_row.get("gems") or 0)
+            if bidder_before < amount:
+                raise InsufficientBalanceError("Solde de gemmes insuffisant pour cette enchère.")
+
+            new_bidder_balance = bidder_before - amount
+            await connection.execute(
+                "UPDATE users SET gems = $1 WHERE user_id = $2",
+                new_bidder_balance,
+                bidder_id,
+            )
+
+            previous_bidder = auction.get("current_bidder_id")
+            if previous_bidder:
+                prev_row = await connection.fetchrow(
+                    "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
+                    int(previous_bidder),
+                )
+                if prev_row:
+                    prev_before = int(prev_row.get("gems") or 0)
+                    prev_after = prev_before + current_bid
+                    await connection.execute(
+                        "UPDATE users SET gems = $1 WHERE user_id = $2",
+                        prev_after,
+                        int(previous_bidder),
+                    )
+                    await self.record_transaction(
+                        connection=connection,
+                        user_id=int(previous_bidder),
+                        transaction_type="auction_refund",
+                        currency="gem",
+                        amount=current_bid,
+                        balance_before=prev_before,
+                        balance_after=prev_after,
+                        description=f"Remboursement enchère #{auction_id}",
+                        related_user_id=bidder_id,
+                    )
+
+            now = datetime.now(timezone.utc)
+            status = "sold" if buyout_price is not None and amount >= buyout_price else "active"
+            updated = await connection.fetchrow(
+                """
+                UPDATE plaza_auctions
+                SET current_bid = $2,
+                    current_bidder_id = $3,
+                    buyer_id = CASE WHEN $4 = 'sold' THEN $3 ELSE buyer_id END,
+                    status = $4,
+                    completed_at = CASE WHEN $4 = 'sold' THEN $5 ELSE completed_at END
+                WHERE id = $1
+                RETURNING *
+                """,
+                auction_id,
+                amount,
+                bidder_id,
+                status,
+                now,
+            )
+
+            await self.record_transaction(
+                connection=connection,
+                user_id=bidder_id,
+                transaction_type="auction_bid",
+                currency="gem",
+                amount=-amount,
+                balance_before=bidder_before,
+                balance_after=new_bidder_balance,
+                description=f"Enchère #{auction_id}",
+                related_user_id=int(auction.get("seller_id") or 0) or None,
+            )
+
+            if status == "sold":
+                await self._grant_auction_item(
+                    connection, updated, int(updated.get("current_bidder_id") or 0)
+                )
+                await self._credit_seller_from_auction(connection, updated)
+
+        return updated
     async def get_database_stats(self) -> asyncpg.Record:
         query = """
             SELECT

@@ -21,6 +21,7 @@ from config import (
 from utils.formatting import format_currency, format_gems
 from utils.pet_formatting import PetDisplay, pet_emoji
 from utils.mastery import MasteryDefinition
+from utils.enchantments import ENCHANTMENT_DEFINITION_MAP, format_enchantment
 
 _BRANDING_REPLACEMENTS: dict[str, str] = {
     "Freescape": "PrissCup",
@@ -95,6 +96,7 @@ __all__ = [
     "egg_index_embed",
     "clan_overview_embed",
     "mastery_overview_embed",
+    "mastery_detail_embed",
 ]
 
 
@@ -828,6 +830,7 @@ def pet_claim_embed(
     booster: Mapping[str, float] | None = None,
     clan: Mapping[str, object] | None = None,
     potion: Mapping[str, object] | None = None,
+    enchantment: Mapping[str, object] | None = None,
 ) -> discord.Embed:
     displays = [PetDisplay.from_mapping(pet) for pet in pets]
     total_income = sum(display.income_per_hour for display in displays)
@@ -858,6 +861,20 @@ def pet_claim_embed(
             if remaining > 0:
                 potion_line += f" ({_format_duration(remaining)} restants)"
             extra_info.append(potion_line)
+    if enchantment:
+        slug = str(enchantment.get("slug") or "")
+        power = int(enchantment.get("power") or 0)
+        definition = ENCHANTMENT_DEFINITION_MAP.get(slug)
+        if definition and power > 0:
+            label = format_enchantment(definition, power)
+        else:
+            label = f"Enchantement puissance {power}" if power else "Enchantement actif"
+        multiplier = float(enchantment.get("multiplier", 1.0))
+        bonus = int(enchantment.get("bonus", 0))
+        line = f"{label} x{multiplier:.2f}"
+        if bonus > 0:
+            line += f" (+{format_currency(bonus)})"
+        extra_info.append(line)
     if clan:
         clan_name = str(clan.get("name", "Clan"))
         clan_multiplier = float(clan.get("multiplier", 1.0))
@@ -939,6 +956,59 @@ def mastery_overview_embed(
     if total_levels:
         embed.description += f"\n\nNiveau cumulé : **{_format_number(total_levels)}**"
 
+    return _finalize_embed(embed)
+
+
+def mastery_detail_embed(
+    *,
+    member: discord.abc.User,
+    mastery: MasteryDefinition,
+    progress: Mapping[str, object],
+    tiers: Sequence[Mapping[str, object]],
+) -> discord.Embed:
+    level = int(progress.get("level", 1) or 1)
+    max_level = int(progress.get("max_level", mastery.max_level) or mastery.max_level)
+    experience = int(progress.get("experience", 0) or 0)
+    xp_to_next = int(
+        progress.get("xp_to_next_level", mastery.required_xp(level))
+        or mastery.required_xp(level)
+    )
+    embed = _base_embed(
+        f"{mastery.display_name} — Bonus",
+        "Survole chaque palier pour préparer ta progression.",
+        color=Colors.INFO,
+    )
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+
+    lines = [f"Niveau actuel : **{level}/{max_level}**"]
+    if xp_to_next > 0:
+        ratio = experience / xp_to_next if xp_to_next else 0.0
+        remaining = max(0, xp_to_next - experience)
+        lines.append(
+            f"Progression : {_format_number(experience)} / {_format_number(xp_to_next)} XP ({ratio:.0%})"
+        )
+        lines.append(f"Il reste {_format_number(remaining)} XP pour le prochain niveau.")
+    else:
+        lines.append("Niveau maximal atteint ✅")
+    embed.description = "\n".join(lines)
+
+    tier_lines: list[str] = []
+    for tier in tiers:
+        tier_level = int(tier.get("level", 0) or 0)
+        title = str(tier.get("title", f"Niveau {tier_level}"))
+        description = str(tier.get("description", ""))
+        status = "✅" if level >= tier_level else "🔒"
+        tier_lines.append(f"{status} **Niveau {tier_level} — {title}**")
+        if description:
+            tier_lines.append(description)
+        tier_lines.append("")
+
+    tier_value = "Aucun palier défini pour cette maîtrise."
+    if tier_lines:
+        tier_value = "\n".join(tier_lines).strip()
+
+    embed.add_field(name="Bonus par palier", value=tier_value, inline=False)
+    embed.set_footer(text="Clique sur une autre maîtrise pour comparer ses paliers.")
     return _finalize_embed(embed)
 
 
