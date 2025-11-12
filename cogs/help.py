@@ -273,6 +273,15 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "aliases": ("bestpets", "autoequip"),
                 },
                 {
+                    "command": f"{PREFIX}gemshop",
+                    "description": "Achète des slots d'équipement supplémentaires contre des gemmes.",
+                },
+                {
+                    "command": f"{PREFIX}distributeur",
+                    "description": "Récupère une potion et un pet doré à Mexico (cooldown de 10 min).",
+                    "aliases": ("mexico",),
+                },
+                {
                     "command": f"{PREFIX}goldify",
                     "description": "Fusionne tes pets en version or pour booster leur puissance.",
                     "aliases": ("gold", "fusion"),

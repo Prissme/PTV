@@ -130,6 +130,11 @@ class GradeDefinition:
 
 
 BASE_PET_SLOTS: Final[int] = 4
+PET_SLOT_MAX_CAPACITY: Final[int] = 40
+PET_SLOT_SHOP_BASE_COST: Final[int] = 5_000
+PET_SLOT_SHOP_COST_GROWTH: Final[float] = 1.6
+PET_SLOT_SHOP_CURRENCY: Final[str] = "gem"
+MEXICO_DISTRIBUTOR_COOLDOWN: Final[timedelta] = timedelta(minutes=10)
 RAP_GOAL_UNIT: Final[int] = 50_000
 CASINO_LOSS_GOAL_UNIT: Final[int] = 5_000
 
