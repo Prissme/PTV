@@ -44,6 +44,15 @@ from config import (
 from utils import embeds
 from database.db import Database, DatabaseError, InsufficientBalanceError
 from utils.mastery import MASTERMIND_MASTERY, MasteryDefinition
+from utils.enchantments import (
+    compute_koth_bonus_factor,
+    compute_slots_multiplier,
+    get_source_label,
+    pick_random_enchantment,
+    roll_enchantment_power,
+    should_drop_enchantment,
+    format_enchantment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -294,6 +303,7 @@ class MastermindSession:
         mastery_perks: MastermindMasteryPerks | None = None,
         mastery_callback: Callable[[int, str], Awaitable[MastermindMasteryPerks | None]]
         | None = None,
+        enchantment_callback: Callable[[str], Awaitable[None]] | None = None,
         *,
         channel: discord.abc.Messageable | None = None,
     ) -> None:
@@ -314,6 +324,7 @@ class MastermindSession:
         self._logger = logger.getChild("MastermindSession")
         self.mastery_perks = mastery_perks or MastermindMasteryPerks()
         self.mastery_callback = mastery_callback
+        self.enchantment_callback = enchantment_callback
         self.raffle_ticket_total: int = 0
         self.raffle_pool_total: int | None = None
         self.channel: discord.abc.Messageable = channel or ctx.channel
@@ -510,6 +521,8 @@ class MastermindSession:
         )
         await self._maybe_award_mastermind_huge()
         await self._award_mastery_xp(MASTERMIND_VICTORY_XP, "victory")
+        if self.enchantment_callback is not None:
+            await self.enchantment_callback("mastermind")
 
     async def _handle_timeout(self) -> None:
         self.embed_color = Colors.ERROR
@@ -826,7 +839,12 @@ class CooldownManager:
 class MillionaireRaceSession:
     """Gestion d'une session de Millionaire Race."""
 
-    def __init__(self, ctx: commands.Context, database: Database) -> None:
+    def __init__(
+        self,
+        ctx: commands.Context,
+        database: Database,
+        enchantment_callback: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
         self.ctx = ctx
         self.database = database
         self.stage_index = 0
@@ -837,6 +855,7 @@ class MillionaireRaceSession:
         self.failed = False
         self.last_feedback: list[str] = []
         self.message: discord.Message | None = None
+        self.enchantment_callback = enchantment_callback
 
     @property
     def current_stage(self) -> MillionaireRaceStage | None:
@@ -966,6 +985,8 @@ class MillionaireRaceSession:
                 )
 
         self.last_feedback = feedback
+        if self.enchantment_callback is not None:
+            await self.enchantment_callback("race")
         return True
 
     async def _award_pet(self, pet_name: str) -> bool:
@@ -1420,6 +1441,35 @@ class Economy(commands.Cog):
             },
         )
         return True
+
+    async def _maybe_award_enchantment(
+        self,
+        user: discord.abc.User,
+        source: str,
+        *,
+        channel: discord.abc.Messageable | None = None,
+    ) -> None:
+        if not should_drop_enchantment(source):
+            return
+        definition = pick_random_enchantment()
+        power = roll_enchantment_power()
+        try:
+            await self.database.add_user_enchantment(user.id, definition.slug, power)
+        except DatabaseError:
+            logger.exception(
+                "Impossible d'attribuer l'enchantement", extra={"user_id": user.id}
+            )
+            return
+        label = get_source_label(source)
+        embed = embeds.success_embed(
+            f"{user.mention} obtient {format_enchantment(definition, power)} grâce à {label} !",
+            title="✨ Enchantement obtenu",
+        )
+        destination: discord.abc.Messageable | None = channel or None
+        if destination is None:
+            destination = user
+        with contextlib.suppress(discord.HTTPException, discord.Forbidden):
+            await destination.send(embed=embed)
 
     async def _maybe_award_casino_titanic(self, ctx: commands.Context, bet: int) -> bool:
         if bet > 1_000:
@@ -1930,6 +1980,8 @@ class Economy(commands.Cog):
             return
 
         await self.database.ensure_user(ctx.author.id)
+        enchantments = await self.database.get_enchantment_powers(ctx.author.id)
+        slots_power = int(enchantments.get("slots_luck", 0))
         balance = await self.database.fetch_balance(ctx.author.id)
         if balance < bet:
             await ctx.send(
@@ -1948,6 +2000,14 @@ class Economy(commands.Cog):
 
         reels = random.choices(SLOT_REELS, weights=SLOT_WEIGHTS, k=3)
         multiplier, message = self._evaluate_slots(reels)
+        if slots_power > 0:
+            if multiplier > 0:
+                bonus_mult = compute_slots_multiplier(slots_power)
+                boosted = int(round(multiplier * bonus_mult))
+                multiplier = max(multiplier, boosted)
+            elif random.random() <= min(0.5, slots_power * 0.02):
+                multiplier = 1
+                message = "Tes enchantements te remboursent ta mise !"
         payout = bet * multiplier
         final_balance = balance_after_bet
         if payout:
@@ -2030,6 +2090,9 @@ class Economy(commands.Cog):
         ) -> MastermindMasteryPerks | None:
             return await self._process_mastermind_mastery_xp(ctx, amount, reason)
 
+        async def enchantment_callback(_: str) -> None:
+            await self._maybe_award_enchantment(ctx.author, "mastermind", channel=ctx.channel)
+
         try:
             dm_channel = await ctx.author.create_dm()
         except discord.Forbidden:
@@ -2054,6 +2117,7 @@ class Economy(commands.Cog):
             potion_callback=self._maybe_award_potion,
             mastery_perks=mastery_perks,
             mastery_callback=mastery_callback,
+            enchantment_callback=enchantment_callback,
             channel=dm_channel,
         )
         try:
@@ -2094,7 +2158,12 @@ class Economy(commands.Cog):
                 self._active_race_players.discard(ctx.author.id)
                 release_called = True
 
-        session = MillionaireRaceSession(ctx, self.database)
+        async def race_enchantment_callback(_: str) -> None:
+            await self._maybe_award_enchantment(ctx.author, "race", channel=ctx.channel)
+
+        session = MillionaireRaceSession(
+            ctx, self.database, enchantment_callback=race_enchantment_callback
+        )
         view = MillionaireRaceView(session, release)
         embed = session.build_embed()
 
@@ -2133,7 +2202,17 @@ class Economy(commands.Cog):
                 continue
 
             await self.database.update_koth_roll_timestamp(guild_id, timestamp=now)
-            if random.randint(1, KOTH_HUGE_CHANCE_DENOMINATOR) != 1:
+            try:
+                enchantments = await self.database.get_enchantment_powers(king_id)
+            except Exception:
+                enchantments = {}
+            koth_factor = compute_koth_bonus_factor(
+                int(enchantments.get("koth_luck", 0))
+            )
+            effective_denominator = max(
+                1, int(round(KOTH_HUGE_CHANCE_DENOMINATOR / max(1.0, koth_factor)))
+            )
+            if random.randint(1, effective_denominator) != 1:
                 continue
 
             pet_id = await self.database.get_pet_id_by_name(HUGE_BO_NAME)

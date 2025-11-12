@@ -36,6 +36,11 @@ class _DummyDatabase(Database):
     ) -> int:  # pragma: no cover - stub
         return 0
 
+    async def get_enchantment_powers(
+        self, user_id: int
+    ) -> dict[str, int]:  # pragma: no cover - stub
+        return {}
+
     @asynccontextmanager
     async def transaction(self):  # pragma: no cover - stub
         yield _DummyConnection()
@@ -48,6 +53,7 @@ def test_claim_income_returns_consistent_tuple_length() -> None:
         0,
         [],
         0.0,
+        {},
         {},
         {},
         {},

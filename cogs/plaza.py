@@ -14,6 +14,7 @@ from discord.ext import commands
 from config import POTION_DEFINITION_MAP, PET_DEFINITIONS, PetDefinition, PotionDefinition
 from database.db import DatabaseError, InsufficientBalanceError
 from utils import embeds
+from utils.enchantments import ENCHANTMENT_DEFINITION_MAP, format_enchantment
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,7 @@ class PlazaListingsView(discord.ui.View):
     def __init__(
         self,
         *,
+        plaza: "Plaza",
         author: discord.abc.User,
         sellers: Sequence[SellerListings],
         recent_lines: Sequence[str],
@@ -105,6 +107,7 @@ class PlazaListingsView(discord.ui.View):
         hidden_count: int = 0,
     ) -> None:
         super().__init__(timeout=180)
+        self.plaza = plaza
         self.author = author
         self.sellers: tuple[SellerListings, ...] = tuple(sellers)
         self.recent_lines: tuple[str, ...] = tuple(recent_lines)
@@ -196,6 +199,13 @@ class PlazaListingsView(discord.ui.View):
                 child.disabled = True
 
         await self.message.edit(view=self)
+
+    @discord.ui.button(label="Ventes aux enchères", style=discord.ButtonStyle.success)
+    async def auction_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        del button
+        await self.plaza._open_auction_browser(interaction, self.author)
 
 
 class StandPetListingModal(discord.ui.Modal):
@@ -813,6 +823,149 @@ class Plaza(commands.Cog):
             return f"#{listing_id} • {name} — {price} • {timestamp}"
         return f"#{listing_id} • {name} — {price}"
 
+    def _format_enchantment_label(self, slug: str, power: int) -> str:
+        definition = ENCHANTMENT_DEFINITION_MAP.get(slug)
+        if definition:
+            return f"✨ {format_enchantment(definition, power)}"
+        return f"✨ {slug} (puissance {power})"
+
+    def _format_auction_item(self, record: Mapping[str, object]) -> str:
+        item_type = str(record.get("item_type", ""))
+        quantity = int(record.get("quantity", 1))
+        if item_type == "pet":
+            return self._format_pet_record(record)
+        if item_type == "ticket":
+            return f"🎟️ Tickets x{quantity}"
+        if item_type == "potion":
+            slug = str(record.get("item_slug") or "")
+            definition = POTION_DEFINITION_MAP.get(slug)
+            name = definition.name if definition else slug
+            return f"🧪 {name} x{quantity}"
+        if item_type == "enchantment":
+            slug = str(record.get("item_slug") or "")
+            power = int(record.get("item_power") or 0)
+            return self._format_enchantment_label(slug, power)
+        return "🛒 Objet mystère"
+
+    def _format_auction_line(
+        self, record: Mapping[str, object], *, include_status: bool = False
+    ) -> str:
+        listing_id = int(record.get("id", 0))
+        item_label = self._format_auction_item(record)
+        current_bid = int(record.get("current_bid") or 0)
+        starting_bid = int(record.get("starting_bid") or 0)
+        price_label = embeds.format_gems(current_bid or starting_bid)
+        price_text = (
+            f"Offre actuelle {price_label}"
+            if current_bid > 0
+            else f"Mise départ {price_label}"
+        )
+        ends_at = record.get("ends_at")
+        if isinstance(ends_at, datetime):
+            end_text = discord.utils.format_dt(ends_at, style="R")
+        else:
+            end_text = "bientôt"
+        seller_id = int(record.get("seller_id") or 0)
+        buyout = record.get("buyout_price")
+        buyout_text = (
+            f" • Achat direct {embeds.format_gems(int(buyout))}"
+            if buyout
+            else ""
+        )
+        line = (
+            f"#{listing_id} • {item_label} — {price_text}{buyout_text} • Fin {end_text}"
+            f" • Vendeur : <@{seller_id}>"
+        )
+        if include_status:
+            status = str(record.get("status", "active"))
+            if status != "active":
+                status_label = "Terminé" if status == "sold" else "Annulé"
+                line += f" • Statut : {status_label}"
+        return line
+
+    async def _build_auction_overview_embed(
+        self, member: discord.abc.User
+    ) -> discord.Embed:
+        try:
+            listings = await self.database.list_active_auctions(limit=25)
+        except DatabaseError as exc:
+            return embeds.error_embed(str(exc))
+
+        if not listings:
+            embed = embeds.info_embed(
+                "Aucune enchère active pour le moment.",
+                title="⚖️ Ventes aux enchères",
+            )
+            embed.set_footer(
+                text="Crée ta première enchère avec e!auction pet/potion/enchant."
+            )
+            if getattr(member, "display_avatar", None):
+                embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+            return embed
+
+        lines = [self._format_auction_line(record) for record in listings]
+        embed = embeds.info_embed(
+            "\n".join(lines),
+            title="⚖️ Ventes aux enchères",
+        )
+        if getattr(member, "display_avatar", None):
+            embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+        embed.set_footer(text="Participe avec e!auction bid <id> <montant>.")
+        return embed
+
+    async def _open_auction_browser(
+        self, interaction: discord.Interaction, member: discord.abc.User
+    ) -> None:
+        view = AuctionBrowserView(self, member)
+        embed = await self._build_auction_overview_embed(member)
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(
+                embed=embed, view=view, ephemeral=True
+            )
+        with contextlib.suppress(discord.HTTPException):
+            view.message = await interaction.original_response()
+
+    async def _build_user_auction_embed(
+        self, member: discord.abc.User
+    ) -> discord.Embed:
+        try:
+            listings = await self.database.get_user_auctions(member.id, limit=15)
+        except DatabaseError as exc:
+            return embeds.error_embed(str(exc))
+
+        if not listings:
+            embed = embeds.info_embed(
+                "Tu n'as aucune enchère active pour le moment.",
+                title="⚖️ Mes enchères",
+            )
+        else:
+            lines = [
+                self._format_auction_line(record, include_status=True)
+                for record in listings
+            ]
+            embed = embeds.info_embed("\n".join(lines), title="⚖️ Mes enchères")
+        if getattr(member, "display_avatar", None):
+            embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+        embed.set_footer(text="Crée une enchère avec e!auction pet/potion/ticket/enchant.")
+        return embed
+
+    async def _send_auction_creation_embed(
+        self, ctx: commands.Context, listing_id: int
+    ) -> None:
+        detailed = await self.database.get_auction_listing(listing_id)
+        if detailed is None:
+            await ctx.send(
+                embed=embeds.success_embed(
+                    "Enchère créée avec succès.", title="Nouvelle enchère"
+                )
+            )
+            return
+        line = self._format_auction_line(detailed)
+        embed = embeds.success_embed(line, title="Enchère publiée")
+        await ctx.send(embed=embed)
+
     @staticmethod
     def _listing_sort_key(record: Mapping[str, object]) -> tuple[int, float]:
         price = int(record.get("price", 0))
@@ -1209,6 +1362,182 @@ class Plaza(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    @commands.group(name="auction", invoke_without_command=True)
+    async def auction_group(self, ctx: commands.Context) -> None:
+        embed = await self._build_user_auction_embed(ctx.author)
+        await ctx.send(embed=embed)
+
+    @auction_group.command(name="pet")
+    async def auction_pet(
+        self,
+        ctx: commands.Context,
+        starting_bid: int,
+        duration_minutes: int,
+        buyout: int | None = None,
+        *,
+        pet: str,
+    ) -> None:
+        record, display, error = await self._resolve_pet(ctx.author.id, pet)
+        if error:
+            await ctx.send(embed=embeds.error_embed(error))
+            return
+        if record is None:
+            await ctx.send(embed=embeds.error_embed("Pet introuvable."))
+            return
+        user_pet_id = int(record.get("id") or 0)
+        try:
+            listing = await self.database.create_pet_auction(
+                ctx.author.id,
+                user_pet_id,
+                starting_bid=starting_bid,
+                duration_minutes=duration_minutes,
+                buyout_price=buyout,
+            )
+        except DatabaseError as exc:
+            await ctx.send(embed=embeds.error_embed(str(exc)))
+            return
+        await self._send_auction_creation_embed(ctx, int(listing["id"]))
+
+    @auction_group.command(name="ticket")
+    async def auction_ticket(
+        self,
+        ctx: commands.Context,
+        quantity: int,
+        starting_bid: int,
+        duration_minutes: int,
+        buyout: int | None = None,
+    ) -> None:
+        if quantity <= 0:
+            await ctx.send(embed=embeds.error_embed("La quantité doit être positive."))
+            return
+        try:
+            listing = await self.database.create_item_auction(
+                ctx.author.id,
+                item_type="ticket",
+                item_slug="raffle_ticket",
+                quantity=quantity,
+                starting_bid=starting_bid,
+                duration_minutes=duration_minutes,
+                buyout_price=buyout,
+            )
+        except DatabaseError as exc:
+            await ctx.send(embed=embeds.error_embed(str(exc)))
+            return
+        await self._send_auction_creation_embed(ctx, int(listing["id"]))
+
+    @auction_group.command(name="potion")
+    async def auction_potion(
+        self,
+        ctx: commands.Context,
+        slug: str,
+        quantity: int,
+        starting_bid: int,
+        duration_minutes: int,
+        buyout: int | None = None,
+    ) -> None:
+        if quantity <= 0:
+            await ctx.send(embed=embeds.error_embed("La quantité doit être positive."))
+            return
+        try:
+            listing = await self.database.create_item_auction(
+                ctx.author.id,
+                item_type="potion",
+                item_slug=slug.lower(),
+                quantity=quantity,
+                starting_bid=starting_bid,
+                duration_minutes=duration_minutes,
+                buyout_price=buyout,
+            )
+        except DatabaseError as exc:
+            await ctx.send(embed=embeds.error_embed(str(exc)))
+            return
+        await self._send_auction_creation_embed(ctx, int(listing["id"]))
+
+    @auction_group.command(name="enchant", aliases=("enchantment", "enchantement"))
+    async def auction_enchantment(
+        self,
+        ctx: commands.Context,
+        slug: str,
+        power: int,
+        starting_bid: int,
+        duration_minutes: int,
+        buyout: int | None = None,
+    ) -> None:
+        if slug not in ENCHANTMENT_DEFINITION_MAP:
+            await ctx.send(embed=embeds.error_embed("Cet enchantement est inconnu."))
+            return
+        if power < 1 or power > 10:
+            await ctx.send(
+                embed=embeds.error_embed("Le niveau doit être compris entre 1 et 10.")
+            )
+            return
+        try:
+            listing = await self.database.create_item_auction(
+                ctx.author.id,
+                item_type="enchantment",
+                item_slug=slug,
+                enchantment_power=power,
+                quantity=1,
+                starting_bid=starting_bid,
+                duration_minutes=duration_minutes,
+                buyout_price=buyout,
+            )
+        except DatabaseError as exc:
+            await ctx.send(embed=embeds.error_embed(str(exc)))
+            return
+        await self._send_auction_creation_embed(ctx, int(listing["id"]))
+
+    @auction_group.command(name="bid")
+    async def auction_bid(
+        self, ctx: commands.Context, auction_id: int, amount: int
+    ) -> None:
+        try:
+            await self.database.place_auction_bid(auction_id, ctx.author.id, amount)
+        except InsufficientBalanceError as exc:
+            await ctx.send(embed=embeds.error_embed(str(exc)))
+            return
+        except DatabaseError as exc:
+            await ctx.send(embed=embeds.error_embed(str(exc)))
+            return
+
+        detailed = await self.database.get_auction_listing(auction_id)
+        if detailed is None:
+            await ctx.send(
+                embed=embeds.success_embed(
+                    "Ton offre a été enregistrée.", title="Enchère mise à jour"
+                )
+            )
+            return
+        status = str(detailed.get("status", "active"))
+        if status == "sold":
+            summary = "Tu remportes immédiatement cette enchère !"
+        else:
+            summary = "Tu es désormais l'enchérisseur principal."
+        line = self._format_auction_line(detailed)
+        embed = embeds.success_embed(
+            f"{line}\n{summary}",
+            title="Offre enregistrée",
+        )
+        await ctx.send(embed=embed)
+
+    @auction_group.command(name="cancel")
+    async def auction_cancel(self, ctx: commands.Context, auction_id: int) -> None:
+        try:
+            listing = await self.database.cancel_auction(auction_id, ctx.author.id)
+        except DatabaseError as exc:
+            await ctx.send(embed=embeds.error_embed(str(exc)))
+            return
+        line = self._format_auction_line(listing, include_status=True)
+        await ctx.send(
+            embed=embeds.success_embed(
+                f"{line}\nTes objets ont été restitués.", title="Enchère annulée"
+            )
+        )
+
+    @auction_group.command(name="list")
+    async def auction_list(self, ctx: commands.Context) -> None:
+        embed = await self._build_auction_overview_embed(ctx.author)
+        await ctx.send(embed=embed)
         seller_user: Optional[discord.abc.User]
         if seller is not None:
             seller_user = seller
@@ -1351,6 +1680,7 @@ class Plaza(commands.Cog):
             ][:10]
 
             view = PlazaListingsView(
+                plaza=self,
                 author=ctx.author,
                 sellers=visible_sellers,
                 recent_lines=recent_lines,
@@ -1379,6 +1709,60 @@ class Plaza(commands.Cog):
                 embed=conso_view.get_embed("all"), view=conso_view
             )
             conso_view.message = conso_message
+
+
+class AuctionBrowserView(discord.ui.View):
+    """Vue permettant de rafraîchir la liste des enchères actives."""
+
+    def __init__(self, plaza: "Plaza", author: discord.abc.User) -> None:
+        super().__init__(timeout=120)
+        self.plaza = plaza
+        self.author = author
+        self.message: Optional[discord.Message] = None
+
+    async def refresh(self, interaction: discord.Interaction | None = None) -> None:
+        embed = await self.plaza._build_auction_overview_embed(self.author)
+        if interaction is not None:
+            await interaction.response.edit_message(embed=embed, view=self)
+        elif self.message is not None:
+            await self.message.edit(embed=embed, view=self)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message(
+                "Seul l'initiateur de la plaza peut actualiser ces enchères.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message is not None:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=self)
+
+    @discord.ui.button(label="Actualiser", style=discord.ButtonStyle.primary)
+    async def refresh_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        del button
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Fermer", style=discord.ButtonStyle.secondary)
+    async def close_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        del button
+        for child in self.children:
+            child.disabled = True
+        self.stop()
+        if interaction.response.is_done():
+            if self.message is not None:
+                await self.message.edit(view=self)
+        else:
+            await interaction.response.edit_message(view=self)
 
 
 async def setup(bot: commands.Bot) -> None:

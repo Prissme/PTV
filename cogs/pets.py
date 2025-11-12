@@ -75,8 +75,22 @@ from cogs.economy import (
     MASTERMIND_HUGE_MAX_CHANCE,
     MASTERMIND_HUGE_MIN_CHANCE,
 )
-from utils.mastery import EGG_MASTERY, PET_MASTERY, MasteryDefinition, iter_masteries
+from utils.mastery import (
+    EGG_MASTERY,
+    PET_MASTERY,
+    MASTERMIND_MASTERY,
+    MasteryDefinition,
+    iter_masteries,
+)
 from database.db import ActivePetLimitError, DatabaseError, InsufficientBalanceError
+from utils.enchantments import (
+    compute_egg_luck_bonus,
+    get_source_label,
+    pick_random_enchantment,
+    roll_enchantment_power,
+    should_drop_enchantment,
+    format_enchantment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +210,94 @@ class GemshopPurchaseResult:
     embed: discord.Embed
     state: GemshopState
     success: bool
+
+
+@dataclass(frozen=True)
+class MasteryTier:
+    level: int
+    title: str
+    description: str
+
+
+_EGG_MASTERY_TIERS: tuple[MasteryTier, ...] = (
+    MasteryTier(5, "Ouverture double", "5% de chance supplémentaire d'ouvrir un œuf bonus."),
+    MasteryTier(10, "Reflets dorés", "+3% de chance qu'un œuf devienne gold."),
+    MasteryTier(
+        20,
+        "Arc-en-ciel express",
+        "Animations deux fois plus rapides et +1% de chance d'œuf rainbow.",
+    ),
+    MasteryTier(
+        30,
+        "Session frénétique",
+        "15% de doubles ouvertures et 1% de triples coups d'œil.",
+    ),
+    MasteryTier(
+        40,
+        "Run légendaire",
+        "20% de doubles, 3% de triples, +5% or et +2% rainbow.",
+    ),
+    MasteryTier(
+        50,
+        "Jackpot permanent",
+        "35% de doubles, 10% de triples, +10% or et +4% rainbow.",
+    ),
+    MasteryTier(64, "Instinct cosmique", "+1.0 de luck constant sur tous les œufs."),
+)
+
+_PET_MASTERY_TIERS: tuple[MasteryTier, ...] = (
+    MasteryTier(
+        5,
+        "Atelier fusion",
+        "Débloque la fusion, l'auto goldify et +1% de shiny via les œufs.",
+    ),
+    MasteryTier(10, "Artisan patient", "10% de chance de fusion double."),
+    MasteryTier(
+        20,
+        "Forge colorée",
+        "+3% de shiny sur les goldifies et +1% sur les rainbowifies.",
+    ),
+    MasteryTier(
+        30,
+        "Orfèvre spectral",
+        "Active l'auto rainbowify et booste la chance shiny des œufs à 3%.",
+    ),
+    MasteryTier(
+        40,
+        "Fusions maîtrisées",
+        "35% de doubles fusions et 10% de triples réussies.",
+    ),
+    MasteryTier(
+        50,
+        "Légende des altérations",
+        "50% de doubles, +5% shiny œufs et goldify, +3% shiny rainbowify.",
+    ),
+    MasteryTier(
+        64,
+        "Génie du polissage",
+        "Shiny œufs x1.2, luck gold x1.5 et luck rainbow x1.3.",
+    ),
+)
+
+_MASTERMIND_TIERS: tuple[MasteryTier, ...] = (
+    MasteryTier(5, "Échauffement", "Récompenses Mastermind doublées."),
+    MasteryTier(10, "Mentaliste", "Total x8 et potions qui tombent deux fois plus."),
+    MasteryTier(
+        20,
+        "Visionnaire",
+        "Total x16 et une couleur en moins à deviner.",
+    ),
+    MasteryTier(30, "Chasseur d'Oni", "Chance de Kenji Oni doublée."),
+    MasteryTier(40, "Architecte", "Total x64 après chaque victoire."),
+    MasteryTier(50, "Maître absolu", "Total x256 sur les gains Mastermind."),
+    MasteryTier(64, "Grand stratège", "Deux couleurs en moins et rôle ultime."),
+)
+
+_MASTERY_TIERS: dict[str, tuple[MasteryTier, ...]] = {
+    EGG_MASTERY.slug: _EGG_MASTERY_TIERS,
+    PET_MASTERY.slug: _PET_MASTERY_TIERS,
+    MASTERMIND_MASTERY.slug: _MASTERMIND_TIERS,
+}
 
 
 class GemshopView(discord.ui.View):
@@ -565,6 +667,101 @@ class PetSelectionView(discord.ui.View):
             with contextlib.suppress(discord.HTTPException):
                 await self.message.edit(view=self)
 
+
+class MasteryDetailButton(discord.ui.Button["MasteryOverviewView"]):
+    """Bouton ouvrant un résumé détaillé d'une maîtrise."""
+
+    def __init__(
+        self,
+        *,
+        ctx: commands.Context,
+        mastery: MasteryDefinition,
+        progress: Mapping[str, object] | None,
+        tiers: Sequence[MasteryTier],
+    ) -> None:
+        super().__init__(label=mastery.display_name, style=discord.ButtonStyle.primary)
+        self.ctx = ctx
+        self.mastery = mastery
+        self.progress: Dict[str, object] = dict(progress or {})
+        self._tier_payload = [
+            {
+                "level": tier.level,
+                "title": tier.title,
+                "description": tier.description,
+            }
+            for tier in tiers
+        ]
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul le propriétaire de la commande peut consulter ces détails.",
+                ephemeral=True,
+            )
+            return
+        embed = embeds.mastery_detail_embed(
+            member=self.ctx.author,
+            mastery=self.mastery,
+            progress=self.progress,
+            tiers=self._tier_payload,
+        )
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class MasteryOverviewView(discord.ui.View):
+    """Vue listant les maîtrises et offrant des boutons de détail."""
+
+    def __init__(
+        self,
+        ctx: commands.Context,
+        masteries: Sequence[MasteryDefinition],
+        progress: Mapping[str, Mapping[str, object]],
+    ) -> None:
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.message: discord.Message | None = None
+        added_button = False
+        for mastery in masteries:
+            tiers = _MASTERY_TIERS.get(mastery.slug)
+            if not tiers:
+                continue
+            button = MasteryDetailButton(
+                ctx=ctx,
+                mastery=mastery,
+                progress=progress.get(mastery.slug),
+                tiers=tiers,
+            )
+            self.add_item(button)
+            added_button = True
+        if not added_button:
+            self.add_item(
+                discord.ui.Button(
+                    label="Aucun détail disponible",
+                    style=discord.ButtonStyle.secondary,
+                    disabled=True,
+                )
+            )
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul le propriétaire de la commande peut utiliser ces boutons.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message is not None:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=self)
+
+
 class Pets(commands.Cog):
     """Commande de collection de pets inspirée de Brawl Stars."""
 
@@ -747,6 +944,27 @@ class Pets(commands.Cog):
             is_gold = False
         is_shiny = self._roll_chance(shiny_chance)
         return is_gold, is_rainbow, False, is_shiny
+
+    async def _maybe_award_enchantment(
+        self, ctx: commands.Context, source: str
+    ) -> None:
+        if not should_drop_enchantment(source):
+            return
+        definition = pick_random_enchantment()
+        power = roll_enchantment_power()
+        try:
+            await self.database.add_user_enchantment(ctx.author.id, definition.slug, power)
+        except DatabaseError:
+            logger.exception(
+                "Impossible d'attribuer un enchantement", extra={"user_id": ctx.author.id}
+            )
+            return
+        label = get_source_label(source)
+        embed = embeds.success_embed(
+            f"{ctx.author.mention} obtient {format_enchantment(definition, power)} grâce à {label} !",
+            title="✨ Enchantement trouvé",
+        )
+        await ctx.send(embed=embed)
 
     @staticmethod
     def _parse_toggle_argument(raw: str | None) -> bool | None:
@@ -1884,6 +2102,7 @@ class Pets(commands.Cog):
                     transaction_type="pet_purchase",
                     description=f"Achat de {egg.name}",
                 )
+        enchantments = await self.database.get_enchantment_powers(ctx.author.id)
         effective_luck_bonus = 0.0
         frenzy_active = is_egg_frenzy_active()
         if mastery_perks:
@@ -1897,6 +2116,10 @@ class Pets(commands.Cog):
                 effective_luck_bonus += max(0.0, float(potion_definition.effect_value))
         if frenzy_active:
             effective_luck_bonus += max(0.0, float(EGG_FRENZY_LUCK_BONUS))
+        if enchantments:
+            effective_luck_bonus += compute_egg_luck_bonus(
+                enchantments.get("egg_luck", 0)
+            )
         pet_definition: PetDefinition | None = None
         pet_id: int | None = None
         last_missing_name = ""
@@ -2656,7 +2879,9 @@ class Pets(commands.Cog):
             masteries=definitions,
             progress=progress_map,
         )
-        await ctx.send(embed=embed)
+        view = MasteryOverviewView(ctx, definitions, progress_map)
+        message = await ctx.send(embed=embed, view=view)
+        view.message = message
 
     @commands.command(name="pets", aliases=("collection", "inventory"))
     async def pets_command(self, ctx: commands.Context) -> None:
@@ -3237,6 +3462,7 @@ class Pets(commands.Cog):
                 title="🎁 Distributeur de Mexico",
             )
         )
+        await self._maybe_award_enchantment(ctx, "distributor")
 
     @commands.command(name="equip")
     async def equip(self, ctx: commands.Context, *, pet_name: str) -> None:
@@ -4273,6 +4499,7 @@ class Pets(commands.Cog):
             clan_info,
             progress_updates,
             potion_info,
+            enchantment_info,
             _rebirth_info,
         ) = await self.database.claim_active_pet_income(ctx.author.id)
         if not rows:
@@ -4350,6 +4577,7 @@ class Pets(commands.Cog):
             booster=booster_info,
             clan=clan_info if clan_info else None,
             potion=potion_info if potion_info else None,
+            enchantment=enchantment_info if enchantment_info else None,
         )
         if level_up_lines:
             embed.add_field(
