@@ -1004,11 +1004,10 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
     PetEggDefinition(
         name="Œuf Huevo",
         slug="huevo",
-        price=500,
+        price=77_777_777_777,
         pets=_MEXICO_EGG_PETS,
         zone_slug=MEXICO_ZONE_SLUG,
         aliases=("oeuf huevo", "huevo", "oeuf mexico", "mexico"),
-        currency="gem",
     ),
 )
 
@@ -1060,9 +1059,8 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         name="Mexico",
         slug=MEXICO_ZONE_SLUG,
         grade_required=15,
-        entry_cost=1_000,
+        entry_cost=777_777_777_777,
         eggs=_eggs_for_zone(MEXICO_ZONE_SLUG),
-        currency="gem",
     ),
 )
 
