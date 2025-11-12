@@ -15,6 +15,7 @@ import asyncpg
 
 from config import (
     BASE_PET_SLOTS,
+    PET_SLOT_MAX_CAPACITY,
     CLAN_BASE_CAPACITY,
     CLAN_CAPACITY_PER_LEVEL,
     CLAN_CAPACITY_UPGRADE_COSTS,
@@ -160,6 +161,12 @@ class Database:
         adjusted = int(round(amount * multiplier))
         adjusted = max(amount, adjusted)
         return adjusted, max(0, adjusted - amount)
+
+    @staticmethod
+    def _compute_pet_slot_limit(grade_level: int, extra_slots: int) -> int:
+        grade = max(0, int(grade_level))
+        extra = max(0, int(extra_slots))
+        return max(0, min(PET_SLOT_MAX_CAPACITY, BASE_PET_SLOTS + grade + extra))
 
     @staticmethod
     def _build_empty_claim_result(
@@ -513,6 +520,15 @@ class Database:
             )
             await connection.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS active_potion_expires_at TIMESTAMPTZ"
+            )
+            await connection.execute(
+                """
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS extra_pet_slots
+                INTEGER NOT NULL DEFAULT 0 CHECK (extra_pet_slots >= 0)
+                """
+            )
+            await connection.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS mexico_dispenser_last_claim TIMESTAMPTZ"
             )
             await connection.execute(
                 """
@@ -1526,6 +1542,71 @@ class Database:
         await self.ensure_user(user_id)
         row = await self.pool.fetchrow("SELECT gems FROM users WHERE user_id = $1", user_id)
         return int(row["gems"]) if row else 0
+
+    async def get_extra_pet_slots(self, user_id: int) -> int:
+        await self.ensure_user(user_id)
+        row = await self.pool.fetchrow(
+            "SELECT extra_pet_slots FROM users WHERE user_id = $1",
+            user_id,
+        )
+        if row is None:
+            return 0
+        return int(row.get("extra_pet_slots") or 0)
+
+    async def get_pet_slot_limit(self, user_id: int) -> int:
+        grade_level = await self.get_grade_level(user_id)
+        extra_slots = await self.get_extra_pet_slots(user_id)
+        return self._compute_pet_slot_limit(grade_level, extra_slots)
+
+    async def add_extra_pet_slot(
+        self,
+        user_id: int,
+        *,
+        grade_level: int | None = None,
+    ) -> tuple[int, bool]:
+        await self.ensure_user(user_id)
+        async with self.transaction() as connection:
+            user_row = await connection.fetchrow(
+                "SELECT extra_pet_slots FROM users WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            if grade_level is None:
+                grade_row = await connection.fetchrow(
+                    "SELECT grade_level FROM user_grades WHERE user_id = $1",
+                    user_id,
+                )
+                grade_level = int(grade_row.get("grade_level") or 0) if grade_row else 0
+            current_extra = int(user_row.get("extra_pet_slots") or 0) if user_row else 0
+            base_capacity = BASE_PET_SLOTS + (grade_level or 0)
+            max_extra_allowed = max(0, PET_SLOT_MAX_CAPACITY - base_capacity)
+            if current_extra >= max_extra_allowed:
+                return current_extra, False
+            new_extra = min(current_extra + 1, max_extra_allowed)
+            await connection.execute(
+                "UPDATE users SET extra_pet_slots = $1 WHERE user_id = $2",
+                new_extra,
+                user_id,
+            )
+        return new_extra, new_extra > current_extra
+
+    async def get_mexico_dispenser_last_claim(self, user_id: int) -> datetime | None:
+        await self.ensure_user(user_id)
+        value = await self.pool.fetchval(
+            "SELECT mexico_dispenser_last_claim FROM users WHERE user_id = $1",
+            user_id,
+        )
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        raise DatabaseError("Valeur de cooldown Mexico invalide")
+
+    async def record_mexico_dispenser_claim(self, user_id: int) -> None:
+        await self.ensure_user(user_id)
+        await self.pool.execute(
+            "UPDATE users SET mexico_dispenser_last_claim = NOW() WHERE user_id = $1",
+            user_id,
+        )
 
     async def increment_balance(
         self,
@@ -3407,7 +3488,17 @@ class Database:
                 user_pet_id,
             )
             if pet_row is None:
-                return None, 0, BASE_PET_SLOTS
+                grade_row = await connection.fetchrow(
+                    "SELECT grade_level FROM user_grades WHERE user_id = $1",
+                    user_id,
+                )
+                extra_row = await connection.fetchrow(
+                    "SELECT extra_pet_slots FROM users WHERE user_id = $1",
+                    user_id,
+                )
+                grade_level = int(grade_row["grade_level"]) if grade_row else 0
+                extra_slots = int(extra_row.get("extra_pet_slots") or 0) if extra_row else 0
+                return None, 0, self._compute_pet_slot_limit(grade_level, extra_slots)
 
             if bool(pet_row["is_active"]):
                 raise DatabaseError("Ce pet est déjà équipé.")
@@ -3430,7 +3521,12 @@ class Database:
                 user_id,
             )
             grade_level = int(grade_row["grade_level"]) if grade_row else 0
-            max_slots = BASE_PET_SLOTS + grade_level
+            extra_row = await connection.fetchrow(
+                "SELECT extra_pet_slots FROM users WHERE user_id = $1",
+                user_id,
+            )
+            extra_slots = int(extra_row.get("extra_pet_slots") or 0) if extra_row else 0
+            max_slots = self._compute_pet_slot_limit(grade_level, extra_slots)
 
             if active_count >= max_slots:
                 raise ActivePetLimitError(active_count, max_slots)
@@ -3460,7 +3556,17 @@ class Database:
                 user_pet_id,
             )
             if pet_row is None:
-                return None, 0, BASE_PET_SLOTS
+                grade_row = await connection.fetchrow(
+                    "SELECT grade_level FROM user_grades WHERE user_id = $1",
+                    user_id,
+                )
+                extra_row = await connection.fetchrow(
+                    "SELECT extra_pet_slots FROM users WHERE user_id = $1",
+                    user_id,
+                )
+                grade_level = int(grade_row["grade_level"]) if grade_row else 0
+                extra_slots = int(extra_row.get("extra_pet_slots") or 0) if extra_row else 0
+                return None, 0, self._compute_pet_slot_limit(grade_level, extra_slots)
 
             if not bool(pet_row["is_active"]):
                 raise DatabaseError("Ce pet n'est pas équipé.")
@@ -3478,7 +3584,12 @@ class Database:
                 user_id,
             )
             grade_level = int(grade_row["grade_level"]) if grade_row else 0
-            max_slots = BASE_PET_SLOTS + grade_level
+            extra_row = await connection.fetchrow(
+                "SELECT extra_pet_slots FROM users WHERE user_id = $1",
+                user_id,
+            )
+            extra_slots = int(extra_row.get("extra_pet_slots") or 0) if extra_row else 0
+            max_slots = self._compute_pet_slot_limit(grade_level, extra_slots)
 
             await connection.execute(
                 "UPDATE user_pets SET is_active = FALSE WHERE id = $1",
@@ -3539,7 +3650,12 @@ class Database:
                 user_id,
             )
             grade_level = int(grade_row["grade_level"]) if grade_row else 0
-            max_slots = BASE_PET_SLOTS + grade_level
+            extra_row = await connection.fetchrow(
+                "SELECT extra_pet_slots FROM users WHERE user_id = $1",
+                user_id,
+            )
+            extra_slots = int(extra_row.get("extra_pet_slots") or 0) if extra_row else 0
+            max_slots = self._compute_pet_slot_limit(grade_level, extra_slots)
 
             await connection.execute(
                 "UPDATE user_pets SET is_active = FALSE WHERE id = $1",
@@ -3578,8 +3694,19 @@ class Database:
                 user_id,
                 user_pet_id,
             )
+            grade_row = await connection.fetchrow(
+                "SELECT grade_level FROM user_grades WHERE user_id = $1",
+                user_id,
+            )
+            extra_row = await connection.fetchrow(
+                "SELECT extra_pet_slots FROM users WHERE user_id = $1",
+                user_id,
+            )
+            grade_level = int(grade_row["grade_level"]) if grade_row else 0
+            extra_slots = int(extra_row.get("extra_pet_slots") or 0) if extra_row else 0
+            max_slots = self._compute_pet_slot_limit(grade_level, extra_slots)
             if pet_row is None:
-                return None, False, 0
+                return None, False, max_slots
 
             currently_active = bool(pet_row["is_active"])
             if not currently_active and bool(pet_row.get("on_market")):
@@ -3593,13 +3720,6 @@ class Database:
                 )
                 or 0
             )
-
-            grade_row = await connection.fetchrow(
-                "SELECT grade_level FROM user_grades WHERE user_id = $1",
-                user_id,
-            )
-            grade_level = int(grade_row["grade_level"]) if grade_row else 0
-            max_slots = BASE_PET_SLOTS + grade_level
 
             if currently_active:
                 await connection.execute(

@@ -7,6 +7,7 @@ import logging
 import math
 import random
 import unicodedata
+from decimal import Decimal, ROUND_HALF_UP
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
@@ -16,6 +17,7 @@ from discord.ext import commands
 
 from config import (
     BASE_PET_SLOTS,
+    MEXICO_ZONE_SLUG,
     DEFAULT_PET_EGG_SLUG,
     GOLD_PET_CHANCE,
     GOLD_PET_COMBINE_REQUIRED,
@@ -27,6 +29,7 @@ from config import (
     PET_EGG_DEFINITIONS,
     PET_RARITY_ORDER,
     PET_ZONES,
+    POTION_DEFINITIONS,
     EGG_FRENZY_LUCK_BONUS,
     get_egg_frenzy_window,
     is_egg_frenzy_active,
@@ -37,6 +40,11 @@ from config import (
     GALAXY_PET_MULTIPLIER,
     PET_EMOJIS,
     SHINY_PET_MULTIPLIER,
+    PET_SLOT_MAX_CAPACITY,
+    PET_SLOT_SHOP_BASE_COST,
+    PET_SLOT_SHOP_COST_GROWTH,
+    PET_SLOT_SHOP_CURRENCY,
+    MEXICO_DISTRIBUTOR_COOLDOWN,
     HUGE_PET_LEVEL_CAP,
     HUGE_PET_NAME,
     HUGE_PET_MIN_INCOME,
@@ -1418,6 +1426,21 @@ class Pets(commands.Cog):
             return embeds.format_gems(zone.entry_cost)
         return embeds.format_currency(zone.entry_cost)
 
+    @staticmethod
+    def _compute_slot_purchase_cost(extra_slots: int) -> int:
+        exponent = max(0, int(extra_slots))
+        base = Decimal(PET_SLOT_SHOP_BASE_COST)
+        growth = Decimal(str(PET_SLOT_SHOP_COST_GROWTH))
+        cost = base * (growth**exponent)
+        rounded = cost.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        return max(1, int(rounded))
+
+    @staticmethod
+    def _format_slot_cost(amount: int) -> str:
+        if PET_SLOT_SHOP_CURRENCY == "gem":
+            return embeds.format_gems(amount)
+        return embeds.format_currency(amount)
+
     async def _ensure_zone_access(
         self, ctx: commands.Context, zone: PetZoneDefinition
     ) -> bool:
@@ -1591,34 +1614,36 @@ class Pets(commands.Cog):
                 inline=False,
             )
 
-        if has_unlocked:
-            if zone.eggs:
-                for egg in zone.eggs:
-                    emoji_sequence = [pet_emoji(pet.name) for pet in egg.pets]
-                    unique_emojis = list(dict.fromkeys(emoji_sequence))
-                    if egg.currency == "gem":
-                        price_display = embeds.format_gems(egg.price)
-                    else:
-                        price_display = embeds.format_currency(egg.price)
-                    field_lines = [
-                        f"Prix : {price_display}",
-                        f"Commande : `e!openbox {egg.slug}`",
-                    ]
-                    if unique_emojis:
-                        field_lines.append(
-                            f"Pets : {' '.join(unique_emojis)}"
-                        )
-                    embed.add_field(
-                        name=egg.name,
-                        value="\n".join(field_lines),
-                        inline=False,
+        if zone.eggs:
+            for egg in zone.eggs:
+                emoji_sequence = [pet_emoji(pet.name) for pet in egg.pets]
+                unique_emojis = list(dict.fromkeys(emoji_sequence))
+                if egg.currency == "gem":
+                    price_display = embeds.format_gems(egg.price)
+                else:
+                    price_display = embeds.format_currency(egg.price)
+                field_lines = [f"Prix : {price_display}"]
+                if has_unlocked:
+                    field_lines.append(f"Commande : `e!openbox {egg.slug}`")
+                else:
+                    field_lines.append(
+                        f"Commande : `e!openbox {egg.slug}` (après déblocage)"
                     )
-            else:
+                    field_lines.append("Débloque la zone pour ouvrir cet œuf.")
+                if unique_emojis:
+                    field_lines.append(f"Pets : {' '.join(unique_emojis)}")
+                field_name = egg.name if has_unlocked else f"🔒 {egg.name}"
                 embed.add_field(
-                    name="Œufs disponibles",
-                    value="Aucun œuf n'est proposé ici.",
+                    name=field_name,
+                    value="\n".join(field_lines),
                     inline=False,
                 )
+        elif has_unlocked:
+            embed.add_field(
+                name="Œufs disponibles",
+                value="Aucun œuf n'est proposé ici.",
+                inline=False,
+            )
         else:
             embed.add_field(name="Prix des œufs", value="???", inline=False)
             embed.add_field(name="Commande", value="???", inline=False)
@@ -2629,8 +2654,7 @@ class Pets(commands.Cog):
             )
             return
 
-        grade_level = await self.database.get_grade_level(ctx.author.id)
-        max_slots = max(0, BASE_PET_SLOTS + grade_level)
+        max_slots = await self.database.get_pet_slot_limit(ctx.author.id)
         if max_slots <= 0:
             await ctx.send(
                 embed=embeds.error_embed(
@@ -2808,6 +2832,258 @@ class Pets(commands.Cog):
             icon_url=ctx.author.display_avatar.url,
         )
         await ctx.send(embed=embed)
+
+    @commands.command(name="gemshop")
+    async def gemshop(self, ctx: commands.Context, action: str | None = None) -> None:
+        await self.database.ensure_user(ctx.author.id)
+
+        grade_level = await self.database.get_grade_level(ctx.author.id)
+        extra_slots = await self.database.get_extra_pet_slots(ctx.author.id)
+        base_capacity = BASE_PET_SLOTS + grade_level
+        hard_cap = PET_SLOT_MAX_CAPACITY
+        total_slots = min(hard_cap, base_capacity + extra_slots)
+        max_extra_allowed = max(0, hard_cap - base_capacity)
+
+        normalized_action = (action or "").strip().lower().replace(" ", "")
+        purchase_aliases = {"buy", "acheter", "slot", "buyslot", "acheterslot"}
+        attempting_purchase = normalized_action in purchase_aliases
+
+        if attempting_purchase:
+            if base_capacity >= hard_cap or max_extra_allowed <= 0:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Tu as déjà atteint la capacité maximale de pets équipés."
+                    )
+                )
+                return
+            if extra_slots >= max_extra_allowed:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Tu as déjà acheté tous les slots disponibles pour ton grade actuel."
+                    )
+                )
+                return
+
+            price = self._compute_slot_purchase_cost(extra_slots)
+            if PET_SLOT_SHOP_CURRENCY == "gem":
+                balance = await self.database.fetch_gems(ctx.author.id)
+                if balance < price:
+                    await ctx.send(
+                        embed=embeds.error_embed(
+                            f"Il te manque {self._format_slot_cost(price - balance)} pour acheter ce slot."
+                        )
+                    )
+                    return
+                _before, after = await self.database.increment_gems(
+                    ctx.author.id,
+                    -price,
+                    transaction_type="gemshop_slot",
+                    description="Achat slot supplémentaire",
+                )
+            else:
+                balance = await self.database.fetch_balance(ctx.author.id)
+                if balance < price:
+                    await ctx.send(
+                        embed=embeds.error_embed(
+                            f"Il te manque {self._format_slot_cost(price - balance)} pour acheter ce slot."
+                        )
+                    )
+                    return
+                _before, after = await self.database.increment_balance(
+                    ctx.author.id,
+                    -price,
+                    transaction_type="gemshop_slot",
+                    description="Achat slot supplémentaire",
+                )
+
+            new_extra, added = await self.database.add_extra_pet_slot(
+                ctx.author.id, grade_level=grade_level
+            )
+            if not added:
+                if PET_SLOT_SHOP_CURRENCY == "gem":
+                    await self.database.increment_gems(
+                        ctx.author.id,
+                        price,
+                        transaction_type="gemshop_refund",
+                        description="Remboursement slot pets",
+                    )
+                else:
+                    await self.database.increment_balance(
+                        ctx.author.id,
+                        price,
+                        transaction_type="gemshop_refund",
+                        description="Remboursement slot pets",
+                    )
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Impossible d'ajouter un slot supplémentaire pour le moment. Tes fonds ont été remboursés."
+                    )
+                )
+                return
+
+            extra_slots = new_extra
+            total_slots = min(hard_cap, base_capacity + extra_slots)
+            next_cost: int | None = None
+            if extra_slots < max_extra_allowed and total_slots < hard_cap:
+                next_cost = self._compute_slot_purchase_cost(extra_slots)
+
+            lines = [
+                f"Slot acheté pour {self._format_slot_cost(price)}.",
+                f"Tu peux maintenant équiper **{total_slots}** pet{'s' if total_slots > 1 else ''}.",
+            ]
+            if PET_SLOT_SHOP_CURRENCY == "gem":
+                lines.append(f"Gemmes restantes : {embeds.format_gems(after)}")
+            else:
+                lines.append(f"Solde restant : {embeds.format_currency(after)}")
+
+            if total_slots >= hard_cap or max_extra_allowed <= extra_slots:
+                lines.append("Tu as atteint la capacité maximale de 40 pets équipés.")
+            elif next_cost is not None:
+                lines.append(
+                    f"Prochain slot : {self._format_slot_cost(next_cost)} (commande `e!gemshop buy`)."
+                )
+
+            await ctx.send(
+                embed=embeds.success_embed("\n".join(lines), title="💎 Gemshop")
+            )
+            return
+
+        next_cost: int | None = None
+        if max_extra_allowed > 0 and extra_slots < max_extra_allowed and total_slots < hard_cap:
+            next_cost = self._compute_slot_purchase_cost(extra_slots)
+
+        info_lines = [
+            f"Slots actuels : **{total_slots}/{hard_cap}**",
+            f"Slots via les grades : **{base_capacity}**",
+            f"Slots achetés : **{extra_slots}**",
+        ]
+
+        if max_extra_allowed <= 0 or base_capacity >= hard_cap:
+            info_lines.append("Tes grades te donnent déjà un accès complet à la limite de slots.")
+        elif extra_slots >= max_extra_allowed:
+            info_lines.append(
+                "Tu devras monter en grade pour débloquer de nouveaux achats de slots."
+            )
+        elif next_cost is not None:
+            info_lines.append(
+                f"Prochain slot : {self._format_slot_cost(next_cost)} — utilise `e!gemshop buy`."
+            )
+
+        await ctx.send(
+            embed=embeds.info_embed("\n".join(info_lines), title="💎 Gemshop")
+        )
+
+    @commands.command(
+        name="distributeur",
+        aliases=("mexico", "mexicodispenser", "dispenser"),
+    )
+    async def mexico_dispenser(self, ctx: commands.Context) -> None:
+        await self.database.ensure_user(ctx.author.id)
+
+        zone = self._zones.get(MEXICO_ZONE_SLUG)
+        if zone is None:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "La zone de Mexico est introuvable pour le moment."
+                )
+            )
+            return
+
+        unlocked = await self.database.has_unlocked_zone(
+            ctx.author.id, MEXICO_ZONE_SLUG
+        )
+        if not unlocked:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    f"Tu dois d'abord débloquer {zone.name} pour utiliser ce distributeur."
+                )
+            )
+            return
+
+        last_claim = await self.database.get_mexico_dispenser_last_claim(ctx.author.id)
+        now = datetime.now(timezone.utc)
+        if last_claim is not None:
+            ready_at = last_claim + MEXICO_DISTRIBUTOR_COOLDOWN
+            if ready_at > now:
+                ready_text = discord.utils.format_dt(ready_at, style="R")
+                await ctx.send(
+                    embed=embeds.warning_embed(
+                        f"Le distributeur se recharge encore. Reviens {ready_text}."
+                    )
+                )
+                return
+
+        potion_definition = random.choice(POTION_DEFINITIONS)
+        await self.database.add_user_potion(ctx.author.id, potion_definition.slug)
+
+        eligible_pets = [pet for pet in self._definitions if not pet.is_huge]
+        if not eligible_pets:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Aucun pet n'est disponible pour le distributeur en ce moment."
+                )
+            )
+            return
+
+        pet_definition = random.choice(eligible_pets)
+        pet_id = self._pet_ids.get(pet_definition.name)
+        if pet_id is None:
+            await self._resync_pets()
+            pet_id = self._pet_ids.get(pet_definition.name)
+        if pet_id is None:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Impossible de récupérer le pet sélectionné. Réessaie dans quelques instants."
+                )
+            )
+            return
+
+        try:
+            await self.database.add_user_pet(
+                ctx.author.id,
+                pet_id,
+                is_gold=True,
+                is_rainbow=False,
+                is_galaxy=False,
+                is_shiny=False,
+            )
+        except DatabaseError:
+            logger.exception(
+                "Impossible d'ajouter un pet doré depuis le distributeur Mexico",
+                extra={"user_id": ctx.author.id, "pet": pet_definition.name},
+            )
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Impossible de livrer le pet doré pour le moment. Réessaie plus tard."
+                )
+            )
+            return
+
+        await self.database.record_mexico_dispenser_claim(ctx.author.id)
+
+        next_ready = now + MEXICO_DISTRIBUTOR_COOLDOWN
+        potion_line = f"🧪 Potion reçue : **{potion_definition.name}**"
+        emoji = pet_emoji(pet_definition.name)
+        pet_line = f"🥇 Pet reçu : {emoji} **{pet_definition.name}** (version or)"
+        cooldown_line = (
+            f"⏳ Prochain distributeur disponible {discord.utils.format_dt(next_ready, style='R')}"
+        )
+
+        description = "\n".join(
+            [
+                potion_line,
+                pet_line,
+                cooldown_line,
+                "Le distributeur se recharge toutes les 10 minutes.",
+            ]
+        )
+
+        await ctx.send(
+            embed=embeds.success_embed(
+                description,
+                title="🎁 Distributeur de Mexico",
+            )
+        )
 
     @commands.command(name="equip")
     async def equip(self, ctx: commands.Context, *, pet_name: str) -> None:

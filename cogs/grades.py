@@ -221,7 +221,11 @@ class GradeSystem(commands.Cog):
         channel: QuestChannel,
     ) -> None:
         reward = grade_definition.reward_gems
-        pet_slots = BASE_PET_SLOTS + new_grade_level
+        pet_slots: int
+        if hasattr(self.database, "get_pet_slot_limit"):
+            pet_slots = await self.database.get_pet_slot_limit(member.id)
+        else:
+            pet_slots = BASE_PET_SLOTS + new_grade_level
 
         try:
             _, gems_after = await self.database.increment_gems(
@@ -358,6 +362,11 @@ class GradeSystem(commands.Cog):
                             channel=ctx.channel,
                         )
 
+        if hasattr(self.database, "get_pet_slot_limit"):
+            slot_limit = await self.database.get_pet_slot_limit(target.id)
+        else:
+            slot_limit = BASE_PET_SLOTS + grade_level
+
         embed = embeds.grade_profile_embed(
             member=target,
             grade_level=grade_level,
@@ -371,7 +380,7 @@ class GradeSystem(commands.Cog):
                 "potions": int(row["potion_progress"]),
             },
             rap_total=rap_total,
-            pet_slots=BASE_PET_SLOTS + grade_level,
+            pet_slots=slot_limit,
         )
         await ctx.send(embed=embed)
 
