@@ -911,21 +911,21 @@ _MEXICO_EGG_PETS: Tuple[PetDefinition, ...] = (
         name="El Primo",
         rarity="Épique",
         image_url="https://cdn.discordapp.com/emojis/1437826192794321097.png",
-        base_income_per_hour=1_800_000,
+        base_income_per_hour=2_800_000,
         drop_rate=0.60,
     ),
     PetDefinition(
         name="Amber",
         rarity="Légendaire",
         image_url="https://cdn.discordapp.com/emojis/1437826234095636490.png",
-        base_income_per_hour=3_200_000,
+        base_income_per_hour=5_000_000,
         drop_rate=0.30,
     ),
     PetDefinition(
         name="Mina",
         rarity="Mythique",
         image_url="https://cdn.discordapp.com/emojis/1430584871406928075.png",
-        base_income_per_hour=6_500_000,
+        base_income_per_hour=9_000_000,
         drop_rate=0.099999,
     ),
     PetDefinition(
@@ -1007,7 +1007,7 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
         price=500,
         pets=_MEXICO_EGG_PETS,
         zone_slug=MEXICO_ZONE_SLUG,
-        aliases=("oeuf huevo", "huevo"),
+        aliases=("oeuf huevo", "huevo", "oeuf mexico", "mexico"),
         currency="gem",
     ),
 )

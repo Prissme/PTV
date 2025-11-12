@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
-from typing import Collection, Iterable, Mapping, Optional, Sequence, cast
+from typing import Callable, Collection, Iterable, Mapping, Optional, Sequence, cast
 
 import discord
 from discord.ext import commands
@@ -306,7 +306,7 @@ def leaderboard_embed(
         if symbol.upper() == "PB":
             value_display = format_currency(value)
         elif symbol.upper() == "RAP":
-            value_display = f"{value:,} RAP".replace(",", " ")
+            value_display = f"{format_gems(value)} (RAP)"
         else:
             value_display = f"{value:,} {symbol}".replace(",", " ")
         lines.append(f"**{rank}.** {name} — {value_display}")
@@ -385,13 +385,13 @@ def _quest_progress_line(label: str, current: int, goal: int) -> str:
     return f"{status} {label} : **{current}/{goal}**"
 
 
-def _quest_currency_progress_line(label: str, current: int, goal: int) -> str:
+def _quest_currency_progress_line(
+    label: str, current: int, goal: int, *, formatter: Callable[[int], str] = format_currency
+) -> str:
     if goal <= 0:
         return f"✅ {label} : aucune exigence"
     status = "✅" if current >= goal else "▫️"
-    return (
-        f"{status} {label} : **{format_currency(current)} / {format_currency(goal)}**"
-    )
+    return f"{status} {label} : **{formatter(current)} / {formatter(goal)}**"
 
 
 def grade_profile_embed(
@@ -436,6 +436,7 @@ def grade_profile_embed(
                 "Atteindre un RAP total",
                 rap_total,
                 next_grade.rap_goal,
+                formatter=format_gems,
             ),
             _quest_currency_progress_line(
                 "Perdre des Prissbucks au casino",
@@ -770,7 +771,11 @@ def egg_index_embed(*, eggs: Sequence[PetEggDefinition]) -> discord.Embed:
 
         chunks = list(_chunk_field_values(lines, limit=900))
         for index, value in enumerate(chunks, start=1):
-            field_name = f"{egg.name} — {format_currency(egg.price)}"
+            if egg.currency == "gem":
+                price_display = format_gems(egg.price)
+            else:
+                price_display = format_currency(egg.price)
+            field_name = f"{egg.name} — {price_display}"
             if len(chunks) > 1:
                 field_name = f"{field_name} ({index})"
             embed.add_field(name=field_name, value=value, inline=False)
