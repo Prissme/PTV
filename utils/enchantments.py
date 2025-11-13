@@ -45,6 +45,13 @@ ENCHANTMENT_DEFINITION_MAP: Final[dict[str, EnchantmentDefinition]] = {
     enchantment.slug: enchantment for enchantment in ENCHANTMENT_DEFINITIONS
 }
 
+ENCHANTMENT_EMOJIS: Final[dict[str, str]] = {
+    "egg_luck": "<:EggLuckEnchant:1438599159706812568>",
+    "koth_luck": "<:KothLuckEnchant:1438600557052039269>",
+    "prissbucks": "<:PrissBucksEnchant:1438599806892245165>",
+    "slots_luck": "<:SlotsLuckEnchant:1438600197780537424>",
+}
+
 # Drop rates pour chaque activité. Ces valeurs restent faibles pour préserver la rareté.
 ENCHANTMENT_SOURCE_DROP: Final[dict[str, float]] = {
     "distributor": 0.22,
@@ -61,6 +68,10 @@ ENCHANTMENT_SOURCE_LABELS: Final[dict[str, str]] = {
 
 def iter_enchantments() -> Iterable[EnchantmentDefinition]:
     return ENCHANTMENT_DEFINITIONS
+
+
+def get_enchantment_emoji(slug: str) -> str:
+    return ENCHANTMENT_EMOJIS.get(slug, "✨")
 
 
 def format_enchantment(definition: EnchantmentDefinition, power: int) -> str:

@@ -67,6 +67,9 @@ class DummyDatabase:
     async def get_active_potion(self, user_id: int):
         return None
 
+    async def get_enchantment_powers(self, user_id: int) -> dict[str, int]:
+        return {}
+
 
 class DummyMessage:
     async def edit(self, *, content=None, embed=None, view=None):  # pragma: no cover - animation helper

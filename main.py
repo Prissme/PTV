@@ -173,6 +173,7 @@ class EcoBot(commands.Bot):
             "leaderboard",
             "pets",
             "potions",
+            "enchantments",
             "clans",
             "help",
             "plaza",

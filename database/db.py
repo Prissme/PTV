@@ -47,7 +47,7 @@ from config import (
 )
 from utils.mastery import get_mastery_definition
 from utils.localization import DEFAULT_LANGUAGE, normalize_language
-from utils.enchantments import compute_prissbucks_multiplier, summarize_enchantments
+from utils.enchantments import compute_prissbucks_multiplier
 
 __all__ = [
     "Database",
@@ -969,6 +969,17 @@ class Database:
             )
             await connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS user_equipped_enchantments (
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    slug TEXT NOT NULL,
+                    power SMALLINT NOT NULL CHECK (power BETWEEN 1 AND 10),
+                    equipped_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, slug)
+                )
+                """
+            )
+            await connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS raffle_tickets (
                     user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
                     quantity BIGINT NOT NULL DEFAULT 0 CHECK (quantity >= 0),
@@ -1395,6 +1406,15 @@ class Database:
                 slug,
                 power,
             )
+            await executor.execute(
+                """
+                DELETE FROM user_equipped_enchantments
+                WHERE user_id = $1 AND slug = $2 AND power = $3
+                """,
+                user_id,
+                slug,
+                power,
+            )
         return True
 
     async def get_user_enchantments(self, user_id: int) -> Sequence[asyncpg.Record]:
@@ -1409,9 +1429,121 @@ class Database:
             user_id,
         )
 
+    async def get_equipped_enchantments(self, user_id: int) -> Sequence[asyncpg.Record]:
+        await self.ensure_user(user_id)
+        return await self.pool.fetch(
+            """
+            SELECT equipped.slug, equipped.power, equipped.equipped_at
+            FROM user_equipped_enchantments AS equipped
+            JOIN user_enchantments AS inventory
+                ON inventory.user_id = equipped.user_id
+                AND inventory.slug = equipped.slug
+                AND inventory.power = equipped.power
+                AND inventory.quantity > 0
+            WHERE equipped.user_id = $1
+            ORDER BY equipped.equipped_at
+            """,
+            user_id,
+        )
+
+    async def equip_user_enchantment(
+        self,
+        user_id: int,
+        slug: str,
+        *,
+        power: int,
+        slot_limit: int,
+    ) -> str:
+        if power < 1 or power > 10:
+            raise ValueError("Le niveau d'enchantement doit être compris entre 1 et 10")
+        if slot_limit <= 0:
+            return "limit"
+
+        await self.ensure_user(user_id)
+        async with self.transaction() as connection:
+            owned_row = await connection.fetchrow(
+                """
+                SELECT quantity
+                FROM user_enchantments
+                WHERE user_id = $1 AND slug = $2 AND power = $3 AND quantity > 0
+                FOR UPDATE
+                """,
+                user_id,
+                slug,
+                power,
+            )
+            if owned_row is None:
+                return "missing"
+
+            existing = await connection.fetchrow(
+                """
+                SELECT power
+                FROM user_equipped_enchantments
+                WHERE user_id = $1 AND slug = $2
+                FOR UPDATE
+                """,
+                user_id,
+                slug,
+            )
+            if existing:
+                previous_power = int(existing.get("power") or 0)
+                if previous_power == power:
+                    return "unchanged"
+                await connection.execute(
+                    """
+                    UPDATE user_equipped_enchantments
+                    SET power = $3, equipped_at = NOW()
+                    WHERE user_id = $1 AND slug = $2
+                    """,
+                    user_id,
+                    slug,
+                    power,
+                )
+                return "updated"
+
+            equipped_count = await connection.fetchval(
+                "SELECT COUNT(*) FROM user_equipped_enchantments WHERE user_id = $1",
+                user_id,
+            )
+            if int(equipped_count or 0) >= slot_limit:
+                return "limit"
+
+            await connection.execute(
+                """
+                INSERT INTO user_equipped_enchantments (user_id, slug, power)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (user_id, slug)
+                DO UPDATE SET power = EXCLUDED.power, equipped_at = NOW()
+                """,
+                user_id,
+                slug,
+                power,
+            )
+            return "equipped"
+
+    async def unequip_user_enchantment(self, user_id: int, slug: str) -> bool:
+        if not slug:
+            return False
+
+        await self.ensure_user(user_id)
+        result = await self.pool.execute(
+            "DELETE FROM user_equipped_enchantments WHERE user_id = $1 AND slug = $2",
+            user_id,
+            slug,
+        )
+        return bool(result and result.endswith("DELETE 1"))
+
     async def get_enchantment_powers(self, user_id: int) -> Dict[str, int]:
-        rows = await self.get_user_enchantments(user_id)
-        return summarize_enchantments(rows)
+        rows = await self.get_equipped_enchantments(user_id)
+        summary: Dict[str, int] = {}
+        for row in rows:
+            slug = str(row.get("slug") or "")
+            power = int(row.get("power") or 0)
+            if not slug or power <= 0:
+                continue
+            current = summary.get(slug, 0)
+            summary[slug] = max(current, power)
+        return summary
 
         return True
 
