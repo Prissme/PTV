@@ -1454,7 +1454,9 @@ class Economy(commands.Cog):
         definition = pick_random_enchantment()
         power = roll_enchantment_power()
         try:
-            await self.database.add_user_enchantment(user.id, definition.slug, power)
+            await self.database.add_user_enchantment(
+                user.id, definition.slug, power=power
+            )
         except DatabaseError:
             logger.exception(
                 "Impossible d'attribuer l'enchantement", extra={"user_id": user.id}
