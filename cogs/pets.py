@@ -953,7 +953,9 @@ class Pets(commands.Cog):
         definition = pick_random_enchantment()
         power = roll_enchantment_power()
         try:
-            await self.database.add_user_enchantment(ctx.author.id, definition.slug, power)
+            await self.database.add_user_enchantment(
+                ctx.author.id, definition.slug, power=power
+            )
         except DatabaseError:
             logger.exception(
                 "Impossible d'attribuer un enchantement", extra={"user_id": ctx.author.id}

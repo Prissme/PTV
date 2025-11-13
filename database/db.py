@@ -1309,6 +1309,8 @@ class Database:
                 potion_slug,
             )
 
+        return True
+
     async def add_user_enchantment(
         self,
         user_id: int,
