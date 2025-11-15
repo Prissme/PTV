@@ -225,11 +225,6 @@ def mastermind_board_embed(
     current_selection: str,
     status_lines: Sequence[str] | None = None,
     color: int = Colors.INFO,
-    raffle_ticket_total: int | None = None,
-    raffle_pool_total: int | None = None,
-    next_raffle_draw: datetime | None = None,
-    raffle_prize_label: str | None = None,
-    raffle_ticket_emoji: str = "🎟️",
 ) -> discord.Embed:
     palette_line = ", ".join(f"{emoji} {name.capitalize()}" for name, emoji in palette)
     description_lines = [
@@ -264,31 +259,41 @@ def mastermind_board_embed(
     if status_lines:
         embed.add_field(name="Résultat", value="\n".join(status_lines), inline=False)
 
-    tombola_lines = [
-        "Chaque victoire t'offre **1 ticket de tombola**.",
-        "Un tirage automatique toutes les 24h désigne un gagnant.",
+    return _finalize_embed(embed)
+
+
+def raffle_overview_embed(
+    *,
+    member: discord.abc.User | discord.Member,
+    inventory_tickets: int,
+    committed_tickets: int,
+    total_committed: int,
+    next_draw: datetime | None,
+    prize_label: str,
+    ticket_emoji: str = "🎟️",
+) -> discord.Embed:
+    description_lines = [
+        f"Chaque ticket misé te donne une chance de décrocher **{prize_label}**.",
+        "Tous les tickets misés sont remis à zéro après chaque tirage.",
+        "Utilise les boutons pour miser ou retirer des tickets depuis ton inventaire.",
     ]
-    if raffle_prize_label:
-        tombola_lines.append(
-            f"Plus tu cumules de tickets, plus tes chances d'emporter {raffle_prize_label} explosent !"
-        )
-    if raffle_ticket_total is not None:
-        tombola_lines.append(f"Tes tickets : **{max(0, int(raffle_ticket_total))}**")
-    if raffle_pool_total is not None and raffle_pool_total > 0:
-        pool_display = f"{raffle_pool_total:,}".replace(",", " ")
-        tombola_lines.append(f"Tickets en lice : **{pool_display}**")
-    if next_raffle_draw is not None:
-        target = next_raffle_draw
+    embed = _base_embed("🎟️ Tombola Mastermind", "\n".join(description_lines), color=Colors.INFO)
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+
+    player_lines = [
+        f"Inventaire : **{max(0, inventory_tickets)}** {ticket_emoji}",
+        f"Tickets misés : **{max(0, committed_tickets)}**",
+    ]
+    embed.add_field(name="Tes tickets", value="\n".join(player_lines), inline=False)
+
+    pool_lines = [f"Total en lice : **{max(0, total_committed)}** {ticket_emoji}"]
+    if isinstance(next_draw, datetime):
+        target = next_draw
         if target.tzinfo is None:
             target = target.replace(tzinfo=timezone.utc)
-        relative = discord.utils.format_dt(target, style="R")
-        absolute = discord.utils.format_dt(target, style="f")
-        tombola_lines.append(f"Prochain tirage : {relative} ({absolute})")
-    embed.add_field(
-        name=f"{raffle_ticket_emoji} Tombola Mastermind",
-        value="\n".join(tombola_lines),
-        inline=False,
-    )
+        pool_lines.append(f"Prochain tirage : {discord.utils.format_dt(target, style='R')}")
+        pool_lines.append(f"{discord.utils.format_dt(target, style='f')}")
+    embed.add_field(name="Prochain tirage", value="\n".join(pool_lines), inline=False)
 
     return _finalize_embed(embed)
 

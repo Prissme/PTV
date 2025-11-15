@@ -187,8 +187,17 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "description": "Résous le code secret pour remporter des PB bonus.",
                 },
                 {
+                    "command": f"{PREFIX}raffle",
+                    "description": "Gère tes tickets de tombola, mise-les et suis le prochain tirage.",
+                },
+                {
                     "command": f"{PREFIX}millionairerace",
                     "description": "Prends part à la course millionnaire et fais exploser ta fortune.",
+                },
+                {
+                    "command": f"{PREFIX}inventory",
+                    "description": "Affiche ton inventaire complet (tickets, enchantements, potions, pets).",
+                    "aliases": ("inv",),
                 },
                 {
                     "command": f"{PREFIX}koth",
@@ -415,8 +424,17 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "description": "Solve the secret code to earn bonus PB.",
                 },
                 {
+                    "command": f"{PREFIX}raffle",
+                    "description": "Stake your raffle tickets, choose the amount, and follow the next draw.",
+                },
+                {
                     "command": f"{PREFIX}millionairerace",
                     "description": "Join the Millionaire Race and skyrocket your fortune.",
+                },
+                {
+                    "command": f"{PREFIX}inventory",
+                    "description": "Open an interactive view of all your items (tickets, enchants, potions, pets).",
+                    "aliases": ("inv",),
                 },
                 {
                     "command": f"{PREFIX}koth",
