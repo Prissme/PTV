@@ -2885,7 +2885,7 @@ class Pets(commands.Cog):
         message = await ctx.send(embed=embed, view=view)
         view.message = message
 
-    @commands.command(name="pets", aliases=("collection", "inventory"))
+    @commands.command(name="pets", aliases=("collection",))
     async def pets_command(self, ctx: commands.Context) -> None:
         records = await self.database.get_user_pets(ctx.author.id)
         market_values = await self.database.get_pet_market_values()
@@ -4366,15 +4366,15 @@ class Pets(commands.Cog):
             )
         # Huge Bull — daily raffle.
         bull_line = (
-            f"{_format_emoji(HUGE_BULL_NAME)} **{HUGE_BULL_NAME}** — tirage quotidien au Mastermind."
+            f"{_format_emoji(HUGE_BULL_NAME)} **{HUGE_BULL_NAME}** — tirage quotidien via `e!raffle`."
         )
         if raffle_pool > 0:
             pool_display = f"{raffle_pool:,}".replace(",", " ")
             bull_line += (
-                f" Chaque ticket te donne 1 chance sur {pool_display} lors du prochain tirage."
+                f" {pool_display} tickets sont déjà misés pour ce tirage. Miser depuis `e!raffle`."
             )
         else:
-            bull_line += " Aucun ticket en jeu pour le moment."
+            bull_line += " Mise tes tickets depuis `e!raffle` pour participer (remise à zéro après chaque tirage)."
         special_lines.append(bull_line)
 
         min_kenji = MASTERMIND_HUGE_MIN_CHANCE * 100

@@ -42,7 +42,12 @@ from config import (
     get_huge_level_multiplier,
 )
 from utils import embeds
-from database.db import Database, DatabaseError, InsufficientBalanceError
+from database.db import (
+    Database,
+    DatabaseError,
+    InsufficientBalanceError,
+    InsufficientRaffleTicketsError,
+)
 from utils.mastery import MASTERMIND_MASTERY, MasteryDefinition
 from utils.enchantments import (
     compute_koth_bonus_factor,
@@ -52,7 +57,9 @@ from utils.enchantments import (
     roll_enchantment_power,
     should_drop_enchantment,
     format_enchantment,
+    get_enchantment_emoji,
 )
+from utils.pet_formatting import PetDisplay
 
 logger = logging.getLogger(__name__)
 
@@ -173,10 +180,10 @@ class MastermindConfig:
     code_length: int = 4
     max_attempts: int = 8
     response_timeout: int = 60
-    base_reward: tuple[int, int] = (3, 5)
-    attempt_bonus: int = 1
+    base_reward: tuple[int, int] = (12, 20)
+    attempt_bonus: int = 3
     cancel_words: frozenset[str] = frozenset({"stop", "annuler", "cancel"})
-    cooldown: int = 60
+    cooldown: int = 600
 
     @property
     def palette(self) -> tuple[tuple[str, str], ...]:
@@ -325,23 +332,10 @@ class MastermindSession:
         self.mastery_perks = mastery_perks or MastermindMasteryPerks()
         self.mastery_callback = mastery_callback
         self.enchantment_callback = enchantment_callback
-        self.raffle_ticket_total: int = 0
-        self.raffle_pool_total: int | None = None
         self.channel: discord.abc.Messageable = channel or ctx.channel
 
     async def start(self) -> None:
         await self.database.ensure_user(self.ctx.author.id)
-        try:
-            self.raffle_ticket_total = await self.database.get_user_raffle_tickets(
-                self.ctx.author.id
-            )
-        except Exception:
-            self._logger.exception(
-                "Impossible de récupérer les tickets de tombola",
-                extra={"user_id": self.ctx.author.id},
-            )
-            self.raffle_ticket_total = 0
-        await self._refresh_raffle_pool_total()
         self.view = MastermindView(self)
         embed = self.build_embed()
         self.message = await self.channel.send(embed=embed, view=self.view)
@@ -358,14 +352,6 @@ class MastermindSession:
         attempts_left = max(0, self.helper.config.max_attempts - self.attempts)
         if self.finished:
             attempts_left = 0
-        next_draw: datetime | None = None
-        economy_cog = self.bot.get_cog("Economy")
-        getter = getattr(economy_cog, "get_next_raffle_datetime", None) if economy_cog else None
-        if callable(getter):
-            try:
-                next_draw = getter()
-            except Exception:
-                next_draw = None
         return embeds.mastermind_board_embed(
             member=self.ctx.author,
             palette=self.helper.palette,
@@ -377,24 +363,7 @@ class MastermindSession:
             current_selection=selection,
             status_lines=list(self.status_lines),
             color=self.embed_color,
-            raffle_ticket_total=self.raffle_ticket_total,
-            raffle_pool_total=self.raffle_pool_total,
-            next_raffle_draw=next_draw,
-            raffle_prize_label=TOMBOLA_PRIZE_LABEL,
-            raffle_ticket_emoji=TOMBOLA_TICKET_EMOJI,
         )
-
-    async def _refresh_raffle_pool_total(self) -> None:
-        try:
-            total = await self.database.get_total_raffle_tickets()
-        except Exception:
-            self._logger.exception(
-                "Impossible de récupérer le total de tickets de tombola",
-                extra={"user_id": self.ctx.author.id},
-            )
-            self.raffle_pool_total = None
-        else:
-            self.raffle_pool_total = int(total)
 
     async def process_guess(self, guess: Sequence[str]) -> None:
         self.attempts += 1
@@ -473,32 +442,11 @@ class MastermindSession:
                 extra={"user_id": self.ctx.author.id},
             )
         else:
-            self.raffle_ticket_total = new_total
             self.status_lines.append(
-                f"{TOMBOLA_TICKET_EMOJI} Ticket de tombola obtenu ! Total : **{new_total}**"
+                f"{TOMBOLA_TICKET_EMOJI} Ticket ajouté à ton inventaire ! Total : **{new_total}**"
             )
             self.status_lines.append(
-                f"Lot en jeu : {TOMBOLA_PRIZE_LABEL}"
-            )
-            await self._refresh_raffle_pool_total()
-            if self.raffle_pool_total:
-                pool_display = f"{self.raffle_pool_total:,}".replace(",", " ")
-                self.status_lines.append(
-                    f"Tickets en lice : **{pool_display}**"
-                )
-        next_draw: datetime | None = None
-        economy_cog = self.bot.get_cog("Economy")
-        getter = getattr(economy_cog, "get_next_raffle_datetime", None) if economy_cog else None
-        if callable(getter):
-            try:
-                next_draw = getter()
-            except Exception:
-                next_draw = None
-        if isinstance(next_draw, datetime):
-            if next_draw.tzinfo is None:
-                next_draw = next_draw.replace(tzinfo=timezone.utc)
-            self.status_lines.append(
-                f"Prochain tirage tombola : {discord.utils.format_dt(next_draw, style='R')}"
+                f"Mise-les sur `{PREFIX}raffle` pour tenter {TOMBOLA_PRIZE_LABEL}."
             )
         self._logger.debug(
             "Mastermind win",
@@ -1164,6 +1112,554 @@ class MillionaireRaceView(discord.ui.View):
         self._release()
         self.stop()
 
+class RaffleAmountModal(discord.ui.Modal):
+    amount: discord.ui.TextInput = discord.ui.TextInput(
+        label="Nombre de tickets",
+        placeholder="Exemple : 10",
+        min_length=1,
+        max_length=6,
+    )
+
+    def __init__(self, view: "RaffleView", *, action: str) -> None:
+        self.view = view
+        self.action = action
+        title = "Miser des tickets" if action == "stake" else "Retirer des tickets"
+        super().__init__(title=title)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        raw_value = (self.amount.value or "").replace(" ", "")
+        try:
+            parsed = int(raw_value)
+        except ValueError:
+            await interaction.response.send_message(
+                "Indique un nombre valide de tickets.",
+                ephemeral=True,
+            )
+            return
+        if parsed <= 0:
+            await interaction.response.send_message(
+                "La quantité doit être positive.",
+                ephemeral=True,
+            )
+            return
+        if self.action == "stake":
+            await self.view.stake_tickets(interaction, parsed)
+        else:
+            await self.view.withdraw_tickets(interaction, parsed)
+
+
+class RaffleView(discord.ui.View):
+    def __init__(self, ctx: commands.Context, economy: "Economy") -> None:
+        super().__init__(timeout=180)
+        self.ctx = ctx
+        self.economy = economy
+        self.database = economy.database
+        self.inventory = 0
+        self.committed = 0
+        self.pool_total = 0
+        self.message: discord.Message | None = None
+        self._lock = asyncio.Lock()
+        self._logger = logger.getChild("RaffleView")
+
+    async def start(self) -> discord.Message:
+        await self._refresh_totals()
+        embed = self.build_embed()
+        self._sync_buttons()
+        self.message = await self.ctx.send(embed=embed, view=self)
+        return self.message
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Tu ne peux pas gérer la tombola d'un autre joueur.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=self)
+
+    def build_embed(self) -> discord.Embed:
+        next_draw = None
+        getter = getattr(self.economy, "get_next_raffle_datetime", None)
+        if callable(getter):
+            with contextlib.suppress(Exception):
+                next_draw = getter()
+        return embeds.raffle_overview_embed(
+            member=self.ctx.author,
+            inventory_tickets=self.inventory,
+            committed_tickets=self.committed,
+            total_committed=self.pool_total,
+            next_draw=next_draw,
+            prize_label=TOMBOLA_PRIZE_LABEL,
+            ticket_emoji=TOMBOLA_TICKET_EMOJI,
+        )
+
+    async def stake_tickets(self, interaction: discord.Interaction, amount: int) -> None:
+        if amount <= 0:
+            await self._send_error(interaction, "Indique un nombre positif de tickets.")
+            return
+        async with self._lock:
+            try:
+                inventory, committed = await self.database.stake_raffle_tickets(
+                    self.ctx.author.id, amount=amount
+                )
+            except InsufficientRaffleTicketsError:
+                await self._send_error(
+                    interaction, "Tu n'as pas assez de tickets en inventaire pour cette mise."
+                )
+                return
+            except DatabaseError:
+                await self._send_error(
+                    interaction, "Impossible de mettre à jour tes tickets pour le moment."
+                )
+                return
+            else:
+                self.inventory = inventory
+                self.committed = committed
+                await self._refresh_pool_total()
+        await self._push_update(interaction)
+
+    async def withdraw_tickets(
+        self, interaction: discord.Interaction, amount: int | None = None
+    ) -> None:
+        if amount is not None and amount <= 0:
+            await self._send_error(interaction, "Indique un nombre positif de tickets.")
+            return
+        async with self._lock:
+            try:
+                inventory, committed = await self.database.withdraw_raffle_entries(
+                    self.ctx.author.id, amount=amount
+                )
+            except DatabaseError:
+                await self._send_error(
+                    interaction, "Impossible de récupérer tes tickets pour le moment."
+                )
+                return
+            else:
+                self.inventory = inventory
+                self.committed = committed
+                await self._refresh_pool_total()
+        await self._push_update(interaction)
+
+    async def _refresh_totals(self) -> None:
+        try:
+            self.inventory = await self.database.get_user_raffle_tickets(self.ctx.author.id)
+        except Exception:
+            self._logger.exception("Impossible de récupérer les tickets en inventaire")
+            self.inventory = 0
+        try:
+            self.committed = await self.database.get_user_raffle_entries(self.ctx.author.id)
+        except Exception:
+            self._logger.exception("Impossible de récupérer les tickets misés")
+            self.committed = 0
+        await self._refresh_pool_total()
+
+    async def _refresh_pool_total(self) -> None:
+        try:
+            self.pool_total = await self.database.get_total_raffle_tickets()
+        except Exception:
+            self._logger.exception("Impossible de récupérer le total de la tombola")
+            self.pool_total = 0
+
+    async def _push_update(self, interaction: discord.Interaction) -> None:
+        if self.message is None:
+            return
+        self._sync_buttons()
+        embed = self.build_embed()
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        await interaction.followup.edit_message(
+            message_id=self.message.id,
+            embed=embed,
+            view=self,
+        )
+
+    async def _send_error(self, interaction: discord.Interaction, message: str) -> None:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
+    def _sync_buttons(self) -> None:
+        can_stake = self.inventory > 0
+        can_withdraw = self.committed > 0
+        for button in (
+            getattr(self, "add_one_button", None),
+            getattr(self, "add_five_button", None),
+            getattr(self, "add_ten_button", None),
+            getattr(self, "add_fifty_button", None),
+            getattr(self, "add_hundred_button", None),
+            getattr(self, "bet_all_button", None),
+            getattr(self, "custom_stake_button", None),
+        ):
+            if button is not None:
+                button.disabled = not can_stake
+        for button in (
+            getattr(self, "withdraw_all_button", None),
+            getattr(self, "custom_withdraw_button", None),
+        ):
+            if button is not None:
+                button.disabled = not can_withdraw
+
+    @discord.ui.button(label="+1", style=discord.ButtonStyle.primary, row=0)
+    async def add_one_button(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ) -> None:
+        await self.stake_tickets(interaction, 1)
+
+    @discord.ui.button(label="+5", style=discord.ButtonStyle.primary, row=0)
+    async def add_five_button(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ) -> None:
+        await self.stake_tickets(interaction, 5)
+
+    @discord.ui.button(label="+10", style=discord.ButtonStyle.primary, row=0)
+    async def add_ten_button(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ) -> None:
+        await self.stake_tickets(interaction, 10)
+
+    @discord.ui.button(label="+50", style=discord.ButtonStyle.primary, row=0)
+    async def add_fifty_button(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ) -> None:
+        await self.stake_tickets(interaction, 50)
+
+    @discord.ui.button(label="+100", style=discord.ButtonStyle.primary, row=0)
+    async def add_hundred_button(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ) -> None:
+        await self.stake_tickets(interaction, 100)
+
+    @discord.ui.button(label="Tout miser", style=discord.ButtonStyle.success, row=1)
+    async def bet_all_button(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ) -> None:
+        if self.inventory <= 0:
+            await self._send_error(interaction, "Tu n'as aucun ticket à miser.")
+            return
+        await self.stake_tickets(interaction, self.inventory)
+
+    @discord.ui.button(label="Choisir une quantité", style=discord.ButtonStyle.secondary, row=1)
+    async def custom_stake_button(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ) -> None:
+        await interaction.response.send_modal(RaffleAmountModal(self, action="stake"))
+
+    @discord.ui.button(label="Retirer tout", style=discord.ButtonStyle.danger, row=2)
+    async def withdraw_all_button(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ) -> None:
+        if self.committed <= 0:
+            await self._send_error(
+                interaction, "Aucun ticket n'est actuellement misé pour ce tirage."
+            )
+            return
+        await self.withdraw_tickets(interaction, self.committed)
+
+    @discord.ui.button(label="Retirer une quantité", style=discord.ButtonStyle.secondary, row=2)
+    async def custom_withdraw_button(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ) -> None:
+        await interaction.response.send_modal(RaffleAmountModal(self, action="withdraw"))
+
+
+@dataclass
+class InventorySnapshot:
+    balance: int
+    gems: int
+    tickets_inventory: int
+    tickets_committed: int
+    potions: tuple[Mapping[str, object], ...]
+    enchantments: tuple[Mapping[str, object], ...]
+    equipped_lookup: dict[str, int]
+    pets: tuple[PetDisplay, ...]
+
+    @classmethod
+    async def build(cls, database: Database, user_id: int) -> "InventorySnapshot":
+        await database.ensure_user(user_id)
+        (
+            balance,
+            gems,
+            potions,
+            enchantments,
+            equipped,
+            pets,
+            tickets_inventory,
+            tickets_committed,
+        ) = await asyncio.gather(
+            database.fetch_balance(user_id),
+            database.fetch_gems(user_id),
+            database.get_user_potions(user_id),
+            database.get_user_enchantments(user_id),
+            database.get_equipped_enchantments(user_id),
+            database.get_user_pets(user_id),
+            database.get_user_raffle_tickets(user_id),
+            database.get_user_raffle_entries(user_id),
+        )
+        equipped_lookup: dict[str, int] = {}
+        for row in equipped:
+            slug = str(row.get("slug") or "")
+            power = int(row.get("power") or 0)
+            if slug and power:
+                equipped_lookup[slug] = power
+        sorted_enchantments = tuple(
+            sorted(
+                enchantments,
+                key=lambda row: (str(row.get("slug") or ""), -int(row.get("power") or 0)),
+            )
+        )
+        potion_rows = tuple(
+            sorted(potions, key=lambda row: str(row.get("potion_slug") or ""))
+        )
+        pet_displays = tuple(PetDisplay.from_mapping(row) for row in pets)
+        return cls(
+            balance=int(balance or 0),
+            gems=int(gems or 0),
+            tickets_inventory=int(tickets_inventory or 0),
+            tickets_committed=int(tickets_committed or 0),
+            potions=potion_rows,
+            enchantments=sorted_enchantments,
+            equipped_lookup=equipped_lookup,
+            pets=pet_displays,
+        )
+
+
+class InventoryView(discord.ui.View):
+    _CATEGORIES: tuple[tuple[str, str, str], ...] = (
+        ("overview", "Aperçu", "📦"),
+        ("potions", "Potions", "🧪"),
+        ("enchantments", "Enchantements", "✨"),
+        ("pets", "Pets", "🐾"),
+    )
+
+    def __init__(self, ctx: commands.Context, snapshot: InventorySnapshot) -> None:
+        super().__init__(timeout=240)
+        self.ctx = ctx
+        self.snapshot = snapshot
+        self.category = "overview"
+        self.page_index: dict[str, int] = {category: 0 for category, _, _ in self._CATEGORIES}
+        self.message: discord.Message | None = None
+
+    async def start(self) -> discord.Message:
+        embed = self.build_embed()
+        self._sync_components()
+        self.message = await self.ctx.send(embed=embed, view=self)
+        return self.message
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul le propriétaire de cet inventaire peut naviguer dedans.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=self)
+
+    def build_embed(self) -> discord.Embed:
+        builder = getattr(self, f"_build_{self.category}", None)
+        if builder is None:
+            return embeds.info_embed("Inventaire indisponible pour le moment.")
+        embed = builder()
+        embed.set_author(name=self.ctx.author.display_name, icon_url=self.ctx.author.display_avatar.url)
+        return embed
+
+    def _build_overview(self) -> discord.Embed:
+        lines = [
+            f"💰 PB : **{embeds.format_currency(self.snapshot.balance)}**",
+            f"💎 Gemmes : **{embeds.format_gems(self.snapshot.gems)}**",
+            f"{TOMBOLA_TICKET_EMOJI} Tickets en inventaire : **{max(0, self.snapshot.tickets_inventory)}**",
+            f"🎯 Tickets misés : **{max(0, self.snapshot.tickets_committed)}**",
+            "Utilise `e!raffle` pour miser tes tickets sur le prochain tirage.",
+        ]
+        embed = embeds.info_embed("\n".join(lines), title="Inventaire — Aperçu")
+        embed.set_footer(text="Parcours les catégories avec le menu déroulant ci-dessous.")
+        return embed
+
+    def _build_potions(self) -> discord.Embed:
+        rows = [row for row in self.snapshot.potions if int(row.get("quantity") or 0) > 0]
+        per_page = 6
+        page = self.page_index.get("potions", 0)
+        total_pages = max(1, (len(rows) + per_page - 1) // per_page)
+        page = min(page, total_pages - 1)
+        self.page_index["potions"] = page
+        start = page * per_page
+        chunk = rows[start : start + per_page]
+        if chunk:
+            lines = []
+            for row in chunk:
+                slug = str(row.get("potion_slug") or "")
+                quantity = int(row.get("quantity") or 0)
+                definition = POTION_DEFINITION_MAP.get(slug)
+                name = definition.name if definition else slug
+                description = definition.description if definition else "Potion mystérieuse."
+                lines.append(f"• **{name}** ×{quantity}\n  {description}")
+            description_text = "\n".join(lines)
+        else:
+            description_text = "Tu n'as aucune potion en stock pour le moment."
+        embed = embeds.info_embed(description_text, title="Inventaire — Potions")
+        embed.set_footer(text=f"Page {page + 1}/{total_pages}")
+        return embed
+
+    def _build_enchantments(self) -> discord.Embed:
+        rows = [
+            row
+            for row in self.snapshot.enchantments
+            if int(row.get("quantity") or 0) > 0 and int(row.get("power") or 0) > 0
+        ]
+        per_page = 5
+        page = self.page_index.get("enchantments", 0)
+        total_pages = max(1, (len(rows) + per_page - 1) // per_page)
+        page = min(page, total_pages - 1)
+        self.page_index["enchantments"] = page
+        start = page * per_page
+        chunk = rows[start : start + per_page]
+        if chunk:
+            lines = []
+            for row in chunk:
+                slug = str(row.get("slug") or "")
+                power = int(row.get("power") or 0)
+                quantity = int(row.get("quantity") or 0)
+                definition = ENCHANTMENT_DEFINITION_MAP.get(slug)
+                label = (
+                    format_enchantment(definition, power)
+                    if definition
+                    else f"{slug} (niveau {power})"
+                )
+                status = ""
+                equipped_power = self.snapshot.equipped_lookup.get(slug)
+                if equipped_power == power:
+                    status = " — ✅ Équipé"
+                elif equipped_power:
+                    status = f" — ⚠️ Slot utilisé sur le niveau {equipped_power}"
+                lines.append(
+                    f"{get_enchantment_emoji(slug)} {label} ×{quantity}{status}"
+                )
+            description_text = "\n".join(lines)
+        else:
+            description_text = "Aucun enchantement dans ton inventaire. Gagne-en via les événements !"
+        embed = embeds.info_embed(description_text, title="Inventaire — Enchantements")
+        embed.set_footer(text=f"Page {page + 1}/{total_pages}")
+        return embed
+
+    def _build_pets(self) -> discord.Embed:
+        rows = list(self.snapshot.pets)
+        per_page = 4
+        page = self.page_index.get("pets", 0)
+        total_pages = max(1, (len(rows) + per_page - 1) // per_page)
+        page = min(page, total_pages - 1)
+        self.page_index["pets"] = page
+        start = page * per_page
+        chunk = rows[start : start + per_page]
+        if chunk:
+            lines = []
+            for pet in chunk:
+                flags: list[str] = []
+                if pet.is_active:
+                    flags.append("Équipé")
+                if pet.is_huge:
+                    level = pet.huge_level or 1
+                    flags.append(f"Huge niv. {level}")
+                info = f"{pet.display_name()} — {pet.income_text}"
+                if pet.identifier:
+                    info += f" (ID {pet.identifier})"
+                if flags:
+                    info += f" — {', '.join(flags)}"
+                lines.append(info)
+            description_text = "\n".join(lines)
+        else:
+            description_text = "Tu n'as pas encore obtenu de pet. Ouvre des œufs pour remplir ta collection !"
+        embed = embeds.info_embed(description_text, title="Inventaire — Pets")
+        embed.set_footer(text=f"Page {page + 1}/{total_pages}")
+        return embed
+
+    def _sync_components(self) -> None:
+        self._sync_navigation()
+        if hasattr(self, "category_selector"):
+            for option in self.category_selector.options:
+                option.default = option.value == self.category
+
+    def _sync_navigation(self) -> None:
+        pages = self._page_count(self.category)
+        page = self.page_index.get(self.category, 0)
+        if hasattr(self, "previous_page"):
+            self.previous_page.disabled = pages <= 1 or page <= 0
+        if hasattr(self, "next_page"):
+            self.next_page.disabled = pages <= 1 or page >= pages - 1
+
+    def _page_count(self, category: str) -> int:
+        if category == "potions":
+            rows = [row for row in self.snapshot.potions if int(row.get("quantity") or 0) > 0]
+            per_page = 6
+        elif category == "enchantments":
+            rows = [
+                row
+                for row in self.snapshot.enchantments
+                if int(row.get("quantity") or 0) > 0 and int(row.get("power") or 0) > 0
+            ]
+            per_page = 5
+        elif category == "pets":
+            rows = list(self.snapshot.pets)
+            per_page = 4
+        else:
+            return 1
+        if not rows:
+            return 1
+        return max(1, (len(rows) + per_page - 1) // per_page)
+
+    @discord.ui.select(
+        placeholder="Choisis une catégorie",
+        options=[
+            discord.SelectOption(label=label, value=value, emoji=emoji)
+            for value, label, emoji in _CATEGORIES
+        ],
+    )
+    async def category_selector(
+        self, interaction: discord.Interaction, select: discord.ui.Select
+    ) -> None:
+        self.category = select.values[0]
+        self.page_index[self.category] = 0
+        self._sync_components()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary, row=1)
+    async def previous_page(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ) -> None:
+        page = self.page_index.get(self.category, 0)
+        if page > 0:
+            self.page_index[self.category] = page - 1
+        self._sync_components()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary, row=1)
+    async def next_page(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ) -> None:
+        page = self.page_index.get(self.category, 0)
+        pages = self._page_count(self.category)
+        if page < pages - 1:
+            self.page_index[self.category] = page + 1
+        self._sync_components()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
 class Economy(commands.Cog):
     """Commandes économiques réduites au strict nécessaire."""
 
@@ -1705,6 +2201,26 @@ class Economy(commands.Cog):
         embed = embeds.balance_embed(target, balance=balance, gems=gems)
         await ctx.send(embed=embed)
 
+    @commands.command(name="raffle", aliases=("tombola",))
+    async def raffle(self, ctx: commands.Context) -> None:
+        view = RaffleView(ctx, self)
+        await view.start()
+
+    @commands.command(name="inventory", aliases=("inv", "sac"))
+    async def inventory(self, ctx: commands.Context) -> None:
+        try:
+            snapshot = await InventorySnapshot.build(self.database, ctx.author.id)
+        except Exception:
+            logger.exception("Impossible de construire l'inventaire")
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Inventaire inaccessible pour le moment. Réessaie dans quelques instants."
+                )
+            )
+            return
+        view = InventoryView(ctx, snapshot)
+        await view.start()
+
     @commands.command(name="koth")
     async def koth(self, ctx: commands.Context) -> None:
         if ctx.guild is None:
@@ -1791,7 +2307,7 @@ class Economy(commands.Cog):
 
         await ctx.send(
             embed=embeds.warning_embed(
-                "La vente directe de tickets est désormais fermée. Ouvre `e!stand` pour accéder aux boutons permettant de lister tes tickets sur la plaza !",
+                "La vente directe de tickets est désormais fermée. Utilise `e!raffle` pour miser tes tickets et `e!stand` pour les proposer sur la plaza !",
                 title="🎟️ Vente de tickets",
             )
         )
