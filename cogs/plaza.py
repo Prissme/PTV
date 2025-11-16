@@ -243,6 +243,468 @@ class StandPetListingModal(discord.ui.Modal):
             await self.view.refresh_if_needed()
 
 
+class AuctionBidModal(discord.ui.Modal):
+    def __init__(self, plaza: "Plaza", author: discord.abc.User) -> None:
+        super().__init__(title="Faire une offre")
+        self.plaza = plaza
+        self.author = author
+        self.auction_id_input = discord.ui.TextInput(
+            label="ID de l'enchère", placeholder="Ex: 12", min_length=1, max_length=10
+        )
+        self.amount_input = discord.ui.TextInput(
+            label="Montant de l'offre", placeholder="Ex: 50000", min_length=1, max_length=18
+        )
+        self.add_item(self.auction_id_input)
+        self.add_item(self.amount_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            auction_id = int(self.auction_id_input.value.replace(" ", ""))
+            amount = int(self.amount_input.value.replace(" ", ""))
+        except ValueError:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Merci d'indiquer des valeurs numériques."),
+                ephemeral=True,
+            )
+            return
+        if amount <= 0:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Le montant doit être positif."), ephemeral=True
+            )
+            return
+        try:
+            await self.plaza.database.place_auction_bid(
+                auction_id, self.author.id, amount
+            )
+        except InsufficientBalanceError as exc:
+            await interaction.response.send_message(
+                embed=embeds.error_embed(str(exc)), ephemeral=True
+            )
+            return
+        except DatabaseError as exc:
+            await interaction.response.send_message(
+                embed=embeds.error_embed(str(exc)), ephemeral=True
+            )
+            return
+
+        detailed = await self.plaza.database.get_auction_listing(auction_id)
+        if detailed is None:
+            await interaction.response.send_message(
+                embed=embeds.success_embed(
+                    "Ton offre a été enregistrée.", title="Enchère mise à jour"
+                ),
+                ephemeral=True,
+            )
+            return
+
+        status = str(detailed.get("status", "active"))
+        if status == "sold":
+            summary = "Tu remportes immédiatement cette enchère !"
+        else:
+            summary = "Tu es désormais l'enchérisseur principal."
+        line = self.plaza._format_auction_line(detailed)
+        embed = embeds.success_embed(
+            f"{line}\n{summary}",
+            title="Offre enregistrée",
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class _BaseAuctionModal(discord.ui.Modal):
+    def __init__(self, plaza: "Plaza", author: discord.abc.User, title: str) -> None:
+        super().__init__(title=title)
+        self.plaza = plaza
+        self.author = author
+
+    @staticmethod
+    def _parse_optional_int(raw: str) -> int | None:
+        cleaned = raw.replace(" ", "").strip()
+        if not cleaned:
+            return None
+        return int(cleaned)
+
+    @staticmethod
+    def _parse_int(raw: str) -> int | None:
+        try:
+            value = int(raw.replace(" ", ""))
+        except ValueError:
+            return None
+        if value <= 0:
+            return None
+        return value
+
+
+class PetAuctionModal(_BaseAuctionModal):
+    def __init__(self, plaza: "Plaza", author: discord.abc.User) -> None:
+        super().__init__(plaza, author, "Créer une enchère - Pet")
+        self.pet_input = discord.ui.TextInput(
+            label="Pet à vendre",
+            placeholder="Ex: Huge Shelly ou Shelly gold",
+            min_length=1,
+            max_length=100,
+        )
+        self.starting_bid_input = discord.ui.TextInput(
+            label="Mise de départ", placeholder="Ex: 100000", min_length=1, max_length=18
+        )
+        self.duration_input = discord.ui.TextInput(
+            label="Durée (minutes)",
+            placeholder="Ex: 120",
+            min_length=1,
+            max_length=4,
+        )
+        self.buyout_input = discord.ui.TextInput(
+            label="Achat direct (optionnel)",
+            placeholder="Laisse vide si pas d'achat direct",
+            required=False,
+            max_length=18,
+        )
+        self.add_item(self.pet_input)
+        self.add_item(self.starting_bid_input)
+        self.add_item(self.duration_input)
+        self.add_item(self.buyout_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        starting_bid = self._parse_int(self.starting_bid_input.value)
+        duration_minutes = self._parse_int(self.duration_input.value)
+        if starting_bid is None or duration_minutes is None:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Merci de saisir des valeurs numériques positives."),
+                ephemeral=True,
+            )
+            return
+        try:
+            buyout = self._parse_optional_int(self.buyout_input.value)
+        except ValueError:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Le prix d'achat direct doit être numérique."),
+                ephemeral=True,
+            )
+            return
+
+        record, _, error = await self.plaza._resolve_pet(self.author.id, self.pet_input.value)
+        if error:
+            await interaction.response.send_message(
+                embed=embeds.error_embed(error), ephemeral=True
+            )
+            return
+        if record is None:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Pet introuvable."), ephemeral=True
+            )
+            return
+
+        user_pet_id = int(record.get("id") or 0)
+        try:
+            listing = await self.plaza.database.create_pet_auction(
+                self.author.id,
+                user_pet_id,
+                starting_bid=starting_bid,
+                duration_minutes=duration_minutes,
+                buyout_price=buyout,
+            )
+        except DatabaseError as exc:
+            await interaction.response.send_message(
+                embed=embeds.error_embed(str(exc)), ephemeral=True
+            )
+            return
+
+        embed = await self.plaza._build_auction_creation_embed(int(listing["id"]))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class TicketAuctionModal(_BaseAuctionModal):
+    def __init__(self, plaza: "Plaza", author: discord.abc.User) -> None:
+        super().__init__(plaza, author, "Créer une enchère - Tickets")
+        self.quantity_input = discord.ui.TextInput(
+            label="Quantité", placeholder="Ex: 5", min_length=1, max_length=10
+        )
+        self.starting_bid_input = discord.ui.TextInput(
+            label="Mise de départ", placeholder="Ex: 20000", min_length=1, max_length=18
+        )
+        self.duration_input = discord.ui.TextInput(
+            label="Durée (minutes)", placeholder="Ex: 180", min_length=1, max_length=4
+        )
+        self.buyout_input = discord.ui.TextInput(
+            label="Achat direct (optionnel)",
+            placeholder="Laisse vide si pas d'achat direct",
+            required=False,
+            max_length=18,
+        )
+        self.add_item(self.quantity_input)
+        self.add_item(self.starting_bid_input)
+        self.add_item(self.duration_input)
+        self.add_item(self.buyout_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        quantity = self._parse_int(self.quantity_input.value)
+        starting_bid = self._parse_int(self.starting_bid_input.value)
+        duration_minutes = self._parse_int(self.duration_input.value)
+        if quantity is None or starting_bid is None or duration_minutes is None:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Merci de saisir des valeurs numériques positives."),
+                ephemeral=True,
+            )
+            return
+        try:
+            buyout = self._parse_optional_int(self.buyout_input.value)
+        except ValueError:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Le prix d'achat direct doit être numérique."),
+                ephemeral=True,
+            )
+            return
+        if quantity <= 0:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("La quantité doit être positive."), ephemeral=True
+            )
+            return
+        try:
+            listing = await self.plaza.database.create_item_auction(
+                self.author.id,
+                item_type="ticket",
+                item_slug="raffle_ticket",
+                quantity=quantity,
+                starting_bid=starting_bid,
+                duration_minutes=duration_minutes,
+                buyout_price=buyout,
+            )
+        except DatabaseError as exc:
+            await interaction.response.send_message(
+                embed=embeds.error_embed(str(exc)), ephemeral=True
+            )
+            return
+        embed = await self.plaza._build_auction_creation_embed(int(listing["id"]))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class PotionAuctionModal(_BaseAuctionModal):
+    def __init__(self, plaza: "Plaza", author: discord.abc.User) -> None:
+        super().__init__(plaza, author, "Créer une enchère - Potion")
+        self.slug_input = discord.ui.TextInput(
+            label="Potion à vendre",
+            placeholder="Slug exact de la potion",
+            min_length=1,
+            max_length=50,
+        )
+        self.quantity_input = discord.ui.TextInput(
+            label="Quantité", placeholder="Ex: 3", min_length=1, max_length=10
+        )
+        self.starting_bid_input = discord.ui.TextInput(
+            label="Mise de départ", placeholder="Ex: 150000", min_length=1, max_length=18
+        )
+        self.duration_input = discord.ui.TextInput(
+            label="Durée (minutes)", placeholder="Ex: 240", min_length=1, max_length=4
+        )
+        self.buyout_input = discord.ui.TextInput(
+            label="Achat direct (optionnel)",
+            placeholder="Laisse vide si pas d'achat direct",
+            required=False,
+            max_length=18,
+        )
+        self.add_item(self.slug_input)
+        self.add_item(self.quantity_input)
+        self.add_item(self.starting_bid_input)
+        self.add_item(self.duration_input)
+        self.add_item(self.buyout_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        quantity = self._parse_int(self.quantity_input.value)
+        starting_bid = self._parse_int(self.starting_bid_input.value)
+        duration_minutes = self._parse_int(self.duration_input.value)
+        if quantity is None or starting_bid is None or duration_minutes is None:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Merci de saisir des valeurs numériques positives."),
+                ephemeral=True,
+            )
+            return
+        try:
+            buyout = self._parse_optional_int(self.buyout_input.value)
+        except ValueError:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Le prix d'achat direct doit être numérique."),
+                ephemeral=True,
+            )
+            return
+        if quantity <= 0:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("La quantité doit être positive."), ephemeral=True
+            )
+            return
+        try:
+            listing = await self.plaza.database.create_item_auction(
+                self.author.id,
+                item_type="potion",
+                item_slug=self.slug_input.value.lower(),
+                quantity=quantity,
+                starting_bid=starting_bid,
+                duration_minutes=duration_minutes,
+                buyout_price=buyout,
+            )
+        except DatabaseError as exc:
+            await interaction.response.send_message(
+                embed=embeds.error_embed(str(exc)), ephemeral=True
+            )
+            return
+        embed = await self.plaza._build_auction_creation_embed(int(listing["id"]))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class EnchantAuctionModal(_BaseAuctionModal):
+    def __init__(self, plaza: "Plaza", author: discord.abc.User) -> None:
+        super().__init__(plaza, author, "Créer une enchère - Enchantement")
+        self.slug_input = discord.ui.TextInput(
+            label="Enchantement", placeholder="Slug de l'enchantement", min_length=1, max_length=50
+        )
+        self.power_input = discord.ui.TextInput(
+            label="Niveau", placeholder="Entre 1 et 10", min_length=1, max_length=2
+        )
+        self.starting_bid_input = discord.ui.TextInput(
+            label="Mise de départ", placeholder="Ex: 75000", min_length=1, max_length=18
+        )
+        self.duration_input = discord.ui.TextInput(
+            label="Durée (minutes)", placeholder="Ex: 90", min_length=1, max_length=4
+        )
+        self.buyout_input = discord.ui.TextInput(
+            label="Achat direct (optionnel)",
+            placeholder="Laisse vide si pas d'achat direct",
+            required=False,
+            max_length=18,
+        )
+        self.add_item(self.slug_input)
+        self.add_item(self.power_input)
+        self.add_item(self.starting_bid_input)
+        self.add_item(self.duration_input)
+        self.add_item(self.buyout_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        power = self._parse_int(self.power_input.value)
+        starting_bid = self._parse_int(self.starting_bid_input.value)
+        duration_minutes = self._parse_int(self.duration_input.value)
+        if power is None or starting_bid is None or duration_minutes is None:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Merci de saisir des valeurs numériques positives."),
+                ephemeral=True,
+            )
+            return
+        if self.slug_input.value not in ENCHANTMENT_DEFINITION_MAP:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Cet enchantement est inconnu."),
+                ephemeral=True,
+            )
+            return
+        if power < 1 or power > 10:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Le niveau doit être compris entre 1 et 10."),
+                ephemeral=True,
+            )
+            return
+        try:
+            buyout = self._parse_optional_int(self.buyout_input.value)
+        except ValueError:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Le prix d'achat direct doit être numérique."),
+                ephemeral=True,
+            )
+            return
+        try:
+            listing = await self.plaza.database.create_item_auction(
+                self.author.id,
+                item_type="enchantment",
+                item_slug=self.slug_input.value,
+                enchantment_power=power,
+                quantity=1,
+                starting_bid=starting_bid,
+                duration_minutes=duration_minutes,
+                buyout_price=buyout,
+            )
+        except DatabaseError as exc:
+            await interaction.response.send_message(
+                embed=embeds.error_embed(str(exc)), ephemeral=True
+            )
+            return
+        embed = await self.plaza._build_auction_creation_embed(int(listing["id"]))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class AuctionCreationView(discord.ui.View):
+    """Vue guidant la création d'une enchère via des formulaires dédiés."""
+
+    def __init__(self, plaza: "Plaza", author: discord.abc.User) -> None:
+        super().__init__(timeout=180)
+        self.plaza = plaza
+        self.author = author
+        self.message: Optional[discord.Message] = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user and interaction.user.id == self.author.id:
+            return True
+        await interaction.response.send_message(
+            "Seule la personne qui a ouvert ce formulaire peut créer une enchère.",
+            ephemeral=True,
+        )
+        return False
+
+    async def on_timeout(self) -> None:
+        if self.message is None:
+            return
+        for child in self.children:
+            child.disabled = True
+        with contextlib.suppress(discord.HTTPException):
+            await self.message.edit(view=self)
+
+    @discord.ui.select(
+        placeholder="Choisis ce que tu veux vendre",
+        options=[
+            discord.SelectOption(
+                label="Pet", value="pet", description="Mettre un pet aux enchères"
+            ),
+            discord.SelectOption(
+                label="Tickets", value="ticket", description="Vendre des tickets de loterie"
+            ),
+            discord.SelectOption(
+                label="Potion", value="potion", description="Vendre une potion"
+            ),
+            discord.SelectOption(
+                label="Enchantement", value="enchant", description="Vendre un enchantement"
+            ),
+        ],
+    )
+    async def auction_type_select(
+        self, interaction: discord.Interaction, select: discord.ui.Select
+    ) -> None:
+        value = select.values[0]
+        if value == "pet":
+            await interaction.response.send_modal(PetAuctionModal(self.plaza, self.author))
+            return
+        if value == "ticket":
+            await interaction.response.send_modal(
+                TicketAuctionModal(self.plaza, self.author)
+            )
+            return
+        if value == "potion":
+            await interaction.response.send_modal(
+                PotionAuctionModal(self.plaza, self.author)
+            )
+            return
+        await interaction.response.send_modal(
+            EnchantAuctionModal(self.plaza, self.author)
+        )
+
+    @discord.ui.button(label="Fermer", style=discord.ButtonStyle.secondary)
+    async def close_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        del button
+        for child in self.children:
+            child.disabled = True
+        self.stop()
+        if interaction.response.is_done():
+            if self.message is not None:
+                await self.message.edit(view=self)
+        else:
+            await interaction.response.edit_message(view=self)
+
+
 class StandTicketListingModal(discord.ui.Modal):
     def __init__(self, view: "StandManagementView") -> None:
         super().__init__(title="Lister des tickets")
@@ -954,17 +1416,17 @@ class Plaza(commands.Cog):
     async def _send_auction_creation_embed(
         self, ctx: commands.Context, listing_id: int
     ) -> None:
+        embed = await self._build_auction_creation_embed(listing_id)
+        await ctx.send(embed=embed)
+
+    async def _build_auction_creation_embed(self, listing_id: int) -> discord.Embed:
         detailed = await self.database.get_auction_listing(listing_id)
         if detailed is None:
-            await ctx.send(
-                embed=embeds.success_embed(
-                    "Enchère créée avec succès.", title="Nouvelle enchère"
-                )
+            return embeds.success_embed(
+                "Enchère créée avec succès.", title="Nouvelle enchère"
             )
-            return
         line = self._format_auction_line(detailed)
-        embed = embeds.success_embed(line, title="Enchère publiée")
-        await ctx.send(embed=embed)
+        return embeds.success_embed(line, title="Enchère publiée")
 
     @staticmethod
     def _listing_sort_key(record: Mapping[str, object]) -> tuple[int, float]:
@@ -1719,6 +2181,27 @@ class AuctionBrowserView(discord.ui.View):
         self.plaza = plaza
         self.author = author
         self.message: Optional[discord.Message] = None
+
+    @discord.ui.button(label="Faire une offre", style=discord.ButtonStyle.primary)
+    async def bid_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        del button
+        await interaction.response.send_modal(AuctionBidModal(self.plaza, self.author))
+
+    @discord.ui.button(label="Créer une enchère", style=discord.ButtonStyle.success)
+    async def create_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        del button
+        view = AuctionCreationView(self.plaza, self.author)
+        embed = embeds.info_embed(
+            "Sélectionne le type d'objet pour ouvrir le formulaire correspondant.",
+            title="Créer une enchère",
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        with contextlib.suppress(discord.HTTPException):
+            view.message = await interaction.original_response()
 
     async def refresh(self, interaction: discord.Interaction | None = None) -> None:
         embed = await self.plaza._build_auction_overview_embed(self.author)
