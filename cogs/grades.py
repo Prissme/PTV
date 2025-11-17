@@ -14,6 +14,8 @@ from config import (
     GRADE_ROLE_IDS,
     LEADERBOARD_LIMIT,
     GradeDefinition,
+    ANIMALERIE_ZONE_SLUG,
+    ROBOT_ZONE_SLUG,
 )
 from database.db import DatabaseError
 from utils import embeds
@@ -395,6 +397,8 @@ class GradeSystem(commands.Cog):
             return
 
         grade_level = await self.database.get_grade_level(ctx.author.id)
+        rebirth_count = await self.database.get_rebirth_count(ctx.author.id)
+
         if grade_level < self.total_grades:
             await ctx.send(
                 embed=embeds.warning_embed(
@@ -403,14 +407,32 @@ class GradeSystem(commands.Cog):
             )
             return
 
-        rebirth_count = await self.database.get_rebirth_count(ctx.author.id)
-        if rebirth_count >= 1:
+        if rebirth_count >= 2:
             await ctx.send(
                 embed=embeds.error_embed(
-                    "Tu as déjà utilisé le rebirth unique disponible."
+                    "Tu as atteint la limite de rebirth disponible."
                 )
             )
             return
+
+        required_zone = None
+        required_label = None
+        if rebirth_count == 0:
+            required_zone = ROBOT_ZONE_SLUG
+            required_label = "la Zone Robotique"
+        elif rebirth_count == 1:
+            required_zone = ANIMALERIE_ZONE_SLUG
+            required_label = "l'Animalerie"
+
+        if required_zone is not None:
+            has_zone = await self.database.has_unlocked_zone(ctx.author.id, required_zone)
+            if not has_zone:
+                await ctx.send(
+                    embed=embeds.warning_embed(
+                        f"Atteins {required_label} avant de lancer ce rebirth."
+                    )
+                )
+                return
         description_lines = [
             f"• Tu es sur le point de lancer ton rebirth #{rebirth_count + 1}",
             "• Retour à la zone 1 et au grade 1",
@@ -420,8 +442,10 @@ class GradeSystem(commands.Cog):
             "• Accès au gold garanti en payant 100× le prix d'un œuf",
             "• Double ouverture récapitulée dans un seul embed",
             "• Nouvelle zone : *Coming soon*",
-            "• Limite absolue : 1 rebirth par joueur",
+            "• Limite absolue : 2 rebirths par joueur",
         ]
+        if required_label is not None:
+            description_lines.append(f"• Condition de ce rebirth : atteindre {required_label}")
         prompt_embed = embeds.warning_embed(
             "\n".join(description_lines),
             title="Confirmer le rebirth ?",

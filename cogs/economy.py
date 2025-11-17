@@ -2473,7 +2473,7 @@ class Economy(commands.Cog):
     @commands.cooldown(1, 600, commands.BucketType.user)
     @commands.command(name="voler")
     async def steal(self, ctx: commands.Context, member: discord.Member | None = None) -> None:
-        """Tente de voler des PB à un autre membre avec 50% de réussite."""
+        """Tente de voler des PB à un autre membre avec une chance qui progresse avec ton grade."""
 
         if member is None:
             await ctx.send(
@@ -2495,6 +2495,10 @@ class Economy(commands.Cog):
         await self.database.ensure_user(ctx.author.id)
         await self.database.ensure_user(member.id)
 
+        grade_level = await self.database.get_grade_level(ctx.author.id)
+        steal_bonus = min(max(grade_level, 0) * 0.05, 0.5)
+        success_chance = min(1.0, 0.5 + steal_bonus)
+
         attacker_balance = await self.database.fetch_balance(ctx.author.id)
 
         victim_balance = await self.database.fetch_balance(member.id)
@@ -2509,7 +2513,7 @@ class Economy(commands.Cog):
             await ctx.send(embed=embeds.error_embed("Il n'y a rien à voler."))
             return
 
-        if random.random() >= 0.5:
+        if random.random() >= success_chance:
             penalty = int(attacker_balance * 0.85)
             if penalty > 0:
                 _, attacker_after = await self.database.increment_balance(

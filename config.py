@@ -1066,6 +1066,7 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         grade_required=15,
         entry_cost=777_777_777_777,
         eggs=_eggs_for_zone(MEXICO_ZONE_SLUG),
+        rebirth_required=2,
     ),
 )
 
