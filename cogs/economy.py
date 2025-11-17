@@ -2469,6 +2469,82 @@ class Economy(commands.Cog):
             },
         )
 
+    @commands.guild_only()
+    @commands.command(name="voler")
+    async def steal(self, ctx: commands.Context, member: discord.Member | None = None) -> None:
+        """Tente de voler des PB à un autre membre avec 50% de réussite."""
+
+        if member is None:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Utilisation : e!voler @membre",
+                    title="Commande incomplète",
+                )
+            )
+            return
+
+        if member.bot:
+            await ctx.send(embed=embeds.error_embed("Tu ne peux pas voler un bot."))
+            return
+
+        if member.id == ctx.author.id:
+            await ctx.send(embed=embeds.error_embed("Impossible de te voler toi-même."))
+            return
+
+        await self.database.ensure_user(ctx.author.id)
+        await self.database.ensure_user(member.id)
+
+        victim_balance = await self.database.fetch_balance(member.id)
+        if victim_balance <= 0:
+            await ctx.send(
+                embed=embeds.error_embed("Ta cible est fauchée, rien à dérober."),
+            )
+            return
+
+        steal_amount = int(victim_balance * 0.75)
+        if steal_amount <= 0:
+            await ctx.send(embed=embeds.error_embed("Il n'y a rien à voler."))
+            return
+
+        if random.random() >= 0.5:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    "Le vol a échoué, mieux vaut filer avant de te faire repérer.",
+                    title="Tentative ratée",
+                )
+            )
+            return
+
+        try:
+            transfer = await self.database.transfer_balance(
+                sender_id=member.id,
+                recipient_id=ctx.author.id,
+                amount=steal_amount,
+                send_transaction_type="steal_loss",
+                receive_transaction_type="steal_gain",
+                send_description=f"Vol subi par {ctx.author.id}",
+                receive_description=f"Vol réussi sur {member.id}",
+            )
+        except InsufficientBalanceError:
+            await ctx.send(
+                embed=embeds.error_embed("Ta cible n'a plus assez de PB à voler."),
+            )
+            return
+        except DatabaseError:
+            logger.exception("Impossible de traiter le vol", extra={"attacker": ctx.author.id, "target": member.id})
+            await ctx.send(
+                embed=embeds.error_embed("Impossible de finaliser le vol pour le moment."),
+            )
+            return
+
+        lines = [
+            f"{ctx.author.mention} a dépouillé {member.mention} !",
+            f"Butin : {embeds.format_currency(steal_amount)}",
+            f"Ton solde : {embeds.format_currency(transfer['recipient']['after'])}",
+            f"Solde de {member.display_name} : {embeds.format_currency(transfer['sender']['after'])}",
+        ]
+        await ctx.send(embed=embeds.success_embed("\n".join(lines), title="Coup réussi"))
+
     @commands.cooldown(1, 6, commands.BucketType.user)
     @commands.command(name="slots", aliases=("slot", "machine"))
     async def slots(self, ctx: commands.Context, bet: float = 100) -> None:

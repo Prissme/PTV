@@ -179,6 +179,10 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "note": "Commande réservée au propriétaire du bot.",
                 },
                 {
+                    "command": f"{PREFIX}voler @membre",
+                    "description": "Tente de voler 75% des PB de la cible (50% de réussite).",
+                },
+                {
                     "command": f"{PREFIX}slots mise",
                     "description": "Tente ta chance à la machine à sous et décroche un jackpot.",
                 },
@@ -202,33 +206,6 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 {
                     "command": f"{PREFIX}koth",
                     "description": "Conquiers la colline et vise Huge Bo : 1/6000 toutes les 10s, aucun cooldown.",
-                },
-            ),
-        },
-        {
-            "key": "clans",
-            "label": "⚔️ Clans",
-            "description": "Gestion des clans et des boosts communautaires.",
-            "commands": (
-                {
-                    "command": f"{PREFIX}clan",
-                    "description": "Affiche le tableau de bord de ton clan et ses boosts actifs.",
-                },
-                {
-                    "command": f"{PREFIX}clan create <nom>",
-                    "description": "Fonde un clan (25 000 PB) pour lancer ta propre alliance.",
-                },
-                {
-                    "command": f"{PREFIX}clan join <nom>",
-                    "description": "Rejoins un clan existant et profite de ses avantages.",
-                },
-                {
-                    "command": f"{PREFIX}clan slots",
-                    "description": "Augmente la capacité maximale de ton clan contre des PB.",
-                },
-                {
-                    "command": f"{PREFIX}clan boost",
-                    "description": "Achète un turbo PB permanent bénéfique à tous les membres.",
                 },
             ),
         },
@@ -416,6 +393,10 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "note": "Command reserved to the bot owner.",
                 },
                 {
+                    "command": f"{PREFIX}voler @member",
+                    "description": "50% chance to steal 75% of someone else's PB.",
+                },
+                {
                     "command": f"{PREFIX}slots bet",
                     "description": "Spin the slot machine and aim for a jackpot.",
                 },
@@ -439,33 +420,6 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 {
                     "command": f"{PREFIX}koth",
                     "description": "Claim the hill and chase Huge Bo: 1/6000 chance every 10s, no cooldown.",
-                },
-            ),
-        },
-        {
-            "key": "clans",
-            "label": "⚔️ Clans",
-            "description": "Manage clans and community boosts.",
-            "commands": (
-                {
-                    "command": f"{PREFIX}clan",
-                    "description": "Display your clan dashboard and its active boosts.",
-                },
-                {
-                    "command": f"{PREFIX}clan create <name>",
-                    "description": "Create a clan (25,000 PB) to build your own alliance.",
-                },
-                {
-                    "command": f"{PREFIX}clan join <name>",
-                    "description": "Join an existing clan and benefit from its perks.",
-                },
-                {
-                    "command": f"{PREFIX}clan slots",
-                    "description": "Increase your clan member capacity in exchange for PB.",
-                },
-                {
-                    "command": f"{PREFIX}clan boost",
-                    "description": "Purchase a permanent PB turbo that benefits every member.",
                 },
             ),
         },
