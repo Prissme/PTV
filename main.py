@@ -174,7 +174,6 @@ class EcoBot(commands.Bot):
             "pets",
             "potions",
             "enchantments",
-            "clans",
             "help",
             "plaza",
             "admin",
