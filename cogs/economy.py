@@ -2470,6 +2470,7 @@ class Economy(commands.Cog):
         )
 
     @commands.guild_only()
+    @commands.cooldown(1, 600, commands.BucketType.user)
     @commands.command(name="voler")
     async def steal(self, ctx: commands.Context, member: discord.Member | None = None) -> None:
         """Tente de voler des PB à un autre membre avec 50% de réussite."""
@@ -2494,6 +2495,8 @@ class Economy(commands.Cog):
         await self.database.ensure_user(ctx.author.id)
         await self.database.ensure_user(member.id)
 
+        attacker_balance = await self.database.fetch_balance(ctx.author.id)
+
         victim_balance = await self.database.fetch_balance(member.id)
         if victim_balance <= 0:
             await ctx.send(
@@ -2507,12 +2510,23 @@ class Economy(commands.Cog):
             return
 
         if random.random() >= 0.5:
-            await ctx.send(
-                embed=embeds.warning_embed(
-                    "Le vol a échoué, mieux vaut filer avant de te faire repérer.",
-                    title="Tentative ratée",
+            penalty = int(attacker_balance * 0.85)
+            if penalty > 0:
+                _, attacker_after = await self.database.increment_balance(
+                    ctx.author.id,
+                    -penalty,
+                    transaction_type="steal_failure",
+                    description=f"Échec de vol sur {member.id}",
                 )
-            )
+            else:
+                attacker_after = attacker_balance
+
+            lines = [
+                "Le vol a échoué, tu t'es fait repérer !",
+                f"Pénalité : {embeds.format_currency(penalty)}",  # penalty peut être 0
+                f"Ton solde : {embeds.format_currency(attacker_after)}",
+            ]
+            await ctx.send(embed=embeds.warning_embed("\n".join(lines), title="Tentative ratée"))
             return
 
         try:
