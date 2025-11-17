@@ -808,7 +808,7 @@ class Database:
                     id SERIAL PRIMARY KEY,
                     seller_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
                     buyer_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
-                    item_type TEXT NOT NULL CHECK (item_type IN ('ticket', 'potion')),
+                    item_type TEXT NOT NULL CHECK (item_type IN ('ticket', 'potion', 'role')),
                     item_slug TEXT,
                     quantity INTEGER NOT NULL CHECK (quantity > 0),
                     price BIGINT NOT NULL CHECK (price >= 0),
@@ -816,6 +816,19 @@ class Database:
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     completed_at TIMESTAMPTZ
                 )
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE plaza_consumable_listings
+                DROP CONSTRAINT IF EXISTS plaza_consumable_listings_item_type_check
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE plaza_consumable_listings
+                ADD CONSTRAINT plaza_consumable_listings_item_type_check
+                CHECK (item_type IN ('ticket', 'potion', 'role'))
                 """
             )
             await connection.execute(
@@ -5300,12 +5313,16 @@ class Database:
         price: int,
         item_slug: str | None = None,
     ) -> asyncpg.Record:
-        if item_type not in {"ticket", "potion"}:
+        if item_type not in {"ticket", "potion", "role"}:
             raise DatabaseError("Type d'objet invalide pour la plaza.")
         if quantity <= 0:
             raise DatabaseError("La quantité doit être positive.")
         if price < 0:
             raise DatabaseError("Le prix doit être positif.")
+        if item_type == "role" and item_slug is None:
+            raise DatabaseError("Merci de préciser le rôle à mettre en vente.")
+        if item_type == "role" and quantity != 1:
+            raise DatabaseError("Tu ne peux vendre qu'un rôle à la fois.")
 
         await self.ensure_user(seller_id)
 
@@ -5320,7 +5337,7 @@ class Database:
                     raise DatabaseError(
                         "Tu n'as pas assez de tickets de tombola pour cette mise en vente."
                     )
-            else:
+            elif item_type == "potion":
                 if not slug:
                     raise DatabaseError("Merci de préciser la potion à mettre en vente.")
                 consumed = await self.consume_user_potion(
@@ -5331,6 +5348,9 @@ class Database:
                 )
                 if not consumed:
                     raise DatabaseError("Tu n'as pas assez d'exemplaires de cette potion.")
+            else:
+                if not slug:
+                    raise DatabaseError("Merci de préciser le rôle à mettre en vente.")
 
             listing = await connection.fetchrow(
                 """
@@ -5371,7 +5391,7 @@ class Database:
                 await self.add_raffle_tickets(
                     seller_id, amount=quantity, connection=connection
                 )
-            else:
+            elif item_type == "potion":
                 if not item_slug:
                     raise DatabaseError("Potion inconnue pour cette annonce.")
                 await self.add_user_potion(
@@ -5380,6 +5400,7 @@ class Database:
                     quantity=quantity,
                     connection=connection,
                 )
+            # Les rôles sont rendus côté bot.
 
             cancelled = await connection.fetchrow(
                 """
@@ -5453,13 +5474,14 @@ class Database:
                 await self.add_raffle_tickets(
                     buyer_id, amount=quantity, connection=connection
                 )
-            else:
+            elif item_type == "potion":
                 await self.add_user_potion(
                     buyer_id,
                     item_slug,
                     quantity=quantity,
                     connection=connection,
                 )
+            # Les rôles sont attribués côté bot pour respecter les permissions Discord.
 
             completed = await connection.fetchrow(
                 """
