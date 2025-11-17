@@ -11,7 +11,13 @@ from typing import Dict, Iterable, Mapping, Optional, Sequence, cast
 import discord
 from discord.ext import commands
 
-from config import POTION_DEFINITION_MAP, PET_DEFINITIONS, PetDefinition, PotionDefinition
+from config import (
+    POTION_DEFINITION_MAP,
+    SELLABLE_ROLE_IDS,
+    PET_DEFINITIONS,
+    PetDefinition,
+    PotionDefinition,
+)
 from database.db import DatabaseError, InsufficientBalanceError
 from utils import embeds
 from utils.enchantments import ENCHANTMENT_DEFINITION_MAP, format_enchantment
@@ -824,6 +830,38 @@ class StandRemoveListingModal(discord.ui.Modal):
             await self.view.refresh_if_needed()
 
 
+class StandRoleListingModal(discord.ui.Modal):
+    def __init__(self, view: "StandManagementView", role: discord.Role) -> None:
+        super().__init__(title="Mettre un rôle en vente")
+        self.view = view
+        self.role = role
+        self.price_input = discord.ui.TextInput(
+            label="Prix total (Gemmes)",
+            placeholder="Ex: 50000",
+            min_length=1,
+            max_length=18,
+        )
+        self.add_item(self.price_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            price = int(self.price_input.value.replace(" ", ""))
+        except ValueError:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Merci d'indiquer un prix numérique valide."),
+                ephemeral=True,
+            )
+            return
+
+        success, embed = await self.view.plaza._create_role_listing_embed(
+            interaction.user, self.role, price
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        if success:
+            await self.view.mark_dirty()
+            await self.view.refresh_if_needed()
+
+
 class StandManagementView(discord.ui.View):
     def __init__(self, plaza: "Plaza", author: discord.abc.User) -> None:
         super().__init__(timeout=180)
@@ -884,6 +922,63 @@ class StandManagementView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         await interaction.response.send_modal(StandPotionListingModal(self))
+
+    @discord.ui.button(label="Vendre un rôle", style=discord.ButtonStyle.secondary)
+    async def list_role(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Impossible de vérifier tes rôles sur ce serveur."),
+                ephemeral=True,
+            )
+            return
+
+        seller = guild.get_member(self.author.id)
+        if seller is None:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Impossible de vérifier tes rôles actuellement."),
+                ephemeral=True,
+            )
+            return
+
+        roles = self.plaza._get_sellable_roles(seller)
+        if not roles:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Tu n'as aucun rôle vendable."),
+                ephemeral=True,
+            )
+            return
+
+        if len(roles) == 1:
+            await interaction.response.send_modal(StandRoleListingModal(self, roles[0]))
+            return
+
+        options = [
+            discord.SelectOption(label=role.name[:100], value=str(role.id)) for role in roles
+        ]
+        select = discord.ui.Select(placeholder="Choisis le rôle à vendre", options=options)
+
+        async def _callback(select_interaction: discord.Interaction) -> None:
+            role_id = int(select.values[0])
+            role = guild.get_role(role_id)
+            if role is None:
+                await select_interaction.response.send_message(
+                    embed=embeds.error_embed("Ce rôle n'existe plus."),
+                    ephemeral=True,
+                )
+                return
+            await select_interaction.response.send_modal(StandRoleListingModal(self, role))
+
+        select.callback = _callback
+        role_view = discord.ui.View()
+        role_view.add_item(select)
+        await interaction.response.send_message(
+            embed=embeds.info_embed("Choisis le rôle que tu veux mettre en vente."),
+            view=role_view,
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Retirer une annonce", style=discord.ButtonStyle.danger)
     async def remove_listing(
@@ -988,6 +1083,18 @@ class ConsumableListingsView(discord.ui.View):
             ),
         ]
 
+        has_role_listing = any(
+            str(record.get("item_type")) == "role" for record in self.listings
+        )
+        if has_role_listing:
+            options.append(
+                discord.SelectOption(
+                    label="🛡️ Rôles",
+                    value="role",
+                    description="Afficher les rôles en vente.",
+                )
+            )
+
         for slug, name in self.potion_filters[:23]:
             options.append(
                 discord.SelectOption(
@@ -1012,6 +1119,9 @@ class ConsumableListingsView(discord.ui.View):
         item_type = str(record.get("item_type", ""))
         if item_type == "ticket":
             label = f"🎟️ Tickets ×{quantity}"
+        elif item_type == "role":
+            slug = str(record.get("item_slug") or "")
+            label = f"🛡️ {self.plaza._role_label(slug, getattr(self.author, 'guild', None))}"
         else:
             slug = str(record.get("item_slug") or "")
             definition = POTION_DEFINITION_MAP.get(slug)
@@ -1027,6 +1137,11 @@ class ConsumableListingsView(discord.ui.View):
                 if str(record.get("item_type")) == "ticket"
             ]
             title = "🎟️ Tickets en vente"
+        elif key == "role":
+            filtered = [
+                record for record in self.listings if str(record.get("item_type")) == "role"
+            ]
+            title = "🛡️ Rôles en vente"
         elif key.startswith("potion:"):
             slug = key.split(":", 1)[1]
             filtered = [
@@ -1059,7 +1174,7 @@ class ConsumableListingsView(discord.ui.View):
 
     def update_filters(self) -> None:
         self.potion_filters = self._collect_potion_filters()
-        valid_filters = {"all", "ticket"}
+        valid_filters = {"all", "ticket", "role"}
         valid_filters.update(f"potion:{slug}" for slug, _ in self.potion_filters)
         if self.current_filter not in valid_filters:
             self.current_filter = "all"
@@ -1524,6 +1639,25 @@ class Plaza(commands.Cog):
                 return slug, definition
         return None, None
 
+    def _get_sellable_roles(self, member: discord.Member | None) -> list[discord.Role]:
+        roles: list[discord.Role] = []
+        if member is None or member.guild is None:
+            return roles
+
+        for role_id in SELLABLE_ROLE_IDS:
+            role = member.guild.get_role(role_id)
+            if role is not None and role in member.roles:
+                roles.append(role)
+        return roles
+
+    @staticmethod
+    def _role_label(slug: str, guild: discord.Guild | None = None) -> str:
+        if slug and slug.isdigit() and guild is not None:
+            role = guild.get_role(int(slug))
+            if role is not None:
+                return role.mention
+        return f"Rôle {slug}" if slug else "Rôle"
+
     async def _create_pet_listing_embed(
         self,
         user: discord.abc.User,
@@ -1616,6 +1750,50 @@ class Plaza(commands.Cog):
         )
         return True, embed
 
+    async def _create_role_listing_embed(
+        self,
+        user: discord.abc.User,
+        role: discord.Role,
+        price: int,
+    ) -> tuple[bool, discord.Embed]:
+        if price <= 0:
+            return False, embeds.error_embed("Le prix doit être supérieur à zéro.")
+        if not isinstance(user, discord.Member):
+            return False, embeds.error_embed("Impossible de vérifier tes rôles.")
+        if role.id not in SELLABLE_ROLE_IDS:
+            return False, embeds.error_embed("Ce rôle ne peut pas être vendu sur la plaza.")
+        if role not in user.roles:
+            return False, embeds.error_embed("Tu ne possèdes pas ce rôle.")
+        if role.guild is None or role.guild != user.guild:
+            return False, embeds.error_embed("Impossible de mettre ce rôle en vente ici.")
+        if not role.is_assignable():
+            return False, embeds.error_embed("Je n'ai pas la permission de gérer ce rôle.")
+
+        try:
+            await user.remove_roles(role, reason="Mise en vente du rôle sur la plaza")
+        except (discord.Forbidden, discord.HTTPException):
+            return False, embeds.error_embed("Impossible de retirer ce rôle pour le mettre en vente.")
+
+        try:
+            listing = await self.database.create_consumable_listing(
+                user.id,
+                item_type="role",
+                item_slug=str(role.id),
+                quantity=1,
+                price=price,
+            )
+        except DatabaseError as exc:
+            with contextlib.suppress(discord.HTTPException, discord.Forbidden):
+                await user.add_roles(role, reason="Annulation de la mise en vente du rôle")
+            return False, embeds.error_embed(str(exc))
+
+        listing_id = int(listing["id"])
+        embed = embeds.success_embed(
+            f"{role.mention} listé pour {embeds.format_gems(price)} (annonce #{listing_id}).",
+            title="Annonce créée",
+        )
+        return True, embed
+
     async def _complete_consumable_purchase(
         self,
         buyer: discord.abc.User,
@@ -1652,10 +1830,12 @@ class Plaza(commands.Cog):
         price = int(listing_record.get("price", 0))
         quantity = int(listing_record.get("quantity", 0))
         item_type = str(listing_record.get("item_type", ""))
+        slug = str(listing_record.get("item_slug", ""))
         if item_type == "ticket":
             item_label = f"🎟️ Tickets ×{quantity}"
+        elif item_type == "role":
+            item_label = f"🛡️ {self._role_label(slug, guild)}"
         else:
-            slug = str(listing_record.get("item_slug", ""))
             definition = POTION_DEFINITION_MAP.get(slug)
             name = definition.name if definition else slug or "Potion"
             item_label = f"🧪 {name} ×{quantity}"
@@ -1679,6 +1859,24 @@ class Plaza(commands.Cog):
             f"Tes gemmes avant achat : {embeds.format_gems(buyer_before)}",
         ]
         embed = embeds.success_embed("\n".join(lines), title="Achat confirmé")
+        if item_type == "role":
+            role_assignment_error = False
+            if guild is not None and isinstance(buyer, discord.Member) and slug.isdigit():
+                role = guild.get_role(int(slug))
+                if role is not None:
+                    try:
+                        await buyer.add_roles(role, reason="Achat de rôle sur la plaza")
+                    except (discord.Forbidden, discord.HTTPException):
+                        role_assignment_error = True
+                else:
+                    role_assignment_error = True
+            else:
+                role_assignment_error = True
+
+            if role_assignment_error:
+                embed.set_footer(
+                    text="Impossible d'attribuer le rôle automatiquement. Contacte un administrateur."
+                )
         seller_id = int(listing_record.get("seller_id", seller_id))
         return True, embed, seller_id
 
@@ -1708,6 +1906,14 @@ class Plaza(commands.Cog):
             quantity = int(consumable.get("quantity", 0))
             if item_type == "ticket":
                 label = f"{quantity} ticket(s)"
+            elif item_type == "role":
+                slug = str(consumable.get("item_slug", ""))
+                if isinstance(user, discord.Member) and user.guild is not None and slug.isdigit():
+                    role = user.guild.get_role(int(slug))
+                    if role is not None:
+                        with contextlib.suppress(discord.HTTPException, discord.Forbidden):
+                            await user.add_roles(role, reason="Annonce de rôle annulée")
+                label = self._role_label(slug, getattr(user, "guild", None))
             else:
                 slug = str(consumable.get("item_slug", ""))
                 definition = POTION_DEFINITION_MAP.get(slug)

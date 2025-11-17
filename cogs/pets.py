@@ -508,19 +508,51 @@ class PetInventoryView(discord.ui.View):
 class ZoneOverviewView(discord.ui.View):
     """Interface paginée pour présenter les zones et œufs disponibles."""
 
-    def __init__(self, ctx: commands.Context, embeds: Sequence[discord.Embed]) -> None:
+    @dataclass
+    class PageState:
+        embed: discord.Embed
+        zone: PetZoneDefinition | None
+        has_unlocked: bool
+        meets_egg_mastery: bool
+        meets_pet_mastery: bool
+        meets_rebirth: bool
+
+    def __init__(
+        self,
+        ctx: commands.Context,
+        pages: Sequence[PageState],
+        pets_cog: "Pets",
+    ) -> None:
         super().__init__(timeout=120)
         self.ctx = ctx
-        self._embeds: List[discord.Embed] = [embed for embed in embeds]
+        self.pets_cog = pets_cog
+        self._pages: List[ZoneOverviewView.PageState] = [page for page in pages]
         self.page = 0
-        self.page_count = max(1, len(self._embeds))
+        self.page_count = max(1, len(self._pages))
         self.message: discord.Message | None = None
         self._sync_buttons()
 
     def current_embed(self) -> discord.Embed:
-        if not self._embeds:
+        if not self._pages:
             return embeds.info_embed("Aucune zone disponible pour le moment.")
-        return self._embeds[self.page]
+        return self._pages[self.page].embed
+
+    def _current_page(self) -> PageState:
+        if not self._pages:
+            return ZoneOverviewView.PageState(
+                embed=embeds.info_embed("Aucune zone disponible pour le moment."),
+                zone=None,
+                has_unlocked=False,
+                meets_egg_mastery=False,
+                meets_pet_mastery=False,
+                meets_rebirth=False,
+            )
+        return self._pages[self.page]
+
+    def _refresh_footer(self) -> None:
+        total = self.page_count
+        for index, page in enumerate(self._pages, start=1):
+            page.embed.set_footer(text=f"Page {index}/{total}")
 
     def _sync_buttons(self) -> None:
         has_multiple_pages = self.page_count > 1
@@ -530,6 +562,17 @@ class ZoneOverviewView(discord.ui.View):
             self.next_page.disabled = (
                 not has_multiple_pages or self.page >= self.page_count - 1
             )
+        current = self._current_page()
+        can_open = bool(current.zone and current.zone.eggs and current.has_unlocked)
+        can_unlock = (
+            current.zone is not None
+            and current.zone.entry_cost > 0
+            and not current.has_unlocked
+        )
+        if hasattr(self, "open_egg"):
+            self.open_egg.disabled = not can_open
+        if hasattr(self, "unlock_zone"):
+            self.unlock_zone.disabled = not can_unlock
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.ctx.author.id:
@@ -557,6 +600,98 @@ class ZoneOverviewView(discord.ui.View):
             self.page += 1
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.current_embed(), view=self)
+
+    @discord.ui.button(label="Ouvrir l'œuf", style=discord.ButtonStyle.success)
+    async def open_egg(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        page = self._current_page()
+        if page.zone is None:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Aucune zone à ouvrir ici."), ephemeral=True
+            )
+            return
+        if not page.zone.eggs:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Aucun œuf disponible dans cette zone."),
+                ephemeral=True,
+            )
+            return
+        if not page.has_unlocked:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Débloque la zone avant d'ouvrir un œuf."),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+        await self.pets_cog._openbox_impl(self.ctx, page.zone.eggs[0].slug)
+
+    @discord.ui.button(label="Débloquer la zone", style=discord.ButtonStyle.primary)
+    async def unlock_zone(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        page = self._current_page()
+        if page.zone is None:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Aucune zone à débloquer ici."), ephemeral=True
+            )
+            return
+        if page.has_unlocked or page.zone.entry_cost <= 0:
+            await interaction.response.send_message(
+                embed=embeds.info_embed("Cette zone est déjà accessible."),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+        unlocked = await self.pets_cog._ensure_zone_access(self.ctx, page.zone)
+        if unlocked:
+            page.has_unlocked = True
+            page.embed = self.pets_cog._build_zone_overview_embed(
+                self.ctx,
+                page.zone,
+                has_unlocked=True,
+                meets_egg_mastery=page.meets_egg_mastery,
+                meets_pet_mastery=page.meets_pet_mastery,
+                meets_rebirth=page.meets_rebirth,
+            )
+            self._refresh_footer()
+            self._sync_buttons()
+            if self.message:
+                await self.message.edit(embed=self.current_embed(), view=self)
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=self)
+
+
+class HatchReplayView(discord.ui.View):
+    def __init__(self, ctx: commands.Context, pets_cog: "Pets", egg_slug: str) -> None:
+        super().__init__(timeout=60)
+        self.ctx = ctx
+        self.pets_cog = pets_cog
+        self.egg_slug = egg_slug
+        self.message: discord.Message | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul l'acheteur peut relancer l'ouverture.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Encore!", style=discord.ButtonStyle.success)
+    async def replay(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.defer()
+        await self.pets_cog._openbox_impl(self.ctx, self.egg_slug)
 
     async def on_timeout(self) -> None:
         for child in self.children:
@@ -1956,17 +2091,25 @@ class Pets(commands.Cog):
         pet_level = int(pet_mastery.get("level", 1))
         rebirth_count = await self.database.get_rebirth_count(ctx.author.id)
 
-        zone_embeds: List[discord.Embed] = []
+        zone_pages: List[ZoneOverviewView.PageState] = []
         for zone in PET_ZONES:
             has_unlocked = zone.entry_cost <= 0 or zone.slug in unlocked_zones
             meets_egg_mastery = egg_level >= zone.egg_mastery_required
             meets_pet_mastery = pet_level >= zone.pet_mastery_required
             meets_rebirth = rebirth_count >= zone.rebirth_required
 
-            zone_embeds.append(
-                self._build_zone_overview_embed(
-                    ctx,
-                    zone,
+            embed = self._build_zone_overview_embed(
+                ctx,
+                zone,
+                has_unlocked=has_unlocked,
+                meets_egg_mastery=meets_egg_mastery,
+                meets_pet_mastery=meets_pet_mastery,
+                meets_rebirth=meets_rebirth,
+            )
+            zone_pages.append(
+                ZoneOverviewView.PageState(
+                    embed=embed,
+                    zone=zone,
                     has_unlocked=has_unlocked,
                     meets_egg_mastery=meets_egg_mastery,
                     meets_pet_mastery=meets_pet_mastery,
@@ -1983,9 +2126,18 @@ class Pets(commands.Cog):
                 name=ctx.author.display_name,
                 icon_url=ctx.author.display_avatar.url,
             )
-            zone_embeds.append(mystery_embed)
+            zone_pages.append(
+                ZoneOverviewView.PageState(
+                    embed=mystery_embed,
+                    zone=None,
+                    has_unlocked=False,
+                    meets_egg_mastery=False,
+                    meets_pet_mastery=False,
+                    meets_rebirth=False,
+                )
+            )
 
-        if not zone_embeds:
+        if not zone_pages:
             embed = embeds.info_embed(
                 "Aucun œuf n'est disponible pour le moment.",
                 title="Œufs & zones disponibles",
@@ -1997,12 +2149,12 @@ class Pets(commands.Cog):
             await ctx.send(embed=embed)
             return
 
-        total_pages = len(zone_embeds)
-        for index, embed in enumerate(zone_embeds, start=1):
-            embed.set_footer(text=f"Page {index}/{total_pages}")
+        total_pages = len(zone_pages)
+        for index, page in enumerate(zone_pages, start=1):
+            page.embed.set_footer(text=f"Page {index}/{total_pages}")
 
-        view = ZoneOverviewView(ctx, zone_embeds)
-        message = await ctx.send(embed=zone_embeds[0], view=view)
+        view = ZoneOverviewView(ctx, zone_pages, self)
+        message = await ctx.send(embed=zone_pages[0].embed, view=view)
         view.message = message
 
     async def _send_huge_shelly_alert(self, ctx: commands.Context) -> None:
@@ -2369,7 +2521,9 @@ class Pets(commands.Cog):
                     )
                 embed.set_footer(text=footer_text)
 
-        await message.edit(content=egg_emoji, embed=embed)
+        replay_view = HatchReplayView(ctx, self, egg.slug)
+        replay_view.message = message
+        await message.edit(content=egg_emoji, embed=embed, view=replay_view)
 
     async def _open_pet_egg(
         self,

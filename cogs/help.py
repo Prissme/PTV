@@ -242,7 +242,7 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 {
                     "command": f"{PREFIX}pets",
                     "description": "Visualise ton inventaire actuel.",
-                    "aliases": ("inventory",),
+                    "aliases": ("inventory", "inv"),
                 },
                 {
                     "command": f"{PREFIX}index",
@@ -456,7 +456,7 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 {
                     "command": f"{PREFIX}pets",
                     "description": "View your current inventory.",
-                    "aliases": ("inventory",),
+                    "aliases": ("inventory", "inv"),
                 },
                 {
                     "command": f"{PREFIX}index",
