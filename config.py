@@ -1130,7 +1130,11 @@ PET_EMOJIS: Final[dict[str, str]] = {
 }
 
 HUGE_MORTIS_ROLE_ID: Final[int] = 1431428621959954623
-SELLABLE_ROLE_IDS: Final[Tuple[int, ...]] = (HUGE_MORTIS_ROLE_ID,)
+STEAL_PROTECTED_ROLE_ID: Final[int] = 1440026901568557056
+SELLABLE_ROLE_IDS: Final[Tuple[int, ...]] = (
+    HUGE_MORTIS_ROLE_ID,
+    STEAL_PROTECTED_ROLE_ID,
+)
 
 PET_RARITY_COLORS: Final[dict[str, int]] = {
     "Commun": 0x95A5A6,
