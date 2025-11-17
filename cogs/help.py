@@ -180,7 +180,7 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 },
                 {
                     "command": f"{PREFIX}voler @membre",
-                    "description": "Tente de voler 75% des PB de la cible (50% de réussite).",
+                    "description": "Tente de voler 75% des PB de la cible (50% de base, +5% par grade, +50% max).",
                 },
                 {
                     "command": f"{PREFIX}slots mise",
@@ -394,7 +394,7 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 },
                 {
                     "command": f"{PREFIX}voler @member",
-                    "description": "50% chance to steal 75% of someone else's PB.",
+                    "description": "50% base chance to steal 75% of someone else's PB, +5% per grade (up to +50%).",
                 },
                 {
                     "command": f"{PREFIX}slots bet",

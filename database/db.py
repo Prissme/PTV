@@ -3032,7 +3032,7 @@ class Database:
                 raise DatabaseError("Utilisateur introuvable pour le rebirth")
 
             current_rebirths = int(user_row.get("rebirth_count", 0))
-            if current_rebirths >= 1:
+            if current_rebirths >= 2:
                 raise DatabaseError("Limite de rebirth atteinte pour cet utilisateur")
 
             await connection.execute(
