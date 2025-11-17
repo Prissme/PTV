@@ -1764,17 +1764,6 @@ class Pets(commands.Cog):
             if unlocked:
                 return True
 
-        grade_level = await self.database.get_grade_level(ctx.author.id)
-        if grade_level < zone.grade_required:
-            grade_label = self._grade_label(zone.grade_required)
-            await ctx.send(
-                embed=embeds.error_embed(
-                    f"Tu dois atteindre le grade {zone.grade_required} "
-                    f"(**{grade_label}**) pour explorer {zone.name}."
-                )
-            )
-            return False
-
         if zone.egg_mastery_required > 0:
             egg_mastery = await self.database.get_mastery_progress(
                 ctx.author.id, EGG_MASTERY.slug
@@ -1863,7 +1852,6 @@ class Pets(commands.Cog):
         zone: PetZoneDefinition,
         *,
         has_unlocked: bool,
-        meets_grade: bool,
         meets_egg_mastery: bool,
         meets_pet_mastery: bool,
         meets_rebirth: bool,
@@ -1880,7 +1868,6 @@ class Pets(commands.Cog):
         ]
         accessible = (
             has_unlocked
-            and meets_grade
             and meets_egg_mastery
             and meets_pet_mastery
             and meets_rebirth
@@ -1890,11 +1877,6 @@ class Pets(commands.Cog):
         )
 
         requirements: List[str] = []
-        if zone.grade_required > 0:
-            requirements.append(
-                f"{'✅' if meets_grade else '❌'} Grade {zone.grade_required} "
-                f"({self._grade_label(zone.grade_required)})"
-            )
         if zone.egg_mastery_required > 0:
             requirements.append(
                 f"{'✅' if meets_egg_mastery else '❌'} {EGG_MASTERY.display_name} niveau {zone.egg_mastery_required}"
@@ -1967,7 +1949,6 @@ class Pets(commands.Cog):
         return embed
 
     async def _send_egg_overview(self, ctx: commands.Context) -> None:
-        grade_level = await self.database.get_grade_level(ctx.author.id)
         unlocked_zones = await self.database.get_unlocked_zones(ctx.author.id)
         egg_mastery = await self.database.get_mastery_progress(ctx.author.id, EGG_MASTERY.slug)
         pet_mastery = await self.database.get_mastery_progress(ctx.author.id, PET_MASTERY.slug)
@@ -1978,7 +1959,6 @@ class Pets(commands.Cog):
         zone_embeds: List[discord.Embed] = []
         for zone in PET_ZONES:
             has_unlocked = zone.entry_cost <= 0 or zone.slug in unlocked_zones
-            meets_grade = grade_level >= zone.grade_required
             meets_egg_mastery = egg_level >= zone.egg_mastery_required
             meets_pet_mastery = pet_level >= zone.pet_mastery_required
             meets_rebirth = rebirth_count >= zone.rebirth_required
@@ -1988,7 +1968,6 @@ class Pets(commands.Cog):
                     ctx,
                     zone,
                     has_unlocked=has_unlocked,
-                    meets_grade=meets_grade,
                     meets_egg_mastery=meets_egg_mastery,
                     meets_pet_mastery=meets_pet_mastery,
                     meets_rebirth=meets_rebirth,
