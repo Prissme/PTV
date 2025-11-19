@@ -139,21 +139,21 @@ RAP_GOAL_UNIT: Final[int] = 50_000
 CASINO_LOSS_GOAL_UNIT: Final[int] = 5_000
 
 _GRADE_BLUEPRINTS: Tuple[tuple[str, int, int, int, int, int], ...] = (
-    ("Novice", 0, 3, 1, 1, 250),
-    ("Apprenti", 1, 5, 1, 1, 400),
-    ("Disciple", 1, 8, 2, 1, 550),
-    ("Explorateur", 1, 12, 3, 2, 700),
-    ("Aventurier", 2, 16, 5, 2, 900),
-    ("Expert", 2, 20, 8, 3, 1_100),
-    ("Champion", 2, 25, 12, 3, 1_400),
-    ("Maître", 3, 30, 18, 4, 1_700),
-    ("Prodige", 3, 36, 27, 4, 2_100),
-    ("Élite", 4, 43, 40, 5, 2_600),
-    ("Légende", 5, 51, 60, 5, 3_200),
-    ("Mythique", 6, 60, 90, 6, 3_900),
-    ("Cosmique", 7, 70, 135, 7, 4_700),
-    ("Divin", 8, 81, 200, 8, 5_600),
-    ("Parangon", 9, 93, 300, 9, 6_600),
+    ("Novice", 0, 3, 0, 0, 125),
+    ("Apprenti", 0, 5, 0, 0, 200),
+    ("Disciple", 0, 8, 0, 0, 275),
+    ("Explorateur", 1, 12, 3, 2, 350),
+    ("Aventurier", 2, 16, 5, 2, 450),
+    ("Expert", 2, 20, 8, 3, 550),
+    ("Champion", 2, 25, 12, 3, 700),
+    ("Maître", 3, 30, 18, 4, 850),
+    ("Prodige", 3, 36, 27, 4, 1_050),
+    ("Élite", 4, 43, 40, 5, 1_300),
+    ("Légende", 5, 51, 60, 5, 1_600),
+    ("Mythique", 6, 60, 90, 6, 1_950),
+    ("Cosmique", 7, 70, 135, 7, 2_350),
+    ("Divin", 8, 81, 200, 8, 2_800),
+    ("Parangon", 9, 93, 300, 9, 3_300),
 )
 
 
