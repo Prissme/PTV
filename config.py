@@ -434,6 +434,7 @@ HUGE_ROSA_NAME: Final[str] = "Huge Rosa"
 HUGE_ROSA_MULTIPLIER: Final[float] = 15
 HUGE_CLANCY_NAME: Final[str] = "Huge Clancy"
 HUGE_CLANCY_MULTIPLIER: Final[float] = 10
+HUGE_WISHED_NAME: Final[str] = "Huge Wished"
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
     HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
@@ -574,6 +575,7 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     HUGE_CLANCY_NAME: "Se trouve dans l'Œuf vivant de l'Animalerie après ton premier rebirth.",
     HUGE_ROSA_NAME: "Ultra rare dans l'Œuf Huevo de Mexico — seuls les plus courageux la rencontrent.",
     TITANIC_POCO_NAME: "Récompense mythique de l'Œuf Huevo de Mexico, l'égale du Titanic Meeple.",
+    HUGE_WISHED_NAME: "0,1% de chance d'apparaître lorsqu'un vol réussit.",
 }
 
 def get_egg_frenzy_window(
@@ -820,6 +822,14 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
         name=HUGE_BULL_NAME,
         rarity="Secret",
         image_url="https://cdn.discordapp.com/emojis/1433617222357487748.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=HUGE_WISHED_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1439605727575539752.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0,
         is_huge=True,
@@ -1121,6 +1131,7 @@ PET_EMOJIS: Final[dict[str, str]] = {
     HUGE_SURGE_NAME: os.getenv("PET_EMOJI_HUGE_SURGE", "<:HugeSurge:1433379423133892608>"),
     TITANIC_MEEPLE_NAME: os.getenv("PET_EMOJI_TITANIC_MEEPLE", "<:TITANICMEEPLE:1433380006557646878>"),
     HUGE_BULL_NAME: os.getenv("PET_EMOJI_HUGE_BULL", "<:HugeBull:1433617222357487748>"),
+    HUGE_WISHED_NAME: os.getenv("PET_EMOJI_HUGE_WISHED", "<:HugeWished:1439605727575539752>"),
     HUGE_BO_NAME: os.getenv("PET_EMOJI_HUGE_BO", "<:HugeBo:1435335892712685628>"),
     "Darryl": os.getenv("PET_EMOJI_DARRYL", "<:Darryl:1433376220980187177>"),
     "Rico": os.getenv("PET_EMOJI_RICO", "<:Rico:1433376959127228436>"),

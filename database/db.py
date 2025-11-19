@@ -2630,6 +2630,10 @@ class Database:
         query = "SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT $1"
         return await self.pool.fetch(query, limit)
 
+    async def get_gem_leaderboard(self, limit: int) -> Sequence[asyncpg.Record]:
+        query = "SELECT user_id, gems FROM users ORDER BY gems DESC LIMIT $1"
+        return await self.pool.fetch(query, limit)
+
     async def get_mastery_leaderboard(
         self, mastery_slug: str, limit: int
     ) -> Sequence[asyncpg.Record]:

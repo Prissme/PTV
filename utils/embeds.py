@@ -307,13 +307,16 @@ def leaderboard_embed(
 ) -> discord.Embed:
     embed = _base_embed(title, "", color=Colors.GOLD)
     lines = []
+    normalized_symbol = symbol.upper()
     for rank, (user_id, value) in enumerate(entries, start=1):
         user = bot.get_user(user_id)
         name = user.display_name if user else f"Utilisateur {user_id}"
-        if symbol.upper() == "PB":
+        if normalized_symbol == "PB":
             value_display = format_currency(value)
-        elif symbol.upper() == "RAP":
+        elif normalized_symbol == "RAP":
             value_display = f"{format_gems(value)} (RAP)"
+        elif normalized_symbol in {"GEM", "GEMS"}:
+            value_display = format_gems(value)
         else:
             value_display = f"{value:,} {symbol}".replace(",", " ")
         lines.append(f"**{rank}.** {name} — {value_display}")
@@ -581,33 +584,12 @@ def pet_collection_embed(
     page: int = 1,
     page_count: int = 1,
     huge_descriptions: Mapping[str, str] | None = None,
+    group_duplicates: bool = True,
 ) -> discord.Embed:
     del huge_descriptions  # Non utilisé dans la version minimaliste
 
     displays = [PetDisplay.from_mapping(pet) for pet in pets]
     active_count = sum(1 for pet in displays if pet.is_active)
-    grouped: OrderedDict[
-        tuple[object, ...], dict[str, object]
-    ] = OrderedDict()
-    for display in displays:
-        key = display.collection_key()
-        entry = grouped.get(key)
-        if entry is None:
-            identifiers: list[int] = []
-            if display.identifier:
-                identifiers.append(int(display.identifier))
-            grouped[key] = {
-                "display": display,
-                "count": 1,
-                "identifiers": identifiers,
-            }
-            continue
-
-        entry["count"] = int(entry.get("count", 0)) + 1
-        if display.identifier:
-            identifiers = entry.setdefault("identifiers", [])
-            if isinstance(identifiers, list):
-                identifiers.append(int(display.identifier))
     header = [
         f"Total : {total_count}",
         f"Actifs : {active_count}",
@@ -615,17 +597,51 @@ def pet_collection_embed(
     ]
 
     description_lines = []
-    for entry in grouped.values():
-        display = cast(PetDisplay | None, entry.get("display"))
-        if display is None:
-            continue
-        count = int(entry.get("count", 0))
-        identifiers = entry.get("identifiers")
-        if isinstance(identifiers, list):
-            line = display.collection_line(quantity=count, identifiers=identifiers)
-        else:
-            line = display.collection_line(quantity=count)
-        description_lines.append(line)
+    if group_duplicates:
+        grouped: OrderedDict[
+            tuple[object, ...], dict[str, object]
+        ] = OrderedDict()
+        for display in displays:
+            key = display.collection_key()
+            entry = grouped.get(key)
+            if entry is None:
+                identifiers: list[int] = []
+                if display.identifier:
+                    identifiers.append(int(display.identifier))
+                grouped[key] = {
+                    "display": display,
+                    "count": 1,
+                    "identifiers": identifiers,
+                }
+                continue
+
+            entry["count"] = int(entry.get("count", 0)) + 1
+            if display.identifier:
+                identifiers = entry.setdefault("identifiers", [])
+                if isinstance(identifiers, list):
+                    identifiers.append(int(display.identifier))
+
+        for entry in grouped.values():
+            display = cast(PetDisplay | None, entry.get("display"))
+            if display is None:
+                continue
+            count = int(entry.get("count", 0))
+            identifiers = entry.get("identifiers")
+            if isinstance(identifiers, list):
+                line = display.collection_line(quantity=count, identifiers=identifiers)
+            else:
+                line = display.collection_line(quantity=count)
+            description_lines.append(line)
+    else:
+        for display in displays:
+            identifier_value = (
+                int(display.identifier)
+                if display.identifier is not None
+                else 0
+            )
+            identifiers = [identifier_value] if identifier_value else None
+            line = display.collection_line(quantity=1, identifiers=identifiers)
+            description_lines.append(line)
 
     embed_description = " • ".join(header)
     if description_lines:

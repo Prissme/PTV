@@ -462,6 +462,7 @@ class PetInventoryView(discord.ui.View):
             page=self.page + 1,
             page_count=self.page_count,
             huge_descriptions=self._huge_descriptions,
+            group_duplicates=False,
         )
 
     def _sync_buttons(self) -> None:
@@ -4973,7 +4974,7 @@ class Pets(commands.Cog):
         for pet in pets_data:
             pet.pop("_reference_income", None)
 
-        level_up_lines: List[str] = []
+        level_up_count = 0
         if original_levels and pets_data:
             for pet in pets_data:
                 if not pet.get("is_huge"):
@@ -4982,8 +4983,7 @@ class Pets(commands.Cog):
                 old_level = original_levels.get(user_pet_id)
                 new_level = int(pet.get("huge_level", old_level or 1))
                 if old_level is not None and new_level > old_level:
-                    name = str(pet.get("name", "Pet"))
-                    level_up_lines.append(f"🎉 Ton Huge {name} monte niveau {new_level} !")
+                    level_up_count += 1
 
         if clan_info:
             clan_id = int(clan_info.get("id", 0))
@@ -5017,10 +5017,14 @@ class Pets(commands.Cog):
             potion=potion_info if potion_info else None,
             enchantment=enchantment_info if enchantment_info else None,
         )
-        if level_up_lines:
+        level_up_summary: str | None = None
+        if level_up_count:
+            level_up_summary = (
+                f"🎉 **{level_up_count}** nouveaux level ups de tes pets !"
+            )
             embed.add_field(
                 name="🎉 Nouveaux niveaux",
-                value="\n".join(level_up_lines),
+                value=level_up_summary,
                 inline=False,
             )
 
@@ -5038,8 +5042,8 @@ class Pets(commands.Cog):
             fallback_parts = [embed.title or "Gains des pets"]
             if embed.description:
                 fallback_parts.append(embed.description)
-            if level_up_lines:
-                fallback_parts.extend(level_up_lines)
+            if level_up_summary:
+                fallback_parts.append(level_up_summary)
             fallback_message = "\n".join(part for part in fallback_parts if part)
             if not fallback_message:
                 fallback_message = (
