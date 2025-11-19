@@ -27,6 +27,17 @@ class Leaderboard(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    @commands.command(name="gemlb", aliases=("gemleaderboard",))
+    async def gem_leaderboard(self, ctx: commands.Context) -> None:
+        rows = await self.database.get_gem_leaderboard(LEADERBOARD_LIMIT)
+        embed = embeds.leaderboard_embed(
+            title="Classement des gemmes",
+            entries=[(row["user_id"], row["gems"]) for row in rows],
+            bot=self.bot,
+            symbol="GEM",
+        )
+        await ctx.send(embed=embed)
+
     @commands.command(name="rapleaderboard", aliases=("raplb", "rap"))
     async def rap_leaderboard(self, ctx: commands.Context) -> None:
         try:

@@ -28,6 +28,7 @@ from config import (
     HUGE_KENJI_ONI_NAME,
     HUGE_MORTIS_NAME,
     HUGE_PET_MIN_INCOME,
+    HUGE_WISHED_NAME,
     MASTERMIND_MASTERY_MAX_ROLE_ID,
     MESSAGE_COOLDOWN,
     MESSAGE_REWARD,
@@ -106,6 +107,7 @@ POTION_DROP_RATES: dict[str, float] = {
 }
 
 POTION_SLUGS: tuple[str, ...] = tuple(potion.slug for potion in POTION_DEFINITIONS)
+HUGE_WISHED_STEAL_CHANCE = 0.001
 
 
 TOMBOLA_TICKET_EMOJI = "🎟️"
@@ -2017,6 +2019,52 @@ class Economy(commands.Cog):
         )
         return True
 
+    async def _maybe_award_wished_huge(
+        self, ctx: commands.Context
+    ) -> str | None:
+        if random.random() >= HUGE_WISHED_STEAL_CHANCE:
+            return None
+
+        pet_id = await self.database.get_pet_id_by_name(HUGE_WISHED_NAME)
+        if pet_id is None:
+            logger.warning("Pet %s introuvable pour le vol", HUGE_WISHED_NAME)
+            return None
+
+        try:
+            await self.database.add_user_pet(ctx.author.id, pet_id, is_huge=True)
+        except DatabaseError:
+            logger.exception(
+                "Impossible d'ajouter %s lors d'un vol", HUGE_WISHED_NAME
+            )
+            return None
+
+        try:
+            best_non_huge = await self.database.get_best_non_huge_income(ctx.author.id)
+        except DatabaseError:
+            logger.exception(
+                "Impossible de récupérer le meilleur revenu non-huge pour %s",
+                ctx.author.id,
+            )
+            best_non_huge = 0
+
+        multiplier = get_huge_level_multiplier(HUGE_WISHED_NAME, 1)
+        huge_income = compute_huge_income(best_non_huge, multiplier)
+        emoji = PET_EMOJIS.get(HUGE_WISHED_NAME, PET_EMOJIS.get("default", "🐾"))
+
+        logger.info(
+            "wished_huge_awarded",
+            extra={
+                "user_id": ctx.author.id,
+                "pet_id": pet_id,
+                "chance": HUGE_WISHED_STEAL_CHANCE,
+                "income": huge_income,
+            },
+        )
+        return (
+            f"{emoji} Jackpot ! Tu débloques **{HUGE_WISHED_NAME}** "
+            f"({embeds.format_currency(huge_income)} /h) grâce à ce vol !"
+        )
+
     async def _process_mastermind_mastery_xp(
         self,
         ctx: commands.Context,
@@ -2565,6 +2613,9 @@ class Economy(commands.Cog):
             f"Ton solde : {embeds.format_currency(transfer['recipient']['after'])}",
             f"Solde de {member.display_name} : {embeds.format_currency(transfer['sender']['after'])}",
         ]
+        wished_line = await self._maybe_award_wished_huge(ctx)
+        if wished_line:
+            lines.extend(("", wished_line))
         await ctx.send(embed=embeds.success_embed("\n".join(lines), title="Coup réussi"))
 
     @commands.cooldown(1, 6, commands.BucketType.user)
