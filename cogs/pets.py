@@ -10,7 +10,7 @@ import unicodedata
 from decimal import Decimal, ROUND_HALF_UP
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
+from typing import Any, Dict, Final, Iterable, List, Mapping, Optional, Sequence, Set
 
 import discord
 from discord.ext import commands
@@ -103,6 +103,7 @@ HUGE_GOLD_CHANCE = 0.1
 HUGE_RAINBOW_CHANCE = 0.01
 HUGE_SHINY_CHANCE = 0.004
 HUGE_GALAXY_CHANCE = 0.0001
+INDEX_SHINY_BONUS_PER_PET: Final[float] = 0.0005
 
 
 
@@ -701,6 +702,293 @@ class HatchReplayView(discord.ui.View):
                 await self.message.edit(view=self)
 
 
+class PetIndexView(discord.ui.View):
+    @dataclass(frozen=True)
+    class CategoryDefinition:
+        slug: str
+        label: str
+        description: str
+        emoji: str
+        include_huge: bool = True
+        detail_hint: str | None = None
+
+    CATEGORIES: tuple[CategoryDefinition, ...] = (
+        CategoryDefinition(
+            slug="normal",
+            label="Index normal",
+            description="Découvre tous les pets dans leur forme classique.",
+            emoji="📘",
+        ),
+        CategoryDefinition(
+            slug="gold",
+            label="Index Gold",
+            description="Fusionne tes doublons pour compléter ta collection dorée.",
+            emoji="🥇",
+            include_huge=False,
+            detail_hint="Version or collectée",
+        ),
+        CategoryDefinition(
+            slug="rainbow",
+            label="Index Rainbow",
+            description="Transforme chaque pet en arc-en-ciel pour progresser dans cet index.",
+            emoji="🌈",
+            include_huge=False,
+            detail_hint="Variante rainbow obtenue",
+        ),
+        CategoryDefinition(
+            slug="galaxy",
+            label="Index Galaxy",
+            description="Pousse tes fusions au maximum pour réunir tous les pets Galaxy.",
+            emoji="🌌",
+            include_huge=False,
+            detail_hint="Variante galaxy enregistrée",
+        ),
+        CategoryDefinition(
+            slug="shiny",
+            label="Index Shiny",
+            description="Répertorie toutes les variantes scintillantes découvertes.",
+            emoji="✨",
+        ),
+    )
+
+    def __init__(
+        self,
+        *,
+        ctx: commands.Context,
+        pet_definitions: Sequence[PetDefinition],
+        pet_ids: Mapping[str, int],
+        variant_sets: Mapping[str, Set[int]],
+        huge_descriptions: Mapping[str, str] | None,
+        pet_counts: Mapping[str, int] | None,
+        market_values: Mapping[str, int] | None,
+        index_bonus_percent: float,
+    ) -> None:
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.member = ctx.author
+        self._category_map: Dict[str, PetIndexView.CategoryDefinition] = {
+            category.slug: category for category in self.CATEGORIES
+        }
+        self._definitions: List[PetDefinition] = [
+            definition for definition in pet_definitions if definition.name
+        ]
+        self._non_huge_definitions: List[PetDefinition] = [
+            definition for definition in self._definitions if not definition.is_huge
+        ]
+        self._pet_ids = dict(pet_ids)
+        self._variant_sets: Dict[str, Set[int]] = {
+            slug: set(values) for slug, values in variant_sets.items()
+        }
+        self._huge_descriptions = dict(huge_descriptions or {})
+        self._pet_counts = {key.casefold(): value for key, value in (pet_counts or {}).items() if key}
+        self._market_values = {
+            key.casefold(): value for key, value in (market_values or {}).items() if key
+        }
+        self.index_bonus_percent = max(0.0, float(index_bonus_percent))
+        self.per_page = 8
+        self.current_category = "normal"
+        self.current_page = 0
+        self.message: discord.Message | None = None
+        self.category_select = self.CategorySelect(self)
+        self.previous_button = self.PreviousButton(self)
+        self.next_button = self.NextButton(self)
+        self.add_item(self.category_select)
+        self.add_item(self.previous_button)
+        self.add_item(self.next_button)
+        self._refresh_select_options()
+        self._update_navigation_state()
+
+    class CategorySelect(discord.ui.Select):
+        def __init__(self, view: "PetIndexView") -> None:
+            self.view = view
+            super().__init__(options=view._build_options(), row=0)
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            self.view.current_category = self.values[0]
+            self.view.current_page = 0
+            await self.view._refresh(interaction)
+
+    class PreviousButton(discord.ui.Button):
+        def __init__(self, view: "PetIndexView") -> None:
+            self.view = view
+            super().__init__(emoji="◀️", style=discord.ButtonStyle.secondary, row=1)
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            if self.view.current_page > 0:
+                self.view.current_page -= 1
+            await self.view._refresh(interaction)
+
+    class NextButton(discord.ui.Button):
+        def __init__(self, view: "PetIndexView") -> None:
+            self.view = view
+            super().__init__(emoji="▶️", style=discord.ButtonStyle.secondary, row=1)
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            max_page = max(0, self.view._page_count(self.view.current_category) - 1)
+            if self.view.current_page < max_page:
+                self.view.current_page += 1
+            await self.view._refresh(interaction)
+
+    def _build_options(self) -> List[discord.SelectOption]:
+        options: List[discord.SelectOption] = []
+        for category in self.CATEGORIES:
+            owned, total = self._category_progress(category.slug)
+            if total:
+                suffix = "s" if total != 1 else ""
+                description = f"{owned}/{total} découvert{suffix}"
+            else:
+                description = "Aucun pet enregistré"
+            options.append(
+                discord.SelectOption(
+                    label=category.label,
+                    description=description[:100],
+                    value=category.slug,
+                    emoji=category.emoji,
+                    default=category.slug == self.current_category,
+                )
+            )
+        return options
+
+    def _refresh_select_options(self) -> None:
+        self.category_select.options = self._build_options()
+
+    def _page_count(self, category_slug: str) -> int:
+        definitions = self._category_definitions(category_slug)
+        total = len(definitions)
+        if total <= 0:
+            return 1
+        return max(1, math.ceil(total / self.per_page))
+
+    def _update_navigation_state(self) -> None:
+        total_pages = self._page_count(self.current_category)
+        self.current_page = min(self.current_page, total_pages - 1)
+        disable_prev = total_pages <= 1 or self.current_page <= 0
+        disable_next = total_pages <= 1 or self.current_page >= total_pages - 1
+        self.previous_button.disabled = disable_prev
+        self.next_button.disabled = disable_next
+
+    def _category_definitions(
+        self, category_slug: str
+    ) -> List[PetDefinition]:
+        category = self._category_map.get(category_slug)
+        if category is None:
+            return self._definitions
+        return self._definitions if category.include_huge else self._non_huge_definitions
+
+    def _category_progress(self, category_slug: str) -> tuple[int, int]:
+        definitions = self._category_definitions(category_slug)
+        owned_ids = self._variant_sets.get(category_slug, set())
+        if not definitions:
+            return 0, 0
+        discovered = 0
+        for definition in definitions:
+            pet_id = self._pet_ids.get(definition.name)
+            if pet_id and pet_id in owned_ids:
+                discovered += 1
+        return discovered, len(definitions)
+
+    def _lines_for_page(self, category: CategoryDefinition) -> List[str]:
+        definitions = self._category_definitions(category.slug)
+        if not definitions:
+            return []
+        start = self.current_page * self.per_page
+        end = start + self.per_page
+        owned_ids = self._variant_sets.get(category.slug, set())
+        slice_definitions = definitions[start:end]
+        lines: List[str] = []
+        for definition in slice_definitions:
+            name = definition.name
+            if not name:
+                continue
+            pet_id = self._pet_ids.get(name)
+            owned = bool(pet_id and pet_id in owned_ids)
+            status = "✅" if owned else "🔒"
+            emoji_value = pet_emoji(name)
+            emoji_prefix = f"{emoji_value} " if emoji_value else ""
+            details: List[str] = [f"Rareté : {definition.rarity}"]
+            if category.slug == "normal":
+                key = name.casefold()
+                count = self._pet_counts.get(key)
+                if count is not None:
+                    plural = "s" if count != 1 else ""
+                    details.append(f"{count} existant{plural}")
+                market_value = int(self._market_values.get(key, 0))
+                if market_value > 0 and not definition.is_huge:
+                    details.append(f"Valeur marché : {embeds.format_gems(market_value)}")
+            elif category.detail_hint:
+                details.append(category.detail_hint)
+            detail_text = " • ".join(details)
+            line = f"{status} {emoji_prefix}**{name}** — {detail_text}".strip()
+            if definition.is_huge:
+                description = self._huge_descriptions.get(name)
+                if description:
+                    line += f"\n✨ Comment l'obtenir : {description}"
+            lines.append(line)
+        return lines
+
+    def build_embed(self) -> discord.Embed:
+        category = self._category_map.get(self.current_category) or self.CATEGORIES[0]
+        total_pages = self._page_count(category.slug)
+        self.current_page = min(self.current_page, total_pages - 1)
+        discovered, total = self._category_progress(category.slug)
+        progress = (discovered / total) if total else 0.0
+        description_lines = [category.description]
+        description_lines.append(
+            f"Progression : **{discovered}/{total}** ({progress:.0%})"
+        )
+        if category.slug == "normal":
+            per_pet_bonus = INDEX_SHINY_BONUS_PER_PET * 100
+            description_lines.append(
+                f"Bonus shiny actuel : +{self.index_bonus_percent:.2f}% ({per_pet_bonus:.2f}% par pet découvert)"
+            )
+        embed = discord.Embed(
+            title=f"{category.emoji} {category.label}",
+            description="\n".join(description_lines),
+            color=embeds.Colors.INFO,
+        )
+        embed.set_author(
+            name=self.member.display_name, icon_url=self.member.display_avatar.url
+        )
+        lines = self._lines_for_page(category)
+        if lines:
+            embed.add_field(name="Catalogue", value="\n".join(lines), inline=False)
+        else:
+            embed.add_field(
+                name="Catalogue",
+                value="Aucun pet listé pour cette catégorie pour le moment.",
+                inline=False,
+            )
+        embed.set_footer(text=f"Page {self.current_page + 1}/{total_pages}")
+        return embed
+
+    async def _refresh(self, interaction: discord.Interaction | None = None) -> None:
+        self._refresh_select_options()
+        self._update_navigation_state()
+        embed = self.build_embed()
+        if interaction is not None:
+            await interaction.response.edit_message(embed=embed, view=self)
+            return
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(embed=embed, view=self)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul le propriétaire de l'index peut utiliser ce menu.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=self)
+
+
 class PetSelectionView(discord.ui.View):
     """Vue interactive permettant de sélectionner un pet parmi plusieurs."""
 
@@ -1021,6 +1309,22 @@ class Pets(commands.Cog):
         return chance > 0 and random.random() < chance
 
     @staticmethod
+    def _apply_index_bonus(base_chance: float, index_bonus: float) -> float:
+        chance = max(0.0, float(base_chance))
+        bonus = max(0.0, float(index_bonus))
+        if bonus <= 0:
+            return chance
+        return chance + bonus
+
+    @staticmethod
+    def _index_bonus_from_count(unique_count: int) -> float:
+        return max(0, int(unique_count)) * INDEX_SHINY_BONUS_PER_PET
+
+    async def _fetch_index_shiny_bonus(self, user_id: int) -> tuple[int, float]:
+        unique_count = await self.database.get_unique_pet_count(user_id)
+        return unique_count, self._index_bonus_from_count(unique_count)
+
+    @staticmethod
     def _variant_income_multiplier(
         *, is_gold: bool, is_rainbow: bool, is_galaxy: bool, is_shiny: bool
     ) -> float:
@@ -1035,14 +1339,19 @@ class Pets(commands.Cog):
             multiplier *= SHINY_PET_MULTIPLIER
         return multiplier
 
-    def _roll_huge_variants(self) -> tuple[bool, bool, bool, bool]:
+    def _roll_huge_variants(
+        self, *, index_bonus: float = 0.0
+    ) -> tuple[bool, bool, bool, bool]:
+        shiny_chance = min(
+            1.0, self._apply_index_bonus(HUGE_SHINY_CHANCE, index_bonus)
+        )
         is_galaxy = self._roll_chance(HUGE_GALAXY_CHANCE)
         if is_galaxy:
-            return False, False, True, self._roll_chance(HUGE_SHINY_CHANCE)
+            return False, False, True, self._roll_chance(shiny_chance)
 
         is_rainbow = self._roll_chance(HUGE_RAINBOW_CHANCE)
         is_gold = False if is_rainbow else self._roll_chance(HUGE_GOLD_CHANCE)
-        is_shiny = self._roll_chance(HUGE_SHINY_CHANCE)
+        is_shiny = self._roll_chance(shiny_chance)
         return is_gold, is_rainbow, False, is_shiny
 
     def _roll_standard_pet_variants(
@@ -1051,6 +1360,7 @@ class Pets(commands.Cog):
         mastery_perks: EggMasteryPerks | None,
         pet_mastery_perks: PetMasteryPerks | None,
         clan_shiny_multiplier: float,
+        index_bonus: float = 0.0,
     ) -> tuple[bool, bool, bool, bool]:
         base_gold = max(0.0, float(GOLD_PET_CHANCE))
         base_rainbow = max(0.0, float(RAINBOW_PET_CHANCE))
@@ -1067,11 +1377,15 @@ class Pets(commands.Cog):
             gold_chance *= float(pet_mastery_perks.gold_luck_multiplier)
             rainbow_chance *= float(pet_mastery_perks.rainbow_luck_multiplier)
             shiny_chance = max(0.0, float(pet_mastery_perks.egg_shiny_chance))
+            shiny_chance = self._apply_index_bonus(shiny_chance, index_bonus)
             shiny_chance *= float(pet_mastery_perks.egg_shiny_multiplier)
+        else:
+            shiny_chance = self._apply_index_bonus(0.0, index_bonus)
 
         gold_chance = min(1.0, gold_chance)
         rainbow_chance = min(1.0, rainbow_chance)
         shiny_chance *= max(1.0, float(clan_shiny_multiplier))
+        shiny_chance = min(1.0, shiny_chance)
 
         is_gold = self._roll_chance(gold_chance)
         is_rainbow = self._roll_chance(rainbow_chance)
@@ -1415,6 +1729,7 @@ class Pets(commands.Cog):
         *,
         clan_shiny_multiplier: float = 1.0,
         auto_settings: Mapping[str, bool] | None = None,
+        index_bonus: float = 0.0,
     ) -> List[str]:
         messages: List[str] = []
         auto_gold_enabled = pet_perks.auto_goldify
@@ -1432,7 +1747,7 @@ class Pets(commands.Cog):
         shiny_multiplier = max(1.0, float(clan_shiny_multiplier))
 
         def _roll_shiny(base_chance: float) -> bool:
-            chance = max(0.0, float(base_chance))
+            chance = self._apply_index_bonus(base_chance, index_bonus)
             if chance <= 0:
                 return False
             chance *= float(pet_perks.egg_shiny_multiplier)
@@ -2197,6 +2512,7 @@ class Pets(commands.Cog):
         bonus: bool = False,
         price_multiplier: int = 1,
         force_gold: bool = False,
+        index_bonus: float = 0.0,
     ) -> PetHatchResult | None:
         await self.database.ensure_user(ctx.author.id)
         if charge_cost:
@@ -2314,7 +2630,7 @@ class Pets(commands.Cog):
                 is_rainbow,
                 is_galaxy,
                 is_shiny,
-            ) = self._roll_huge_variants()
+            ) = self._roll_huge_variants(index_bonus=index_bonus)
         else:
             (
                 is_gold,
@@ -2325,6 +2641,7 @@ class Pets(commands.Cog):
                 mastery_perks=mastery_perks,
                 pet_mastery_perks=pet_mastery_perks,
                 clan_shiny_multiplier=clan_shiny_multiplier,
+                index_bonus=index_bonus,
             )
 
         if force_gold and not pet_definition.is_huge:
@@ -2369,6 +2686,7 @@ class Pets(commands.Cog):
                     pet_mastery_perks,
                     clan_shiny_multiplier=clan_shiny_multiplier,
                     auto_settings=auto_settings,
+                    index_bonus=index_bonus,
                 )
             )
 
@@ -2536,6 +2854,7 @@ class Pets(commands.Cog):
         active_potion: tuple[PotionDefinition, datetime] | None = None,
         charge_cost: bool = True,
         bonus: bool = False,
+        index_bonus: float | None = None,
     ) -> bool:
         """Compatibilité héritée pour les tests existants.
 
@@ -2544,6 +2863,9 @@ class Pets(commands.Cog):
         l'ancienne signature pour éviter d'adapter tous les appelants
         historiques, notamment dans la suite de tests.
         """
+
+        if index_bonus is None:
+            _, index_bonus = await self._fetch_index_shiny_bonus(ctx.author.id)
 
         result = await self._hatch_pet(
             ctx,
@@ -2554,6 +2876,7 @@ class Pets(commands.Cog):
             active_potion=active_potion,
             charge_cost=charge_cost,
             bonus=bonus,
+            index_bonus=index_bonus,
         )
         if result is None:
             return False
@@ -2732,6 +3055,12 @@ class Pets(commands.Cog):
                 )
             log_context["clan_shiny_multiplier"] = clan_shiny_multiplier
 
+            log_context["stage"] = "index_bonus"
+            index_unique_count, index_bonus_ratio = await self._fetch_index_shiny_bonus(
+                ctx.author.id
+            )
+            log_context["index_unique"] = index_unique_count
+
             if double_request:
                 log_context["stage"] = "inform_double_request"
                 if egg_perks.double_chance > 0:
@@ -2799,6 +3128,7 @@ class Pets(commands.Cog):
                 mastery_perks=egg_perks,
                 price_multiplier=price_multiplier,
                 force_gold=force_gold_request,
+                index_bonus=index_bonus_ratio,
             )
             if primary_result is None:
                 return
@@ -2839,6 +3169,7 @@ class Pets(commands.Cog):
                         mastery_perks=egg_perks,
                         charge_cost=False,
                         bonus=True,
+                        index_bonus=index_bonus_ratio,
                     )
                     if bonus_result is not None:
                         results.append(bonus_result)
@@ -3061,7 +3392,26 @@ class Pets(commands.Cog):
             self.database.get_pet_counts(),
             self.database.get_pet_market_values(),
         )
-        owned_names = self._owned_pet_names(records)
+        variant_sets: Dict[str, Set[int]] = {
+            "normal": set(),
+            "gold": set(),
+            "rainbow": set(),
+            "galaxy": set(),
+            "shiny": set(),
+        }
+        for record in records:
+            pet_id = int(record.get("pet_id") or 0)
+            if pet_id <= 0:
+                continue
+            variant_sets["normal"].add(pet_id)
+            if bool(record.get("is_gold")):
+                variant_sets["gold"].add(pet_id)
+            if bool(record.get("is_rainbow")):
+                variant_sets["rainbow"].add(pet_id)
+            if bool(record.get("is_galaxy")):
+                variant_sets["galaxy"].add(pet_id)
+            if bool(record.get("is_shiny")):
+                variant_sets["shiny"].add(pet_id)
         count_lookup: Dict[str, int] = {}
         market_lookup: Dict[str, int] = {}
         for definition in self._definitions:
@@ -3078,15 +3428,22 @@ class Pets(commands.Cog):
                 is_galaxy=False,
                 is_shiny=False,
             )
-        embed = embeds.pet_index_embed(
-            member=ctx.author,
+        normal_unique = len(variant_sets["normal"])
+        index_bonus_percent = self._index_bonus_from_count(normal_unique) * 100
+
+        view = PetIndexView(
+            ctx=ctx,
             pet_definitions=self._definitions,
-            owned_names=owned_names,
+            pet_ids=self._pet_ids,
+            variant_sets=variant_sets,
             huge_descriptions=HUGE_PET_SOURCES,
             pet_counts=count_lookup,
             market_values=market_lookup,
+            index_bonus_percent=index_bonus_percent,
         )
-        await ctx.send(embed=embed)
+        embed = view.build_embed()
+        message = await ctx.send(embed=embed, view=view)
+        view.message = message
 
     @commands.command(name="equipbest", aliases=("bestpets", "autoequip"))
     async def equip_best_pets(self, ctx: commands.Context) -> None:
@@ -3968,6 +4325,7 @@ class Pets(commands.Cog):
             clan_shiny_multiplier = max(
                 1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
             )
+        _, index_bonus_ratio = await self._fetch_index_shiny_bonus(ctx.author.id)
 
         non_huge_definitions = [
             pet for pet in PET_DEFINITIONS if not getattr(pet, "is_huge", False)
@@ -3990,7 +4348,7 @@ class Pets(commands.Cog):
         selected_defs = random.choices(non_huge_definitions, weights=weights, k=total_outputs)
 
         def _roll_shiny(base_chance: float) -> bool:
-            chance = max(0.0, float(base_chance))
+            chance = self._apply_index_bonus(base_chance, index_bonus_ratio)
             if chance <= 0:
                 return False
             chance *= float(pet_perks.egg_shiny_multiplier)
@@ -4096,13 +4454,15 @@ class Pets(commands.Cog):
             clan_shiny_multiplier = max(
                 1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
             )
+        _, index_bonus_ratio = await self._fetch_index_shiny_bonus(ctx.author.id)
 
-        shiny_chance = (
-            float(pet_perks.goldify_shiny_chance)
-            * float(pet_perks.egg_shiny_multiplier)
-            * clan_shiny_multiplier
+        shiny_chance = self._apply_index_bonus(
+            float(pet_perks.goldify_shiny_chance), index_bonus_ratio
         )
-        make_shiny = random.random() < min(1.0, max(0.0, shiny_chance))
+        shiny_chance *= float(pet_perks.egg_shiny_multiplier)
+        shiny_chance *= clan_shiny_multiplier
+        shiny_chance = min(1.0, max(0.0, shiny_chance))
+        make_shiny = random.random() < shiny_chance
 
         try:
             record, consumed = await self.database.upgrade_pet_to_gold(
@@ -4189,13 +4549,15 @@ class Pets(commands.Cog):
             clan_shiny_multiplier = max(
                 1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
             )
+        _, index_bonus_ratio = await self._fetch_index_shiny_bonus(ctx.author.id)
 
-        shiny_chance = (
-            float(pet_perks.rainbowify_shiny_chance)
-            * float(pet_perks.egg_shiny_multiplier)
-            * clan_shiny_multiplier
+        shiny_chance = self._apply_index_bonus(
+            float(pet_perks.rainbowify_shiny_chance), index_bonus_ratio
         )
-        make_shiny = random.random() < min(1.0, max(0.0, shiny_chance))
+        shiny_chance *= float(pet_perks.egg_shiny_multiplier)
+        shiny_chance *= clan_shiny_multiplier
+        shiny_chance = min(1.0, max(0.0, shiny_chance))
+        make_shiny = random.random() < shiny_chance
 
         try:
             record, consumed = await self.database.upgrade_pet_to_rainbow(
@@ -4271,13 +4633,15 @@ class Pets(commands.Cog):
             clan_shiny_multiplier = max(
                 1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
             )
+        _, index_bonus_ratio = await self._fetch_index_shiny_bonus(ctx.author.id)
 
-        shiny_chance = (
-            float(pet_perks.rainbowify_shiny_chance)
-            * float(pet_perks.egg_shiny_multiplier)
-            * clan_shiny_multiplier
+        shiny_chance = self._apply_index_bonus(
+            float(pet_perks.rainbowify_shiny_chance), index_bonus_ratio
         )
-        make_shiny = random.random() < min(1.0, max(0.0, shiny_chance))
+        shiny_chance *= float(pet_perks.egg_shiny_multiplier)
+        shiny_chance *= clan_shiny_multiplier
+        shiny_chance = min(1.0, max(0.0, shiny_chance))
+        make_shiny = random.random() < shiny_chance
 
         try:
             record, consumed = await self.database.upgrade_pet_to_galaxy(
