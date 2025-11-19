@@ -5547,6 +5547,7 @@ class Database:
         *,
         limit: int = 25,
         item_type: str | None = None,
+        seller_id: int | None = None,
     ) -> Sequence[asyncpg.Record]:
         limit = max(1, limit)
         return await self.pool.fetch(
@@ -5555,11 +5556,13 @@ class Database:
             FROM plaza_consumable_listings
             WHERE status = 'active'
               AND ($2::TEXT IS NULL OR item_type = $2)
+              AND ($3::BIGINT IS NULL OR seller_id = $3)
             ORDER BY created_at ASC
             LIMIT $1
             """,
             limit,
             item_type,
+            seller_id,
         )
 
     async def get_consumable_activity(

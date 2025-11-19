@@ -1396,6 +1396,34 @@ class Plaza(commands.Cog):
             return f"#{listing_id} • {name} — {price} • {timestamp}"
         return f"#{listing_id} • {name} — {price}"
 
+    def _format_stand_listing_line(
+        self, record: Mapping[str, object], *, guild: discord.Guild | None = None
+    ) -> str:
+        listing_id = int(record.get("id", 0))
+        price = embeds.format_gems(int(record.get("price", 0)))
+        created_at = record.get("created_at")
+        timestamp = ""
+        if isinstance(created_at, datetime):
+            timestamp = f" • {discord.utils.format_dt(created_at, style='R')}"
+
+        item_type = str(record.get("item_type") or "")
+        if item_type:
+            quantity = int(record.get("quantity", 0))
+            if item_type == "ticket":
+                name = f"🎟️ Tickets ×{quantity}"
+            elif item_type == "role":
+                slug = str(record.get("item_slug") or "")
+                name = f"🛡️ {self._role_label(slug, guild)}"
+            else:
+                slug = str(record.get("item_slug") or "")
+                definition = POTION_DEFINITION_MAP.get(slug)
+                potion_name = definition.name if definition else slug or "Potion"
+                name = f"🧪 {potion_name} ×{quantity}"
+        else:
+            name = self._format_pet_record(record)
+
+        return f"#{listing_id} • {name} — {price}{timestamp}"
+
     def _format_enchantment_label(self, slug: str, power: int) -> str:
         definition = ENCHANTMENT_DEFINITION_MAP.get(slug)
         if definition:
@@ -1932,8 +1960,17 @@ class Plaza(commands.Cog):
         except DatabaseError as exc:
             return embeds.error_embed(str(exc)), False
 
+        try:
+            consumables = await self.database.list_active_consumable_listings(
+                limit=25, seller_id=user.id
+            )
+        except DatabaseError as exc:
+            return embeds.error_embed(str(exc)), False
+
+        combined_listings = [*listings, *consumables]
+
         title = f"Stand de {user.display_name}"
-        if not listings:
+        if not combined_listings:
             message = "Aucune annonce active sur ce stand pour le moment."
             if include_instructions:
                 message += " Utilise les boutons pour créer ta première offre !"
@@ -1942,7 +1979,12 @@ class Plaza(commands.Cog):
                 embed.set_thumbnail(url=user.display_avatar.url)
             return embed, True
 
-        lines = [self._format_listing_line(record) for record in listings]
+        lines = [
+            self._format_stand_listing_line(
+                record, guild=getattr(user, "guild", None)
+            )
+            for record in combined_listings
+        ]
         embed = embeds.info_embed("\n".join(lines), title=title)
         if getattr(user, "display_avatar", None):
             embed.set_thumbnail(url=user.display_avatar.url)
@@ -2279,12 +2321,16 @@ class Plaza(commands.Cog):
             pet_listings = []
 
         try:
-            consumable_listings = await self.database.list_active_consumable_listings(limit=30)
+            consumable_listings = await self.database.list_active_consumable_listings(
+                limit=30
+            )
         except DatabaseError as exc:
             await ctx.send(embed=embeds.error_embed(str(exc)))
             consumable_listings = []
 
-        if not pet_listings and not consumable_listings:
+        combined_listings = [*pet_listings, *consumable_listings]
+
+        if not combined_listings:
             await ctx.send(
                 embed=embeds.info_embed(
                     "La plaza est calme pour le moment. Reviens plus tard !",
@@ -2293,75 +2339,70 @@ class Plaza(commands.Cog):
             )
             return
 
-        if pet_listings:
-            grouped: Dict[int, list[Mapping[str, object]]] = defaultdict(list)
-            for record in pet_listings:
-                grouped[int(record["seller_id"])].append(record)
+        grouped: Dict[int, list[Mapping[str, object]]] = defaultdict(list)
+        for record in combined_listings:
+            grouped[int(record["seller_id"])].append(record)
 
-            user_cache = await self._build_user_cache(ctx, grouped.keys())
+        user_cache = await self._build_user_cache(ctx, grouped.keys())
 
-            seller_sections: list[SellerListings] = []
-            for seller_id, records in grouped.items():
-                seller = user_cache.get(seller_id)
-                seller_name = seller.display_name if seller else f"Utilisateur {seller_id}"
+        seller_sections: list[SellerListings] = []
+        for seller_id, records in grouped.items():
+            seller = user_cache.get(seller_id)
+            seller_name = seller.display_name if seller else f"Utilisateur {seller_id}"
 
-                sorted_records = sorted(records, key=self._listing_sort_key)
-                lines = [self._format_listing_line(record) for record in sorted_records]
+            sorted_records = sorted(records, key=self._listing_sort_key)
+            lines = [
+                self._format_stand_listing_line(record, guild=ctx.guild)
+                for record in sorted_records
+            ]
 
-                prices = [int(record.get("price", 0)) for record in sorted_records]
-                cheapest = min(prices) if prices else 0
-                priciest = max(prices) if prices else 0
+            prices = [int(record.get("price", 0)) for record in sorted_records]
+            cheapest = min(prices) if prices else 0
+            priciest = max(prices) if prices else 0
 
-                latest_at: Optional[datetime] = None
-                for record in records:
-                    created_at = record.get("created_at")
-                    if isinstance(created_at, datetime) and (
-                        latest_at is None or created_at > latest_at
-                    ):
-                        latest_at = created_at
+            latest_at: Optional[datetime] = None
+            for record in records:
+                created_at = record.get("created_at")
+                if isinstance(created_at, datetime) and (
+                    latest_at is None or created_at > latest_at
+                ):
+                    latest_at = created_at
 
-                seller_sections.append(
-                    SellerListings(
-                        seller_id=seller_id,
-                        seller_name=seller_name,
-                        listings=tuple(lines),
-                        total=len(records),
-                        cheapest=cheapest,
-                        priciest=priciest,
-                        latest_at=latest_at,
-                    )
-                )
-
-            seller_sections.sort(key=lambda entry: entry.seller_name.lower())
-
-            total_sellers = len(seller_sections)
-            visible_sellers = seller_sections[:24]
-            hidden_count = total_sellers - len(visible_sellers)
-
-            recent_lines = [
-                self._format_listing_line(record)
-                for record in sorted(pet_listings, key=self._recent_listing_sort)
-            ][:10]
-
-            view = PlazaListingsView(
-                plaza=self,
-                author=ctx.author,
-                sellers=visible_sellers,
-                recent_lines=recent_lines,
-                total_listings=len(pet_listings),
-                total_sellers=total_sellers,
-                hidden_count=hidden_count,
-            )
-
-            message = await ctx.send(embed=view.get_embed("all"), view=view)
-            view.message = message
-        else:
-            await ctx.send(
-                embed=embeds.info_embed(
-                    "Aucune annonce de pets active pour le moment.",
-                    title="🏬 Plaza des stands",
+            seller_sections.append(
+                SellerListings(
+                    seller_id=seller_id,
+                    seller_name=seller_name,
+                    listings=tuple(lines),
+                    total=len(records),
+                    cheapest=cheapest,
+                    priciest=priciest,
+                    latest_at=latest_at,
                 )
             )
+
+        seller_sections.sort(key=lambda entry: entry.seller_name.lower())
+
+        total_sellers = len(seller_sections)
+        visible_sellers = seller_sections[:24]
+        hidden_count = total_sellers - len(visible_sellers)
+
+        recent_lines = [
+            self._format_stand_listing_line(record, guild=ctx.guild)
+            for record in sorted(combined_listings, key=self._recent_listing_sort)
+        ][:10]
+
+        view = PlazaListingsView(
+            plaza=self,
+            author=ctx.author,
+            sellers=visible_sellers,
+            recent_lines=recent_lines,
+            total_listings=len(combined_listings),
+            total_sellers=total_sellers,
+            hidden_count=hidden_count,
+        )
+
+        message = await ctx.send(embed=view.get_embed("all"), view=view)
+        view.message = message
 
         if consumable_listings:
             seller_ids = {int(record.get("seller_id", 0)) for record in consumable_listings}
