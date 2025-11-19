@@ -132,7 +132,7 @@ class MillionaireRaceStage:
     potion_slugs: tuple[str, ...] = ()
 
 
-MILLIONAIRE_RACE_COOLDOWN: int = 1_800
+MILLIONAIRE_RACE_COOLDOWN: int = 300
 
 # Mode Hardcore : 20 étapes avec une difficulté décroissant par paliers jusqu'à Huge Gale
 MILLIONAIRE_RACE_STAGES: tuple[MillionaireRaceStage, ...] = (
