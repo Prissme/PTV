@@ -980,6 +980,90 @@ class StandManagementView(discord.ui.View):
         await interaction.response.send_modal(StandRemoveListingModal(self))
 
 
+class StandPurchaseModal(discord.ui.Modal):
+    def __init__(self, view: "StandPurchaseView") -> None:
+        super().__init__(title="Acheter un item")
+        self.view = view
+        self.listing_input = discord.ui.TextInput(
+            label="Identifiant de l'annonce",
+            placeholder="Ex: 42",
+            min_length=1,
+            max_length=10,
+        )
+        self.add_item(self.listing_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            listing_id = int(self.listing_input.value)
+            if listing_id <= 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Merci d'indiquer un identifiant valide."),
+                ephemeral=True,
+            )
+            return
+
+        success, embed, seller_id = await self.view.plaza._process_stand_purchase(
+            interaction.user, listing_id, guild=interaction.guild
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=not success)
+
+        if not success:
+            return
+
+        if seller_id is not None:
+            await self.view.plaza._refresh_active_stand_view(seller_id)
+
+        await self.view.refresh_embed()
+
+
+class StandPurchaseView(discord.ui.View):
+    def __init__(
+        self,
+        plaza: "Plaza",
+        author: discord.abc.User,
+        target: discord.abc.User,
+    ) -> None:
+        super().__init__(timeout=180)
+        self.plaza = plaza
+        self.author = author
+        self.target = target
+        self.message: discord.Message | None = None
+
+    @discord.ui.button(label="Acheter un item", style=discord.ButtonStyle.success)
+    async def purchase_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:  # pragma: no cover - UI callback
+        del button
+        await interaction.response.send_modal(StandPurchaseModal(self))
+
+    async def refresh_embed(self) -> None:
+        if self.message is None:
+            return
+        embed, ok = await self.plaza._build_stand_overview_embed(self.target)
+        await self.message.edit(embed=embed, view=self if ok else None)
+        if not ok:
+            self.stop()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.author.id:
+            return True
+        await interaction.response.send_message(
+            "Seule la personne ayant ouvert ce stand peut utiliser ces boutons.",
+            ephemeral=True,
+        )
+        return False
+
+    async def on_timeout(self) -> None:
+        if self.message is None:
+            return
+        for child in self.children:
+            child.disabled = True
+        with contextlib.suppress(discord.HTTPException):
+            await self.message.edit(view=self)
+
+
 class ConsumableFilterSelect(discord.ui.Select):
     def __init__(self, view: "ConsumableListingsView") -> None:
         super().__init__(
@@ -1992,6 +2076,47 @@ class Plaza(commands.Cog):
             embed.set_footer(text="Astuce : utilise les boutons ci-dessous pour gérer ton stand.")
         return embed, True
 
+    async def _process_stand_purchase(
+        self,
+        buyer: discord.abc.User,
+        listing_id: int,
+        *,
+        guild: discord.Guild | None = None,
+    ) -> tuple[bool, discord.Embed, int | None]:
+        try:
+            listing = await self.database.get_market_listing(listing_id)
+        except DatabaseError as exc:
+            return False, embeds.error_embed(str(exc)), None
+        if listing is None:
+            return await self._complete_consumable_purchase(
+                buyer, listing_id, guild=guild
+            )
+
+        seller_id = int(listing["seller_id"])
+        if seller_id == buyer.id:
+            return False, embeds.error_embed("Tu ne peux pas acheter ta propre annonce."), None
+
+        try:
+            result = await self.database.purchase_market_listing(listing_id, buyer.id)
+        except InsufficientBalanceError as exc:
+            return False, embeds.error_embed(str(exc)), None
+        except DatabaseError as exc:
+            return False, embeds.error_embed(str(exc)), None
+
+        listing_record = result["listing"]
+        price = int(listing_record["price"])
+        seller = guild.get_member(seller_id) if guild else None
+        if seller is None:
+            seller = self.bot.get_user(seller_id)
+        seller_name = getattr(seller, "mention", seller.name) if seller else f"Utilisateur {seller_id}"
+
+        pet_display = self._format_pet_record(listing)
+        embed = embeds.success_embed(
+            f"Tu as acheté {pet_display} pour {embeds.format_gems(price)} à {seller_name}.",
+            title="Achat confirmé",
+        )
+        return True, embed, seller_id
+
     # ------------------------------------------------------------------
     # Commandes
     # ------------------------------------------------------------------
@@ -2001,13 +2126,17 @@ class Plaza(commands.Cog):
         embed, ok = await self._build_stand_overview_embed(
             target, include_instructions=target.id == ctx.author.id
         )
-        view: StandManagementView | None = None
+        view: discord.ui.View | None = None
         if ok and target.id == ctx.author.id:
             view = StandManagementView(self, ctx.author)
+        elif ok:
+            view = StandPurchaseView(self, ctx.author, target)
         message = await ctx.send(embed=embed, view=view)
-        if view is not None:
+        if isinstance(view, StandManagementView):
             view.message = message
             self._register_stand_view(view)
+        elif isinstance(view, StandPurchaseView):
+            view.message = message
 
     @stand.command(name="add")
     async def stand_add(self, ctx: commands.Context, price: int, *, pet: str) -> None:
@@ -2025,48 +2154,13 @@ class Plaza(commands.Cog):
 
     @stand.command(name="buy")
     async def stand_buy(self, ctx: commands.Context, listing_id: int) -> None:
-        try:
-            listing = await self.database.get_market_listing(listing_id)
-        except DatabaseError as exc:
-            await ctx.send(embed=embeds.error_embed(str(exc)))
-            return
-
-        if listing is None:
-            success, embed, seller_id = await self._complete_consumable_purchase(
-                ctx.author, listing_id, guild=ctx.guild
-            )
-            await ctx.send(embed=embed)
-            if success and seller_id is not None:
-                await self._refresh_active_stand_view(seller_id)
-            return
-
-        seller_id = int(listing["seller_id"])
-        if seller_id == ctx.author.id:
-            await ctx.send(embed=embeds.error_embed("Tu ne peux pas acheter ta propre annonce."))
-            return
-
-        try:
-            result = await self.database.purchase_market_listing(listing_id, ctx.author.id)
-        except InsufficientBalanceError as exc:
-            await ctx.send(embed=embeds.error_embed(str(exc)))
-            return
-        except DatabaseError as exc:
-            await ctx.send(embed=embeds.error_embed(str(exc)))
-            return
-
-        listing_record = result["listing"]
-        price = int(listing_record["price"])
-        seller = ctx.guild.get_member(seller_id) if ctx.guild else None
-        if seller is None:
-            seller = self.bot.get_user(seller_id)
-        seller_name = getattr(seller, "mention", seller.name) if seller else f"Utilisateur {seller_id}"
-
-        pet_display = self._format_pet_record(listing)
-        embed = embeds.success_embed(
-            f"Tu as acheté {pet_display} pour {embeds.format_gems(price)} à {seller_name}.",
-            title="Achat confirmé",
+        success, embed, seller_id = await self._process_stand_purchase(
+            ctx.author, listing_id, guild=ctx.guild
         )
         await ctx.send(embed=embed)
+
+        if success and seller_id is not None:
+            await self._refresh_active_stand_view(seller_id)
 
     @commands.group(name="auction", invoke_without_command=True)
     async def auction_group(self, ctx: commands.Context) -> None:
