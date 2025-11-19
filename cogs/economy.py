@@ -2519,7 +2519,7 @@ class Economy(commands.Cog):
         )
 
     @commands.guild_only()
-    @commands.cooldown(1, 600, commands.BucketType.user)
+    @commands.cooldown(1, 150, commands.BucketType.user)
     @commands.command(name="voler")
     async def steal(self, ctx: commands.Context, member: discord.Member | None = None) -> None:
         """Tente de voler des PB à un autre membre avec une chance qui progresse avec ton grade."""
