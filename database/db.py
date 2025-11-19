@@ -161,7 +161,8 @@ class Database:
 
     @staticmethod
     def _rebirth_multiplier(count: int) -> float:
-        return 1.0 + 0.5 * max(0, int(count))
+        base = 1.0 + 0.5 * max(0, int(count))
+        return min(1.5, base)
 
     @classmethod
     def _apply_rebirth_multiplier(cls, amount: int, count: int) -> tuple[int, int]:
@@ -4620,6 +4621,15 @@ class Database:
             "SELECT pet_id, COUNT(*) AS total FROM user_pets GROUP BY pet_id"
         )
         return {int(row["pet_id"]): int(row["total"]) for row in rows}
+
+    async def get_unique_pet_count(self, user_id: int) -> int:
+        """Compte le nombre de pets distincts déjà découverts par un joueur."""
+
+        value = await self.pool.fetchval(
+            "SELECT COUNT(DISTINCT pet_id) FROM user_pets WHERE user_id = $1",
+            int(user_id),
+        )
+        return int(value or 0)
 
     @staticmethod
     def _build_variant_code(is_gold: bool, is_rainbow: bool, is_galaxy: bool, is_shiny: bool) -> str:

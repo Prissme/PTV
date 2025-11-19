@@ -70,6 +70,9 @@ class DummyDatabase:
     async def get_enchantment_powers(self, user_id: int) -> dict[str, int]:
         return {}
 
+    async def get_unique_pet_count(self, user_id: int) -> int:
+        return 0
+
 
 class DummyMessage:
     async def edit(self, *, content=None, embed=None, view=None):  # pragma: no cover - animation helper

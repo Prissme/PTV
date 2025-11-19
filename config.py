@@ -390,6 +390,7 @@ MANOIR_ZONE_SLUG: Final[str] = "manoir_hante"
 ROBOT_ZONE_SLUG: Final[str] = "robotique"
 ANIMALERIE_ZONE_SLUG: Final[str] = "animalerie"
 MEXICO_ZONE_SLUG: Final[str] = "mexico"
+ROCKET_ZONE_SLUG: Final[str] = "fusee"
 GOLD_PET_MULTIPLIER: Final[int] = 3
 GOLD_PET_CHANCE: Final[float] = _get_float_env("PET_GOLD_CHANCE", 0.0)
 GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
@@ -1067,6 +1068,15 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         entry_cost=777_777_777_777,
         eggs=_eggs_for_zone(MEXICO_ZONE_SLUG),
         rebirth_required=2,
+    ),
+    PetZoneDefinition(
+        name="Fusée Orbitale",
+        slug=ROCKET_ZONE_SLUG,
+        grade_required=15,
+        entry_cost=1_000_000,
+        eggs=(),
+        rebirth_required=2,
+        currency="gem",
     ),
 )
 
