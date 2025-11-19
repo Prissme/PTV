@@ -2208,8 +2208,7 @@ class Database:
             recipient_before = int(recipient_row["balance"])
 
             sender_after = sender_before - amount
-            recipient_rebirth = int(recipient_row.get("rebirth_count") or 0)
-            recipient_gain, _ = self._apply_rebirth_multiplier(amount, recipient_rebirth)
+            recipient_gain = amount
             recipient_after = recipient_before + recipient_gain
 
             await connection.execute(
