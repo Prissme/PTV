@@ -800,34 +800,38 @@ class PetIndexView(discord.ui.View):
 
     class CategorySelect(discord.ui.Select):
         def __init__(self, view: "PetIndexView") -> None:
-            self.view = view
+            # ``discord.ui.Select`` already exposes a read-only ``view`` attribute
+            # provided by Discord once the component is added to a View.
+            # Keeping our own reference avoids assigning to that reserved attribute,
+            # which raised ``AttributeError: property 'view' ... has no setter``.
+            self._index_view = view
             super().__init__(options=view._build_options(), row=0)
 
         async def callback(self, interaction: discord.Interaction) -> None:
-            self.view.current_category = self.values[0]
-            self.view.current_page = 0
-            await self.view._refresh(interaction)
+            self._index_view.current_category = self.values[0]
+            self._index_view.current_page = 0
+            await self._index_view._refresh(interaction)
 
     class PreviousButton(discord.ui.Button):
         def __init__(self, view: "PetIndexView") -> None:
-            self.view = view
+            self._index_view = view
             super().__init__(emoji="◀️", style=discord.ButtonStyle.secondary, row=1)
 
         async def callback(self, interaction: discord.Interaction) -> None:
-            if self.view.current_page > 0:
-                self.view.current_page -= 1
-            await self.view._refresh(interaction)
+            if self._index_view.current_page > 0:
+                self._index_view.current_page -= 1
+            await self._index_view._refresh(interaction)
 
     class NextButton(discord.ui.Button):
         def __init__(self, view: "PetIndexView") -> None:
-            self.view = view
+            self._index_view = view
             super().__init__(emoji="▶️", style=discord.ButtonStyle.secondary, row=1)
 
         async def callback(self, interaction: discord.Interaction) -> None:
-            max_page = max(0, self.view._page_count(self.view.current_category) - 1)
-            if self.view.current_page < max_page:
-                self.view.current_page += 1
-            await self.view._refresh(interaction)
+            max_page = max(0, self._index_view._page_count(self._index_view.current_category) - 1)
+            if self._index_view.current_page < max_page:
+                self._index_view.current_page += 1
+            await self._index_view._refresh(interaction)
 
     def _build_options(self) -> List[discord.SelectOption]:
         options: List[discord.SelectOption] = []
