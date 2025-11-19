@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from typing import Dict, List, Mapping, Optional, Sequence
+from dataclasses import dataclass
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple, cast
 
+import discord
 from discord.ext import commands
 
 from config import PREFIX
@@ -12,6 +14,67 @@ from utils.enchantments import (
     format_enchantment,
     get_enchantment_emoji,
 )
+
+
+@dataclass(frozen=True)
+class _QuickEquipEntry:
+    slug: str
+    label: str
+    power: int
+
+
+class EnchantmentEquipButton(discord.ui.Button):
+    def __init__(self, entry: _QuickEquipEntry) -> None:
+        label = entry.label[:80]
+        super().__init__(
+            label=label,
+            style=discord.ButtonStyle.primary,
+            custom_id=f"enchants:equip:{entry.slug}:{entry.power}",
+        )
+        self.entry = entry
+
+    async def callback(self, interaction: discord.Interaction) -> None:  # pragma: no cover - UI
+        view = cast("EnchantmentInventoryView", self.view)
+        if view is None:
+            return
+        await view.handle_quick_equip(interaction, self.entry.slug)
+
+
+class EnchantmentInventoryView(discord.ui.View):
+    def __init__(
+        self,
+        cog: "Enchantments",
+        ctx: commands.Context,
+        entries: Sequence[_QuickEquipEntry],
+    ) -> None:
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.ctx = ctx
+        for entry in entries[:25]:
+            self.add_item(EnchantmentEquipButton(entry))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user and interaction.user.id == self.ctx.author.id:
+            return True
+
+        await interaction.response.send_message(
+            "Seul le propriétaire de ces enchantements peut utiliser ces boutons.",
+            ephemeral=True,
+        )
+        return False
+
+    async def handle_quick_equip(
+        self, interaction: discord.Interaction, slug: str
+    ) -> None:
+        embed, _ = await self.cog._equip_enchantment_for_user(
+            user_id=interaction.user.id,
+            slug=slug,
+            requested_power=None,
+        )
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 class Enchantments(commands.Cog):
@@ -123,9 +186,12 @@ class Enchantments(commands.Cog):
             f"Utilise `{PREFIX}enchants unequip <nom>` pour libérer un slot."
         )
 
+        quick_entries = self._build_quick_entries(rows)
+        view = EnchantmentInventoryView(self, ctx, quick_entries) if quick_entries else None
+
         embed = embeds.info_embed("\n".join(description_lines), title="Enchantements")
         embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
-        await ctx.send(embed=embed)
+        await ctx.send(embed=embed, view=view)
 
     def _find_owned_powers(
         self, rows: Sequence[Mapping[str, object]], slug: str
@@ -139,6 +205,91 @@ class Enchantments(commands.Cog):
                 continue
             powers.append(int(row.get("power") or 0))
         return powers
+
+    def _build_quick_entries(
+        self, rows: Sequence[Mapping[str, object]]
+    ) -> List[_QuickEquipEntry]:
+        best: Dict[str, Tuple[int, str]] = {}
+        for row in rows:
+            slug = str(row.get("slug") or "")
+            power = int(row.get("power") or 0)
+            quantity = int(row.get("quantity") or 0)
+            if not slug or power <= 0 or quantity <= 0:
+                continue
+            definition = ENCHANTMENT_DEFINITION_MAP.get(slug)
+            label = (
+                format_enchantment(definition, power)
+                if definition
+                else f"{slug} (puissance {power})"
+            )
+            entry_label = f"{get_enchantment_emoji(slug)} {label}"
+            current = best.get(slug)
+            if current is None or power > current[0]:
+                best[slug] = (power, entry_label)
+
+        entries = [
+            _QuickEquipEntry(slug=slug, power=power, label=label)
+            for slug, (power, label) in best.items()
+        ]
+        entries.sort(key=lambda item: item.label.lower())
+        return entries
+
+    async def _equip_enchantment_for_user(
+        self,
+        *,
+        user_id: int,
+        slug: str,
+        requested_power: Optional[int],
+    ) -> tuple[discord.Embed, bool]:
+        definition = ENCHANTMENT_DEFINITION_MAP.get(slug)
+        if definition is None:
+            return embeds.error_embed("Cet enchantement est inconnu."), False
+
+        rows = await self.database.get_user_enchantments(user_id)
+        owned_powers = self._find_owned_powers(rows, slug)
+        if not owned_powers:
+            return embeds.error_embed("Tu ne possèdes pas cet enchantement."), False
+
+        selected_power = requested_power if requested_power is not None else max(owned_powers)
+        if selected_power not in owned_powers:
+            return (
+                embeds.error_embed(
+                    "Tu ne possèdes pas cet enchantement à ce niveau. Utilise un niveau existant."
+                ),
+                False,
+            )
+
+        slot_limit = await self._slot_limit(user_id)
+        result = await self.database.equip_user_enchantment(
+            user_id,
+            slug,
+            power=selected_power,
+            slot_limit=slot_limit,
+        )
+
+        label = format_enchantment(definition, selected_power)
+        if result == "missing":
+            return embeds.error_embed("Tu ne possèdes plus cet enchantement."), False
+        if result == "limit":
+            plural = "s" if slot_limit > 1 else ""
+            return (
+                embeds.error_embed(
+                    f"Tu as déjà {slot_limit} enchantement{plural} équipé{plural}. Libère un slot avant d'en ajouter un nouveau."
+                ),
+                False,
+            )
+        if result == "unchanged":
+            return (
+                embeds.info_embed(f"{label} est déjà équipé.", title="Enchantements"),
+                False,
+            )
+
+        message = (
+            f"{label} équipé !"
+            if result == "equipped"
+            else f"{label} est maintenant équipé à ce niveau."
+        )
+        return embeds.success_embed(message, title="Enchantements"), True
 
     @commands.group(
         name="enchants",
@@ -167,53 +318,11 @@ class Enchantments(commands.Cog):
             await ctx.send(embed=embeds.error_embed("Cet enchantement est inconnu."))
             return
 
-        rows = await self.database.get_user_enchantments(ctx.author.id)
-        owned_powers = self._find_owned_powers(rows, resolved_slug)
-        if not owned_powers:
-            await ctx.send(embed=embeds.error_embed("Tu ne possèdes pas cet enchantement."))
-            return
-
-        selected_power = power if power is not None else max(owned_powers)
-        if selected_power not in owned_powers:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Tu ne possèdes pas cet enchantement à ce niveau. Utilise un niveau existant."
-                )
-            )
-            return
-
-        slot_limit = await self._slot_limit(ctx.author.id)
-        result = await self.database.equip_user_enchantment(
-            ctx.author.id,
-            resolved_slug,
-            power=selected_power,
-            slot_limit=slot_limit,
+        embed, _ = await self._equip_enchantment_for_user(
+            user_id=ctx.author.id,
+            slug=resolved_slug,
+            requested_power=power,
         )
-
-        label = format_enchantment(definition, selected_power)
-        if result == "missing":
-            await ctx.send(embed=embeds.error_embed("Tu ne possèdes plus cet enchantement."))
-            return
-        if result == "limit":
-            plural = "s" if slot_limit > 1 else ""
-            await ctx.send(
-                embed=embeds.error_embed(
-                    f"Tu as déjà {slot_limit} enchantement{plural} équipé{plural}. Libère un slot avant d'en ajouter un nouveau."
-                )
-            )
-            return
-        if result == "unchanged":
-            await ctx.send(
-                embed=embeds.info_embed(f"{label} est déjà équipé.", title="Enchantements")
-            )
-            return
-
-        message = (
-            f"{label} équipé !"
-            if result == "equipped"
-            else f"{label} est maintenant équipé à ce niveau."
-        )
-        embed = embeds.success_embed(message, title="Enchantements")
         await ctx.send(embed=embed)
 
     @enchants.command(name="unequip", aliases=("desequip", "remove"))

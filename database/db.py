@@ -4727,16 +4727,17 @@ class Database:
             await txn_connection.execute(query, *params)
 
     async def get_pet_market_values(self) -> Dict[Tuple[int, str], int]:
-        """Calcule le prix moyen par pet et variante en se basant sur les échanges recensés."""
+        """Retourne la dernière valeur marché enregistrée pour chaque variante."""
 
         rows = await self.pool.fetch(
             """
             SELECT pet_id, is_gold, is_rainbow, is_galaxy, is_shiny, price
             FROM pet_trade_history
+            ORDER BY recorded_at DESC, id DESC
         """
         )
 
-        totals: Dict[Tuple[int, str], tuple[int, int]] = {}
+        latest_values: Dict[Tuple[int, str], int] = {}
         for row in rows:
             pet_id = int(row["pet_id"])
             code = self._build_variant_code(
@@ -4746,15 +4747,10 @@ class Database:
                 bool(row.get("is_shiny")),
             )
             key = (pet_id, code)
-            price = int(row["price"])
-            total, count = totals.get(key, (0, 0))
-            totals[key] = (total + price, count + 1)
-
-        averages: Dict[Tuple[int, str], int] = {}
-        for key, (total, count) in totals.items():
-            if count:
-                averages[key] = int(round(total / count))
-        return averages
+            if key in latest_values:
+                continue
+            latest_values[key] = int(row["price"])
+        return latest_values
 
     # ------------------------------------------------------------------
     # King of the Hill
