@@ -435,6 +435,7 @@ HUGE_ROSA_MULTIPLIER: Final[float] = 15
 HUGE_CLANCY_NAME: Final[str] = "Huge Clancy"
 HUGE_CLANCY_MULTIPLIER: Final[float] = 10
 HUGE_WISHED_NAME: Final[str] = "Huge Wished"
+HUGE_WISHED_MULTIPLIER: Final[float] = 20
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
     HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
@@ -448,6 +449,7 @@ HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
     HUGE_BO_NAME: HUGE_BO_MULTIPLIER,
     HUGE_CLANCY_NAME: HUGE_CLANCY_MULTIPLIER,
     HUGE_ROSA_NAME: HUGE_ROSA_MULTIPLIER,
+    HUGE_WISHED_NAME: HUGE_WISHED_MULTIPLIER,
     TITANIC_POCO_NAME: TITANIC_POCO_MULTIPLIER,
 }
 
@@ -674,7 +676,7 @@ _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
         rarity="Secret",
         image_url="https://example.com/document48.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.0015,
+        drop_rate=0.00015,
         is_huge=True,
     ),
 )
