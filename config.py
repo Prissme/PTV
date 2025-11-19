@@ -1099,7 +1099,7 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Barley": os.getenv("PET_EMOJI_BARLEY", "<:Barley:1430586754041381036>"),
     "Poco": os.getenv("PET_EMOJI_POCO", "<:Poco:1430586108336672878>"),
     "Rosa": _ROSA_EMOJI,
-    "Mina": os.getenv("PET_EMOJI_MINA", _ROSA_EMOJI),
+    "Mina": os.getenv("PET_EMOJI_MINA", "<:Mina:1437826273673089238>"),
     HUGE_PET_NAME: os.getenv("PET_EMOJI_HUGE_SHELLY", "<:HugeShelly:1430587331819212831>"),
     "Angelo": os.getenv("PET_EMOJI_ANGELO", "<:Angelo:1430873772583289054>"),
     "Lily": os.getenv("PET_EMOJI_LILY", "<:Lily:1430874351309422674>"),

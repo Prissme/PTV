@@ -21,6 +21,7 @@ from config import (
 from database.db import DatabaseError, InsufficientBalanceError
 from utils import embeds
 from utils.enchantments import ENCHANTMENT_DEFINITION_MAP, format_enchantment
+from utils.pet_formatting import pet_emoji
 
 
 @dataclass(frozen=True)
@@ -205,14 +206,6 @@ class PlazaListingsView(discord.ui.View):
                 child.disabled = True
 
         await self.message.edit(view=self)
-
-    @discord.ui.button(label="Ventes aux enchères", style=discord.ButtonStyle.success)
-    async def auction_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        del button
-        await self.plaza._open_auction_browser(interaction, self.author)
-
 
 class StandPetListingModal(discord.ui.Modal):
     def __init__(self, view: "StandManagementView") -> None:
@@ -1387,8 +1380,11 @@ class Plaza(commands.Cog):
             markers.append("🥇")
         if bool(record.get("is_shiny")):
             markers.append("✨")
-        suffix = f" {' '.join(markers)}" if markers else ""
-        return f"{name}{suffix}"
+        marker_text = " ".join(markers)
+        emoji = pet_emoji(name)
+        if marker_text:
+            return f"{emoji} {marker_text}".strip()
+        return emoji
 
     def _format_listing_line(self, record: Mapping[str, object]) -> str:
         listing_id = int(record.get("id", 0))
