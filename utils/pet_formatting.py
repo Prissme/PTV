@@ -106,7 +106,7 @@ class PetDisplay:
 
     @property
     def income_text(self) -> str:
-        return f"{self.income_per_hour:,} PB/h".replace(",", " ")
+        return f"{format_currency(self.income_per_hour)}/h"
 
     def rarity_label(self) -> str:
         if self.is_galaxy:
@@ -204,35 +204,9 @@ class PetDisplay:
         identifiers: Sequence[int] | None = None,
     ) -> str:
         parts: list[str] = []
-        identifier_tokens: list[str] = []
-        if identifiers:
-            normalized = []
-            for raw in identifiers:
-                try:
-                    value = int(raw)
-                except (TypeError, ValueError):
-                    continue
-                if value > 0:
-                    normalized.append(value)
-            if normalized:
-                normalized = list(dict.fromkeys(normalized))
-                preview = [f"#{value}" for value in normalized[:5]]
-                remaining = len(normalized) - len(preview)
-                if remaining > 0:
-                    preview.append(f"+{remaining}")
-                identifier_tokens = preview
-
-        if quantity == 1:
-            if identifier_tokens:
-                parts.append(identifier_tokens[0])
-            elif self.identifier:
-                parts.append(f"#{self.identifier}")
-        elif identifier_tokens:
-            label = "ID :" if len(identifier_tokens) == 1 else "IDs :"
-            parts.append(f"{label} {', '.join(identifier_tokens)}")
         if self.is_active:
             parts.append("⭐")
-        parts.extend([self.emoji, self.name, self.rarity, self.income_text])
+        parts.extend([self.emoji, self.rarity, self.income_text])
         flags: list[str] = []
         if self.is_huge and self.huge_level:
             flags.append(f"Niv. {self.huge_level}")

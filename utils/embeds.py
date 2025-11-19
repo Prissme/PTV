@@ -633,7 +633,7 @@ def pet_collection_embed(
     else:
         embed_description += "\n\nAucun pet pour le moment. Ouvre un œuf avec e!openbox."
 
-    embed = _base_embed("Inventaire des pets", embed_description, color=Colors.NEUTRAL)
+    embed = _base_embed("Inventaire des pets", embed_description, color=Colors.INFO)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
 
     current_page = max(1, page)
