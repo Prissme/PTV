@@ -90,7 +90,7 @@ SLOT_SPECIAL_COMBOS: dict[tuple[str, ...], tuple[int, str]] = {
     tuple(sorted(("⭐", "💎", "7️⃣"))): (10, "Combo premium ⭐ 💎 7️⃣ !"),
 }
 SLOT_MIN_BET = 50
-SLOT_MAX_BET = 1_000_000_000
+SLOT_MAX_BET = 1_000_000_000_000_000
 CASINO_HUGE_MAX_CHANCE = 0.10
 CASINO_HUGE_CHANCE_PER_PB = CASINO_HUGE_MAX_CHANCE / SLOT_MAX_BET
 CASINO_TITANIC_MAX_CHANCE = 0.01
