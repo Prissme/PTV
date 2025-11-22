@@ -55,6 +55,10 @@ from config import (
     HUGE_GRIFF_NAME,
     HUGE_KENJI_ONI_NAME,
     HUGE_MORTIS_NAME,
+    EGG_LUCK_ROLE_ID,
+    STEAL_PROTECTED_ROLE_ID,
+    VOICE_XP_ROLE_ID,
+    XP_BOOST_ROLE_ID,
     TITANIC_GRIFF_NAME,
     PotionDefinition,
     compute_huge_income,
@@ -190,6 +194,7 @@ class GemshopState:
     total_slots: int
     max_extra_allowed: int
     next_cost: int | None
+    role_sales: Dict[int, int] = field(default_factory=dict)
 
     @property
     def has_reached_hard_cap(self) -> bool:
@@ -211,6 +216,47 @@ class GemshopPurchaseResult:
     embed: discord.Embed
     state: GemshopState
     success: bool
+
+
+@dataclass(frozen=True)
+class GemshopRoleOffer:
+    role_id: int
+    description: str
+    price: int
+    stock: int
+    slug: str
+
+
+GEMSHOP_ROLE_OFFERS: Final[tuple[GemshopRoleOffer, ...]] = (
+    GemshopRoleOffer(
+        role_id=EGG_LUCK_ROLE_ID,
+        description="+30% d'XP • +10% Luck dans les œufs",
+        price=5_000,
+        stock=4,
+        slug="luck",
+    ),
+    GemshopRoleOffer(
+        role_id=VOICE_XP_ROLE_ID,
+        description="+15% d'XP • Salon voc illimité",
+        price=1_500,
+        stock=10,
+        slug="vocal",
+    ),
+    GemshopRoleOffer(
+        role_id=XP_BOOST_ROLE_ID,
+        description="+50% d'XP",
+        price=4_000,
+        stock=4,
+        slug="xp",
+    ),
+    GemshopRoleOffer(
+        role_id=STEAL_PROTECTED_ROLE_ID,
+        description="Divise par 10 les chances de vol",
+        price=10_000,
+        stock=4,
+        slug="protege",
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -301,6 +347,46 @@ _MASTERY_TIERS: dict[str, tuple[MasteryTier, ...]] = {
 }
 
 
+class GemshopRoleButton(discord.ui.Button):
+    def __init__(
+        self, cog: "Pets", ctx: commands.Context, offer: GemshopRoleOffer, state: GemshopState
+    ) -> None:
+        super().__init__(
+            label="Acheter le rôle",
+            style=discord.ButtonStyle.blurple,
+            custom_id=f"gemshop:role:{offer.role_id}",
+        )
+        self.cog = cog
+        self.ctx = ctx
+        self.offer = offer
+        self.update_state(state)
+
+    def update_state(self, state: GemshopState) -> None:
+        sold = int(state.role_sales.get(self.offer.role_id, 0))
+        remaining = max(0, self.offer.stock - sold)
+        self.label = f"{embeds.format_gems(self.offer.price)} ({remaining}/{self.offer.stock})"
+        self.disabled = remaining <= 0
+
+    async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
+        async with self.cog._gemshop_lock:
+            await interaction.response.defer(ephemeral=True, thinking=False)
+            result = await self.cog._attempt_gemshop_role_purchase(
+                interaction.user,
+                self.offer,
+                guild=interaction.guild,
+            )
+            self.view.state = result.state  # type: ignore[attr-defined]
+            self.view._refresh_buttons()  # type: ignore[attr-defined]
+            updated_embed = self.cog._render_gemshop_embed(  # type: ignore[attr-defined]
+                self.ctx.author, self.view.state
+            )
+            message = getattr(self.view, "message", None)  # type: ignore[attr-defined]
+            if message is not None:
+                with contextlib.suppress(discord.HTTPException):
+                    await message.edit(embed=updated_embed, view=self.view)
+            await interaction.followup.send(embed=result.embed, ephemeral=True)
+
+
 class GemshopView(discord.ui.View):
     """Affiche le gemshop avec un bouton d'achat interactif."""
 
@@ -311,6 +397,11 @@ class GemshopView(discord.ui.View):
         self.state = state
         self.message: discord.Message | None = None
         self._lock = asyncio.Lock()
+        self._role_buttons: list[GemshopRoleButton] = [
+            GemshopRoleButton(cog, ctx, offer, state) for offer in GEMSHOP_ROLE_OFFERS
+        ]
+        for button in self._role_buttons:
+            self.add_item(button)
         self._refresh_buttons()
 
     def attach_message(self, message: discord.Message) -> None:
@@ -322,6 +413,8 @@ class GemshopView(discord.ui.View):
             label = f"Acheter un slot ({self.cog._format_slot_cost(self.state.next_cost)})"
         self.buy_slot.label = label
         self.buy_slot.disabled = not self.state.can_purchase
+        for button in self._role_buttons:
+            button.update_state(self.state)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.ctx.author.id:
@@ -334,6 +427,8 @@ class GemshopView(discord.ui.View):
 
     async def on_timeout(self) -> None:
         self.buy_slot.disabled = True
+        for button in self._role_buttons:
+            button.disabled = True
         if self.message is None:
             return
         with contextlib.suppress(discord.HTTPException):
@@ -348,7 +443,7 @@ class GemshopView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         del button
-        async with self._lock:
+        async with self.cog._gemshop_lock:
             await interaction.response.defer(ephemeral=True, thinking=False)
             result = await self.cog._attempt_gemshop_purchase(interaction.user)
             self.state = result.state
@@ -1223,6 +1318,7 @@ class Pets(commands.Cog):
         self._default_egg_slug: str = (
             DEFAULT_PET_EGG_SLUG if DEFAULT_PET_EGG_SLUG in self._eggs else next(iter(self._eggs), "")
         )
+        self._gemshop_lock = asyncio.Lock()
         self._egg_lookup: Dict[str, str] = {}
         for egg in self._eggs.values():
             aliases = {egg.slug, egg.name}
@@ -2574,6 +2670,10 @@ class Pets(commands.Cog):
             effective_luck_bonus += compute_egg_luck_bonus(
                 enchantments.get("egg_luck", 0)
             )
+        if isinstance(ctx.author, discord.Member) and any(
+            role.id == EGG_LUCK_ROLE_ID for role in ctx.author.roles
+        ):
+            effective_luck_bonus += 0.10
         pet_definition: PetDefinition | None = None
         pet_id: int | None = None
         last_missing_name = ""
@@ -3664,6 +3764,7 @@ class Pets(commands.Cog):
             and total_slots < hard_cap
         ):
             next_cost = self._compute_slot_purchase_cost(extra_slots)
+        role_sales = await self.database.get_gemshop_role_sales()
         return GemshopState(
             grade_level=grade_level,
             base_capacity=base_capacity,
@@ -3672,11 +3773,31 @@ class Pets(commands.Cog):
             total_slots=total_slots,
             max_extra_allowed=max_extra_allowed,
             next_cost=next_cost,
+            role_sales=role_sales,
         )
+
+    @staticmethod
+    def _resolve_role_offer(query: str | None) -> GemshopRoleOffer | None:
+        if not query:
+            return None
+        stripped = query.replace("<@&", "").replace("<@", "").replace(">", "").strip()
+        normalized = stripped.lower().replace(" ", "").replace("-", "")
+        for offer in GEMSHOP_ROLE_OFFERS:
+            if normalized == offer.slug.lower():
+                return offer
+            if normalized == str(offer.role_id):
+                return offer
+        if stripped.isdigit():
+            role_id = int(stripped)
+            for offer in GEMSHOP_ROLE_OFFERS:
+                if offer.role_id == role_id:
+                    return offer
+        return None
 
     def _render_gemshop_embed(
         self, user: discord.abc.User, state: GemshopState
     ) -> discord.Embed:
+        guild = user.guild if isinstance(user, discord.Member) else None
         lines = [
             f"• Slots équipables : **{state.total_slots}/{state.hard_cap}**",
             f"• Slots via les grades : **{state.base_capacity}**",
@@ -3708,6 +3829,22 @@ class Pets(commands.Cog):
             name=user.display_name,
             icon_url=user.display_avatar.url,
         )
+        role_lines: list[str] = []
+        for offer in GEMSHOP_ROLE_OFFERS:
+            role_obj = guild.get_role(offer.role_id) if guild else None
+            mention = role_obj.mention if role_obj else f"<@&{offer.role_id}>"
+            sold = int(state.role_sales.get(offer.role_id, 0))
+            remaining = max(0, offer.stock - sold)
+            stock_label = "Rupture de stock" if remaining <= 0 else f"Stock : {remaining}/{offer.stock}"
+            role_lines.append(
+                f"{mention}\n{offer.description}\nPrix : {embeds.format_gems(offer.price)} • {stock_label}"
+            )
+        if role_lines:
+            embed.add_field(
+                name="🛡️ Rôles exclusifs",
+                value="\n\n".join(role_lines),
+                inline=False,
+            )
         if state.can_purchase:
             embed.set_footer(text="Le prix augmente à chaque slot acheté.")
         return embed
@@ -3815,18 +3952,91 @@ class Pets(commands.Cog):
         embed = embeds.success_embed("\n".join(lines), title="💎 Gemshop")
         return GemshopPurchaseResult(embed=embed, state=new_state, success=True)
 
+    async def _attempt_gemshop_role_purchase(
+        self,
+        user: discord.abc.User,
+        offer: GemshopRoleOffer,
+        *,
+        guild: discord.Guild | None = None,
+    ) -> GemshopPurchaseResult:
+        state = await self._fetch_gemshop_state(user.id)
+        sold = int(state.role_sales.get(offer.role_id, 0))
+        remaining = offer.stock - sold
+        if remaining <= 0:
+            embed = embeds.error_embed("Ce rôle est déjà en rupture de stock.")
+            return GemshopPurchaseResult(embed=embed, state=state, success=False)
+
+        if not isinstance(user, discord.Member) or guild is None:
+            embed = embeds.error_embed(
+                "Ce rôle ne peut être acheté que depuis le serveur principal."
+            )
+            return GemshopPurchaseResult(embed=embed, state=state, success=False)
+
+        role = guild.get_role(offer.role_id)
+        if role is None:
+            embed = embeds.error_embed("Impossible de trouver ce rôle sur le serveur.")
+            return GemshopPurchaseResult(embed=embed, state=state, success=False)
+        if role in user.roles:
+            embed = embeds.error_embed("Tu possèdes déjà ce rôle.")
+            return GemshopPurchaseResult(embed=embed, state=state, success=False)
+        if not role.is_assignable():
+            embed = embeds.error_embed("Je n'ai pas la permission d'attribuer ce rôle.")
+            return GemshopPurchaseResult(embed=embed, state=state, success=False)
+
+        try:
+            purchase = await self.database.purchase_gemshop_role(
+                user.id,
+                role_id=offer.role_id,
+                price=offer.price,
+                stock=offer.stock,
+            )
+        except InsufficientBalanceError:
+            embed = embeds.error_embed(
+                f"Il te manque {embeds.format_gems(offer.price)} pour acheter {role.mention}."
+            )
+            return GemshopPurchaseResult(embed=embed, state=state, success=False)
+        except DatabaseError as exc:
+            embed = embeds.error_embed(str(exc))
+            return GemshopPurchaseResult(embed=embed, state=state, success=False)
+
+        try:
+            await user.add_roles(role, reason="Achat Gemshop")
+            assignment_failed = False
+        except (discord.Forbidden, discord.HTTPException):
+            assignment_failed = True
+
+        if assignment_failed:
+            await self.database.refund_gemshop_role_purchase(
+                user.id, role_id=offer.role_id, price=offer.price
+            )
+            new_state = await self._fetch_gemshop_state(user.id)
+            embed = embeds.error_embed(
+                "Impossible d'attribuer le rôle automatiquement. Tes gemmes ont été remboursées."
+            )
+            return GemshopPurchaseResult(embed=embed, state=new_state, success=False)
+
+        new_state = await self._fetch_gemshop_state(user.id)
+        gems_after = int(purchase.get("buyer_after", 0))
+        lines = [
+            f"{role.mention} acheté pour {embeds.format_gems(offer.price)}.",
+            f"Stock restant : **{max(0, offer.stock - int(new_state.role_sales.get(offer.role_id, 0)))}**",
+        ]
+        if gems_after:
+            lines.append(f"Gemmes restantes : {embeds.format_gems(gems_after)}")
+        embed = embeds.success_embed("\n".join(lines), title="💎 Gemshop")
+        return GemshopPurchaseResult(embed=embed, state=new_state, success=True)
+
     @commands.command(
         name="gemshop",
         aliases=("shop", "gem", "gems", "gemmes"),
     )
-    async def gemshop(self, ctx: commands.Context, action: str | None = None) -> None:
+    async def gemshop(self, ctx: commands.Context, *, action: str | None = None) -> None:
         await self.database.ensure_user(ctx.author.id)
 
         state = await self._fetch_gemshop_state(ctx.author.id)
 
-        normalized_action = (
-            (action or "").strip().lower().replace(" ", "").replace("-", "")
-        )
+        raw_action = (action or "").strip()
+        normalized_action = raw_action.lower().replace(" ", "").replace("-", "")
         purchase_aliases = {
             "buy",
             "acheter",
@@ -3836,8 +4046,20 @@ class Pets(commands.Cog):
             "acheterunslot",
             "achete",
         }
+        tokens = raw_action.split()
+        role_offer: GemshopRoleOffer | None = None
+        if tokens and tokens[0].lower() in purchase_aliases and len(tokens) > 1:
+            role_offer = self._resolve_role_offer(" ".join(tokens[1:]))
+        elif raw_action:
+            role_offer = self._resolve_role_offer(raw_action)
         attempting_purchase = normalized_action in purchase_aliases
 
+        if role_offer is not None:
+            result = await self._attempt_gemshop_role_purchase(
+                ctx.author, role_offer, guild=ctx.guild
+            )
+            await ctx.send(embed=result.embed)
+            return
         if attempting_purchase:
             result = await self._attempt_gemshop_purchase(ctx.author)
             await ctx.send(embed=result.embed)
@@ -4939,6 +5161,7 @@ class Pets(commands.Cog):
             progress_updates,
             potion_info,
             enchantment_info,
+            farm_rewards,
             _rebirth_info,
         ) = await self.database.claim_active_pet_income(ctx.author.id)
         if not rows:
@@ -5016,6 +5239,7 @@ class Pets(commands.Cog):
             clan=clan_info if clan_info else None,
             potion=potion_info if potion_info else None,
             enchantment=enchantment_info if enchantment_info else None,
+            farm_rewards=farm_rewards if farm_rewards else None,
         )
         level_up_summary: str | None = None
         if level_up_count:

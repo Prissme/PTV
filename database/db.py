@@ -47,7 +47,11 @@ from config import (
 )
 from utils.mastery import get_mastery_definition
 from utils.localization import DEFAULT_LANGUAGE, normalize_language
-from utils.enchantments import compute_prissbucks_multiplier
+from utils.enchantments import (
+    compute_prissbucks_multiplier,
+    pick_random_enchantment,
+    roll_enchantment_power,
+)
 
 __all__ = [
     "Database",
@@ -191,12 +195,14 @@ class Database:
         Dict[int, tuple[int, int]],
         dict[str, object],
         dict[str, object],
+        dict[str, object],
         dict[str, float | int],
     ]:
         return (
             0,
             rows,
             float(elapsed_seconds),
+            {},
             {},
             {},
             {},
@@ -732,6 +738,15 @@ class Database:
             )
             await connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(created_at)"
+            )
+
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS gemshop_roles (
+                    role_id BIGINT PRIMARY KEY,
+                    sold INTEGER NOT NULL DEFAULT 0
+                )
+                """
             )
 
             await connection.execute(
@@ -2168,6 +2183,121 @@ class Database:
             )
 
         return before, after
+
+    async def get_gemshop_role_sales(self) -> Dict[int, int]:
+        rows = await self.pool.fetch("SELECT role_id, sold FROM gemshop_roles")
+        return {int(row["role_id"]): int(row.get("sold", 0) or 0) for row in rows}
+
+    async def purchase_gemshop_role(
+        self,
+        user_id: int,
+        *,
+        role_id: int,
+        price: int,
+        stock: int,
+    ) -> dict[str, int]:
+        if price <= 0:
+            raise DatabaseError("Le prix doit être supérieur à zéro.")
+        if stock <= 0:
+            raise DatabaseError("Ce rôle n'est plus disponible.")
+
+        await self.ensure_user(user_id)
+
+        async with self.transaction() as connection:
+            await connection.execute(
+                "INSERT INTO gemshop_roles (role_id, sold) VALUES ($1, 0) ON CONFLICT DO NOTHING",
+                role_id,
+            )
+            stock_row = await connection.fetchrow(
+                "SELECT sold FROM gemshop_roles WHERE role_id = $1 FOR UPDATE",
+                role_id,
+            )
+            sold = int(stock_row.get("sold", 0) if stock_row else 0)
+            if sold >= stock:
+                raise DatabaseError("Ce rôle est en rupture de stock.")
+
+            balance_row = await connection.fetchrow(
+                "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            if balance_row is None:
+                raise DatabaseError("Utilisateur introuvable pour l'achat de rôle.")
+
+            buyer_before = int(balance_row["gems"])
+            if buyer_before < price:
+                raise InsufficientBalanceError(
+                    "Solde de gemmes insuffisant pour acheter ce rôle."
+                )
+
+            buyer_after = buyer_before - price
+            await connection.execute(
+                "UPDATE users SET gems = $1 WHERE user_id = $2",
+                buyer_after,
+                user_id,
+            )
+            await connection.execute(
+                "UPDATE gemshop_roles SET sold = $1 WHERE role_id = $2",
+                sold + 1,
+                role_id,
+            )
+            await self.record_transaction(
+                connection=connection,
+                user_id=user_id,
+                transaction_type="gemshop_role",
+                currency="gem",
+                amount=-price,
+                balance_before=buyer_before,
+                balance_after=buyer_after,
+                description=f"Achat rôle {role_id}",
+            )
+
+        return {"buyer_before": buyer_before, "buyer_after": buyer_after, "sold": sold + 1}
+
+    async def refund_gemshop_role_purchase(
+        self, user_id: int, *, role_id: int, price: int
+    ) -> None:
+        if price <= 0:
+            return
+
+        async with self.transaction() as connection:
+            balance_row = await connection.fetchrow(
+                "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            if balance_row is None:
+                raise DatabaseError("Utilisateur introuvable pour le remboursement.")
+
+            before = int(balance_row["gems"])
+            after = before + price
+            await connection.execute(
+                "UPDATE users SET gems = $1 WHERE user_id = $2",
+                after,
+                user_id,
+            )
+
+            stock_row = await connection.fetchrow(
+                "SELECT sold FROM gemshop_roles WHERE role_id = $1 FOR UPDATE",
+                role_id,
+            )
+            if stock_row is not None:
+                sold = max(0, int(stock_row.get("sold", 0) or 0))
+                if sold > 0:
+                    await connection.execute(
+                        "UPDATE gemshop_roles SET sold = $1 WHERE role_id = $2",
+                        sold - 1,
+                        role_id,
+                    )
+
+            await self.record_transaction(
+                connection=connection,
+                user_id=user_id,
+                transaction_type="gemshop_role_refund",
+                currency="gem",
+                amount=price,
+                balance_before=before,
+                balance_after=after,
+                description=f"Remboursement rôle {role_id}",
+            )
 
     async def transfer_balance(
         self,
@@ -4254,6 +4384,7 @@ class Database:
                     p.base_income_per_hour,
                     u.pet_last_claim,
                     u.balance,
+                    u.gems,
                     u.rebirth_count,
                     u.pet_booster_multiplier,
                     u.pet_booster_expires_at,
@@ -4285,6 +4416,7 @@ class Database:
             now = datetime.now(timezone.utc)
             last_claim: Optional[datetime] = first_row["pet_last_claim"]
             elapsed_seconds = (now - last_claim).total_seconds() if last_claim else 0.0
+            gems_before = int(first_row.get("gems", 0))
             if elapsed_seconds <= 0:
                 await connection.execute(
                     "UPDATE users SET pet_last_claim = $1 WHERE user_id = $2",
@@ -4412,6 +4544,71 @@ class Database:
                 description=description,
             )
 
+            farm_rewards: dict[str, object] = {
+                "gems": 0,
+                "potions": {},
+                "tickets": 0,
+                "enchantments": [],
+            }
+            pet_count = len(rows)
+            time_factor = max(0.25, min(3.0, elapsed_hours))
+
+            gem_reward = int(round(pet_count * time_factor * 3))
+            if gem_reward > 0:
+                variance = max(1, pet_count)
+                gem_reward = random.randint(max(0, gem_reward - variance), gem_reward + variance)
+                gems_after = gems_before + gem_reward
+                await connection.execute(
+                    "UPDATE users SET gems = $1 WHERE user_id = $2",
+                    gems_after,
+                    user_id,
+                )
+                await self.record_transaction(
+                    connection=connection,
+                    user_id=user_id,
+                    transaction_type="pet_farm_gems",
+                    currency="gem",
+                    amount=gem_reward,
+                    balance_before=gems_before,
+                    balance_after=gems_after,
+                    description="Gemmes récoltées par les pets",
+                )
+                gems_before = gems_after
+                farm_rewards["gems"] = gem_reward
+
+            ticket_chance = min(0.45, (0.08 + 0.02 * pet_count) * min(1.5, elapsed_hours or 1.0))
+            if random.random() < ticket_chance:
+                await self.add_raffle_tickets(user_id, amount=1, connection=connection)
+                farm_rewards["tickets"] = 1
+
+            potion_chance = min(0.30, (0.05 + 0.01 * pet_count) * min(1.5, elapsed_hours or 1.0))
+            if random.random() < potion_chance:
+                available_potions = list(POTION_DEFINITION_MAP.values())
+                if available_potions:
+                    potion = random.choice(available_potions)
+                    await self.add_user_potion(
+                        user_id,
+                        potion.slug,
+                        quantity=1,
+                        connection=connection,
+                    )
+                    farm_rewards["potions"] = {potion.slug: 1}
+
+            enchant_chance = min(0.08, 0.02 + 0.005 * pet_count)
+            if random.random() < enchant_chance:
+                definition = pick_random_enchantment()
+                power = roll_enchantment_power()
+                await self.add_user_enchantment(
+                    user_id,
+                    definition.slug,
+                    power=power,
+                    quantity=1,
+                    connection=connection,
+                )
+                farm_rewards["enchantments"] = [
+                    {"slug": definition.slug, "power": power}
+                ]
+
             booster_expires = first_row.get("pet_booster_expires_at")
             if (
                 booster_multiplier > 1
@@ -4472,6 +4669,7 @@ class Database:
                 progress_updates,
                 potion_info,
                 enchantment_info,
+                farm_rewards,
                 rebirth_info,
             )
 

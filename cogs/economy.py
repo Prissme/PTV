@@ -38,6 +38,7 @@ from config import (
     POTION_DEFINITIONS,
     PREFIX,
     SELLABLE_ROLE_IDS,
+    STEAL_PROTECTED_ROLE_ID,
     TITANIC_GRIFF_NAME,
     VIP_ROLE_ID,
     compute_huge_income,
@@ -2548,7 +2549,7 @@ class Economy(commands.Cog):
         steal_bonus = min(max(grade_level, 0) * 0.05, 0.5)
         success_chance = min(1.0, 0.5 + steal_bonus)
 
-        if any(role.id in SELLABLE_ROLE_IDS for role in getattr(member, "roles", [])):
+        if any(role.id == STEAL_PROTECTED_ROLE_ID for role in getattr(member, "roles", [])):
             success_chance = max(0.0, success_chance / 10)
 
         attacker_balance = await self.database.fetch_balance(ctx.author.id)
