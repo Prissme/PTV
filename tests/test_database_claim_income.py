@@ -58,5 +58,6 @@ def test_claim_income_returns_consistent_tuple_length() -> None:
         {},
         {},
         {},
+        {},
         {"count": 0, "bonus": 0, "multiplier": 1.0},
     )

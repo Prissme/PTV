@@ -16,6 +16,7 @@ from config import (
     GradeDefinition,
     PetDefinition,
     PetEggDefinition,
+    POTION_DEFINITION_MAP,
 )
 
 from utils.formatting import format_currency, format_gems
@@ -852,6 +853,7 @@ def pet_claim_embed(
     clan: Mapping[str, object] | None = None,
     potion: Mapping[str, object] | None = None,
     enchantment: Mapping[str, object] | None = None,
+    farm_rewards: Mapping[str, object] | None = None,
 ) -> discord.Embed:
     displays = [PetDisplay.from_mapping(pet) for pet in pets]
     total_income = sum(display.income_per_hour for display in displays)
@@ -916,6 +918,44 @@ def pet_claim_embed(
         description_text += "\n" + " • ".join(extra_info)
     embed = _base_embed("Gains des pets", description_text, color=color)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+
+    reward_lines: list[str] = []
+    if farm_rewards:
+        gems_reward = int(farm_rewards.get("gems", 0) or 0)
+        if gems_reward > 0:
+            reward_lines.append(f"💎 {format_gems(gems_reward)}")
+
+        tickets = int(farm_rewards.get("tickets", 0) or 0)
+        if tickets:
+            reward_lines.append(f"🎟️ Tickets ×{tickets}")
+
+        potion_map = farm_rewards.get("potions")
+        if isinstance(potion_map, Mapping):
+            for slug, quantity in potion_map.items():
+                qty = int(quantity or 0)
+                if qty <= 0:
+                    continue
+                definition = POTION_DEFINITION_MAP.get(str(slug))
+                potion_name = definition.name if definition else str(slug)
+                reward_lines.append(f"🧪 {potion_name} ×{qty}")
+
+        enchantments = farm_rewards.get("enchantments")
+        if isinstance(enchantments, Collection):
+            for enchantment_entry in enchantments:
+                if not isinstance(enchantment_entry, Mapping):
+                    continue
+                slug = str(enchantment_entry.get("slug") or "")
+                power = int(enchantment_entry.get("power") or 0)
+                definition = ENCHANTMENT_DEFINITION_MAP.get(slug)
+                label = format_enchantment(definition, power) if definition else slug
+                reward_lines.append(f"✨ {label}")
+
+    if reward_lines:
+        embed.add_field(
+            name="🎁 Butin des pets",
+            value="\n".join(reward_lines),
+            inline=False,
+        )
 
     summary_lines: list[str] = []
     if displays:
