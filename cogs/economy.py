@@ -125,47 +125,169 @@ KOTH_HUGE_LABEL = f"{KOTH_HUGE_EMOJI} {HUGE_BO_NAME}"
 
 
 @dataclass(frozen=True)
+class MillionaireRaceReward:
+    label: str
+    reward_type: str
+    slug: str | None = None
+    pet_name: str | None = None
+    role_id: int | None = None
+    pet_variant: str | None = None
+
+
+@dataclass(frozen=True)
 class MillionaireRaceStage:
     label: str
     success_rate: float
-    gem_reward: int
-    pet_choices: tuple[str, ...]
-    potion_slugs: tuple[str, ...] = ()
+    reward: MillionaireRaceReward
+    color: int
 
 
 MILLIONAIRE_RACE_COOLDOWN: int = 300
 
-# Mode Hardcore : 20 étapes avec une difficulté décroissant par paliers jusqu'à Huge Gale
+MILLIONAIRE_RACE_COLORS: tuple[int, ...] = (
+    Colors.PRIMARY,
+    Colors.GOLD,
+    Colors.ACCENT,
+    Colors.WARNING,
+    Colors.SUCCESS,
+    Colors.ERROR,
+)
+
 MILLIONAIRE_RACE_STAGES: tuple[MillionaireRaceStage, ...] = (
-    # Étapes 1-5 : 95% → 75%
-    MillionaireRaceStage("Sprint Émeraude", 0.95, 5, ()),
-    MillionaireRaceStage("Relais Rubis", 0.90, 0, ("Shelly",)),
-    MillionaireRaceStage("Virage Saphir", 0.85, 0, (), ("fortune_i",)),
-    MillionaireRaceStage("Montée Jade", 0.80, 7, ()),
-    MillionaireRaceStage("Ascension Ambrée", 0.75, 0, ("Colt",)),
-
-    # Étapes 6-10 : 70% → 50%
-    MillionaireRaceStage("Échappée Turquoise", 0.70, 0, (), ("luck_i",)),
-    MillionaireRaceStage("Secteur Améthyste", 0.65, 8, ()),
-    MillionaireRaceStage("Piste Onyx", 0.60, 0, ("Barley",)),
-    MillionaireRaceStage("Canyon Rubis", 0.55, 0, (), ("fortune_ii",)),
-    MillionaireRaceStage("Vallée Cristal", 0.50, 10, ()),
-
-    # Étapes 11-15 : 45% → 25%
-    MillionaireRaceStage("Ciel Prisme", 0.45, 0, ("Poco",)),
-    MillionaireRaceStage("Spirale Stellaire", 0.40, 0, (), ("luck_ii",)),
-    MillionaireRaceStage("Portail Titan", 0.35, 12, ()),
-    MillionaireRaceStage("Faille Temporelle", 0.30, 0, ("Rosa",)),
-    MillionaireRaceStage("Nexus Éternel", 0.25, 0, (), ("fortune_iii",)),
-
-    # Étapes 16-19 : 20% → 5%
-    MillionaireRaceStage("Abîme Infini", 0.20, 15, ()),
-    MillionaireRaceStage("Dimension Chaos", 0.15, 0, ("Angelo",)),
-    MillionaireRaceStage("Royaume Perdu", 0.10, 0, (), ("luck_iii",)),
-    MillionaireRaceStage("Faille Légendaire", 0.05, 20, (), ("fortune_iv",)),
-
-    # Étape 20 : FINALE - Huge Gale à 5%
-    MillionaireRaceStage("Couronne Millionnaire", 0.05, 25, (HUGE_GALE_NAME,), ("fortune_v",)),
+    MillionaireRaceStage(
+        "Sprint Émeraude",
+        0.95,
+        MillionaireRaceReward("Boîte surprise", "potion", slug="luck_i"),
+        MILLIONAIRE_RACE_COLORS[0],
+    ),
+    MillionaireRaceStage(
+        "Relais Rubis",
+        0.90,
+        MillionaireRaceReward("Bombe à fric", "potion", slug="fortune_i"),
+        MILLIONAIRE_RACE_COLORS[1],
+    ),
+    MillionaireRaceStage(
+        "Virage Saphir",
+        0.85,
+        MillionaireRaceReward("Spray XP", "potion", slug="luck_i"),
+        MILLIONAIRE_RACE_COLORS[2],
+    ),
+    MillionaireRaceStage(
+        "Montée Jade",
+        0.80,
+        MillionaireRaceReward("Gants porte-bonheur", "potion", slug="fortune_i"),
+        MILLIONAIRE_RACE_COLORS[3],
+    ),
+    MillionaireRaceStage(
+        "Ascension Ambrée",
+        0.75,
+        MillionaireRaceReward("Jeton doublon", "potion", slug="luck_ii"),
+        MILLIONAIRE_RACE_COLORS[4],
+    ),
+    MillionaireRaceStage(
+        "Échappée Turquoise",
+        0.70,
+        MillionaireRaceReward("Badge scintillant", "potion", slug="fortune_ii"),
+        MILLIONAIRE_RACE_COLORS[5],
+    ),
+    MillionaireRaceStage(
+        "Secteur Améthyste",
+        0.65,
+        MillionaireRaceReward("Capuche chroma", "potion", slug="luck_ii"),
+        MILLIONAIRE_RACE_COLORS[0],
+    ),
+    MillionaireRaceStage(
+        "Piste Onyx",
+        0.60,
+        MillionaireRaceReward("Boussole prismatique", "potion", slug="fortune_ii"),
+        MILLIONAIRE_RACE_COLORS[1],
+    ),
+    MillionaireRaceStage(
+        "Canyon Rubis",
+        0.55,
+        MillionaireRaceReward("Cartouche mythique", "potion", slug="luck_iii"),
+        MILLIONAIRE_RACE_COLORS[2],
+    ),
+    MillionaireRaceStage(
+        "Vallée Cristal",
+        0.50,
+        MillionaireRaceReward("Relique stellaire", "potion", slug="fortune_iii"),
+        MILLIONAIRE_RACE_COLORS[3],
+    ),
+    MillionaireRaceStage(
+        "Ciel Prisme",
+        0.45,
+        MillionaireRaceReward("Carte VIP (rare)", "role", role_id=VIP_ROLE_ID),
+        MILLIONAIRE_RACE_COLORS[4],
+    ),
+    MillionaireRaceStage(
+        "Spirale Stellaire",
+        0.40,
+        MillionaireRaceReward("Essence arcanique", "potion", slug="fortune_iv"),
+        MILLIONAIRE_RACE_COLORS[5],
+    ),
+    MillionaireRaceStage(
+        "Portail Titan",
+        0.35,
+        MillionaireRaceReward("Tincture cosmique", "potion", slug="luck_iii"),
+        MILLIONAIRE_RACE_COLORS[0],
+    ),
+    MillionaireRaceStage(
+        "Faille Temporelle",
+        0.30,
+        MillionaireRaceReward("Sceau antique", "potion", slug="fortune_iv"),
+        MILLIONAIRE_RACE_COLORS[1],
+    ),
+    MillionaireRaceStage(
+        "Abîme Infini",
+        0.25,
+        MillionaireRaceReward("Huge Gale", "pet", pet_name=HUGE_GALE_NAME),
+        MILLIONAIRE_RACE_COLORS[2],
+    ),
+    MillionaireRaceStage(
+        "Dimension Chaos",
+        0.20,
+        MillionaireRaceReward(
+            "Huge Gale Doré",
+            "pet",
+            pet_name=HUGE_GALE_NAME,
+            pet_variant="gold",
+        ),
+        MILLIONAIRE_RACE_COLORS[3],
+    ),
+    MillionaireRaceStage(
+        "Royaume Perdu",
+        0.15,
+        MillionaireRaceReward(
+            "Huge Gale Rainbow",
+            "pet",
+            pet_name=HUGE_GALE_NAME,
+            pet_variant="rainbow",
+        ),
+        MILLIONAIRE_RACE_COLORS[4],
+    ),
+    MillionaireRaceStage(
+        "Faille Légendaire",
+        0.10,
+        MillionaireRaceReward(
+            "Huge Gale Galaxy",
+            "pet",
+            pet_name=HUGE_GALE_NAME,
+            pet_variant="galaxy",
+        ),
+        MILLIONAIRE_RACE_COLORS[5],
+    ),
+    MillionaireRaceStage(
+        "Couronne Millionnaire",
+        0.07,
+        MillionaireRaceReward(
+            "Huge Gale Shiny",
+            "pet",
+            pet_name=HUGE_GALE_NAME,
+            pet_variant="shiny",
+        ),
+        MILLIONAIRE_RACE_COLORS[0],
+    ),
 )
 
 PET_DEFINITION_MAP: dict[str, object] = {pet.name: pet for pet in PET_DEFINITIONS}
@@ -800,9 +922,10 @@ class MillionaireRaceSession:
         self.ctx = ctx
         self.database = database
         self.stage_index = 0
-        self.total_gems = 0
-        self.pets_awarded: list[str] = []
-        self.potions_awarded: list[str] = []
+        self.secured_reward: MillionaireRaceReward | None = None
+        self.previous_reward: MillionaireRaceReward | None = None
+        self.rewards_history: list[str] = []
+        self.reward_granted = False
         self.finished = False
         self.failed = False
         self.last_feedback: list[str] = []
@@ -827,132 +950,60 @@ class MillionaireRaceSession:
         if not success:
             self.failed = True
             self.finished = True
-
-            if self.total_gems > 0:
-                try:
-                    await self.database.increment_gems(
-                        self.ctx.author.id,
-                        -self.total_gems,
-                        transaction_type="millionaire_race_loss",
-                        description="Échec Millionaire Race - Perte des gains",
-                    )
-                except Exception:
-                    logger.exception(
-                        "Impossible de retirer les gemmes de %s après un échec de la Millionaire Race",
-                        self.ctx.author.id,
-                    )
-
-            for pet_name in self.pets_awarded:
-                try:
-                    pet_id = await self.database.get_pet_id_by_name(pet_name)
-                    if pet_id:
-                        await self.database.pool.execute(
-                            """
-                            DELETE FROM user_pets
-                            WHERE id = (
-                                SELECT id FROM user_pets
-                                WHERE user_id = $1 AND pet_id = $2
-                                ORDER BY acquired_at DESC
-                                LIMIT 1
-                            )
-                            """,
-                            self.ctx.author.id,
-                            pet_id,
-                        )
-                except Exception:
-                    logger.exception("Impossible de retirer le pet %s après un échec", pet_name)
-
             self.last_feedback = [
                 f"❌ ÉCHEC sur **{stage.label}** (chance de {chance_label}).",
                 "💀 **TU PERDS TOUT !**",
-                f"Gemmes perdues : {embeds.format_gems(self.total_gems)}",
-                f"Pets perdus : {len(self.pets_awarded)}",
-                "Retente ta chance après le cooldown !",
+                "Ton dernier item t'échappe, retente après le cooldown.",
             ]
-
-            self.total_gems = 0
-            self.pets_awarded = []
-            self.potions_awarded = []
             return False
 
-        feedback = [f"✅ **{stage.label}** franchie !"]
-        pet_name: str | None = None
-
-        if stage.gem_reward > 0:
-            try:
-                await self.database.increment_gems(
-                    self.ctx.author.id,
-                    stage.gem_reward,
-                    transaction_type="millionaire_race",
-                    description=f"Épreuve {self.stage_index + 1} - {stage.label}",
-                )
-                self.total_gems += stage.gem_reward
-                feedback.append(f"{Emojis.GEM} +{embeds.format_gems(stage.gem_reward)} remportées.")
-            except Exception:
-                logger.exception(
-                    "Erreur lors du crédit de la Millionaire Race pour %s",
-                    self.ctx.author.id,
-                )
-                feedback.append("Une erreur est survenue.")
-        elif stage.pet_choices:
-            pet_name = stage.pet_choices[0]
-            if await self._award_pet(pet_name):
-                self.pets_awarded.append(pet_name)
-                feedback.append(f"🐾 Tu obtiens {self._format_pet_name(pet_name)} !")
-            else:
-                feedback.append("Le pet n'a pas pu être ajouté.")
-        elif stage.potion_slugs:
-            awarded_displays: list[str] = []
-            for slug in stage.potion_slugs:
-                definition = POTION_DEFINITION_MAP.get(slug)
-                if definition is None:
-                    logger.warning("Potion %s introuvable pour la Millionaire Race", slug)
-                    continue
-                try:
-                    await self.database.add_user_potion(self.ctx.author.id, slug)
-                except Exception:
-                    logger.exception(
-                        "Erreur d'attribution de la potion %s pour %s",
-                        slug,
-                        self.ctx.author.id,
-                    )
-                    continue
-                display = f"🧪 {definition.name}"
-                awarded_displays.append(display)
-            if awarded_displays:
-                for display in awarded_displays:
-                    feedback.append(f"Potion obtenue : **{display}**")
-                self.potions_awarded.extend(awarded_displays)
-            else:
-                feedback.append("La potion n'a pas pu être ajoutée.")
+        self.previous_reward = self.secured_reward
+        self.secured_reward = stage.reward
+        self.rewards_history.append(stage.reward.label)
+        feedback = [
+            f"✅ **{stage.label}** franchie !",
+            f"Nouvel item : **{stage.reward.label}**",
+        ]
 
         self.stage_index += 1
 
         if self.stage_index >= len(MILLIONAIRE_RACE_STAGES):
             self.finished = True
             feedback.insert(0, "🎉🎉🎉 TU AS CONQUIS LA MILLIONAIRE RACE ! 🎉🎉🎉")
-            if pet_name == HUGE_GALE_NAME:
-                feedback.append(
-                    f"🔥 **{self._format_pet_name(HUGE_GALE_NAME)}** est maintenant tien ! 🔥"
-                )
+            await self._finalize_reward()
 
         self.last_feedback = feedback
         if self.enchantment_callback is not None:
             await self.enchantment_callback("race")
         return True
 
-    async def _award_pet(self, pet_name: str) -> bool:
-        pet_id = await self.database.get_pet_id_by_name(pet_name)
+    async def _award_pet(self, reward: MillionaireRaceReward) -> bool:
+        if reward.pet_name is None:
+            return False
+        pet_id = await self.database.get_pet_id_by_name(reward.pet_name)
         if pet_id is None:
-            logger.warning("Pet %s introuvable en base pour la Millionaire Race", pet_name)
+            logger.warning("Pet %s introuvable en base pour la Millionaire Race", reward.pet_name)
             return False
 
-        definition = PET_DEFINITION_MAP.get(pet_name)
+        definition = PET_DEFINITION_MAP.get(reward.pet_name)
         is_huge = bool(getattr(definition, "is_huge", False))
         try:
-            await self.database.add_user_pet(self.ctx.author.id, pet_id, is_huge=is_huge)
+            await self.database.add_user_pet(
+                self.ctx.author.id,
+                pet_id,
+                is_huge=is_huge,
+                is_gold=reward.pet_variant == "gold",
+                is_rainbow=reward.pet_variant == "rainbow",
+                is_galaxy=reward.pet_variant == "galaxy",
+                is_shiny=reward.pet_variant == "shiny",
+            )
         except DatabaseError:
-            logger.exception("Impossible d'ajouter le pet %s pour %s", pet_name, self.ctx.author.id)
+            logger.exception(
+                "Impossible d'ajouter le pet %s (%s) pour %s",
+                reward.pet_name,
+                reward.pet_variant,
+                self.ctx.author.id,
+            )
             return False
         return True
 
@@ -968,13 +1019,34 @@ class MillionaireRaceSession:
             return slug
         return f"🧪 {definition.name}"
 
+    async def _finalize_reward(self) -> None:
+        if self.reward_granted or self.secured_reward is None or self.failed:
+            return
+
+        reward = self.secured_reward
+        try:
+            if reward.reward_type == "potion" and reward.slug:
+                await self.database.add_user_potion(self.ctx.author.id, reward.slug)
+            elif reward.reward_type == "pet":
+                await self._award_pet(reward)
+            elif reward.reward_type == "role" and reward.role_id and self.ctx.guild:
+                role = self.ctx.guild.get_role(reward.role_id)
+                if role:
+                    await self.ctx.author.add_roles(role, reason="Millionaire Race")
+        except Exception:
+            logger.exception("Impossible d'attribuer la récompense finale de la Millionaire Race")
+            return
+
+        self.reward_granted = True
+
     def build_embed(self) -> discord.Embed:
         total_stages = len(MILLIONAIRE_RACE_STAGES)
         if self.finished:
             color = Colors.SUCCESS if not self.failed else Colors.ERROR
             title = "🏁 Millionaire Race — terminée" if not self.failed else "🏁 Millionaire Race — échec"
         else:
-            color = Colors.INFO
+            stage_color = self.current_stage.color if self.current_stage else Colors.INFO
+            color = stage_color
             title = f"🏁 Millionaire Race — Épreuve {self.stage_index + 1}/{total_stages}"
 
         embed = discord.Embed(title=title, color=color)
@@ -987,42 +1059,30 @@ class MillionaireRaceSession:
         stage = self.current_stage
         if stage and not self.finished:
             chance_pct = int(stage.success_rate * 100)
-            reward_lines = [
-                "⚠️ ATTENTION : En cas d'échec, tu perds TOUT !",
-                "20 étapes jusqu'au Huge Gale",
-                f"Chance de réussite : **{chance_pct}%**",
-            ]
-            if stage.gem_reward:
-                reward_lines.append(
-                    f"Gemmes : +{embeds.format_gems(stage.gem_reward)}"
-                )
-            if stage.pet_choices:
-                pets_text = ", ".join(self._format_pet_name(name) for name in stage.pet_choices)
-                reward_lines.append(f"Pet(s) garanti(s) : {pets_text}")
-            if stage.potion_slugs:
-                potions_text = ", ".join(
-                    self._format_potion_display(slug) for slug in stage.potion_slugs
-                )
-                reward_lines.append(f"Potion(s) : {potions_text}")
-            embed.description = "\n".join(reward_lines)
+            embed.description = "Tu préfères cet item ou repartir avec l'ancien ?"
+            embed.add_field(
+                name="Épreuve en cours",
+                value=f"{stage.label}\nChance : **{chance_pct}%**",
+                inline=False,
+            )
         elif self.finished and not self.failed:
             embed.description = "Tu as conquis la Millionaire Race !"
         else:
             embed.description = "La course s'arrête ici pour cette fois."
 
-        summary_lines = [f"Gemmes cumulées : {embeds.format_gems(self.total_gems)}"]
-        if self.pets_awarded:
-            summary_lines.append(
-                "Pets obtenus : "
-                + ", ".join(self._format_pet_name(name) for name in self.pets_awarded)
-            )
+        reward_lines: list[str] = []
+        if self.secured_reward:
+            reward_lines.append(f"Item sécurisé : **{self.secured_reward.label}**")
         else:
-            summary_lines.append("Pets obtenus : aucun pour le moment")
-        if self.potions_awarded:
-            summary_lines.append("Potions : " + ", ".join(self.potions_awarded))
-        else:
-            summary_lines.append("Potions : aucune")
-        embed.add_field(name="Progrès", value="\n".join(summary_lines), inline=False)
+            reward_lines.append("Item sécurisé : aucun")
+
+        if self.previous_reward:
+            reward_lines.append(f"Ancien item : {self.previous_reward.label}")
+
+        if self.rewards_history:
+            reward_lines.append("Historique : " + " → ".join(self.rewards_history))
+
+        embed.add_field(name="Inventaire de course", value="\n".join(reward_lines), inline=False)
 
         if self.last_feedback:
             embed.add_field(name="Dernier résultat", value="\n".join(self.last_feedback), inline=False)
@@ -1088,10 +1148,16 @@ class MillionaireRaceView(discord.ui.View):
     ) -> None:
         self.session.finished = True
         self.session.failed = False
+        kept = (
+            self.session.secured_reward.label
+            if self.session.secured_reward is not None
+            else "rien du tout"
+        )
         self.session.last_feedback = [
             "⏹️ Tu quittes la course avant la fin.",
-            "Tes gains sont conservés.",
+            f"Tu repars avec : **{kept}**.",
         ]
+        await self.session._finalize_reward()
         self.disable_all_items()
         embed = self.session.build_embed()
         await interaction.response.edit_message(embed=embed, view=self)
