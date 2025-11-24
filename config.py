@@ -423,6 +423,7 @@ HUGE_BULL_NAME: Final[str] = "Huge Bull"
 TITANIC_GRIFF_NAME: Final[str] = "Titanic Griff"
 TITANIC_COLT_NAME: Final[str] = "Titanic Colt"
 HUGE_KENJI_ONI_NAME: Final[str] = "Huge Kenji Oni"
+HUGE_RED_KING_FRANK_NAME: Final[str] = "Huge Red King Frank"
 HUGE_GRIFF_MULTIPLIER: Final[float] = 6
 TITANIC_COLT_MULTIPLIER: Final[float] = 50
 TITANIC_GRIFF_MULTIPLIER: Final[float] = 35
@@ -449,20 +450,21 @@ HUGE_WISHED_NAME: Final[str] = "Huge Wished"
 HUGE_WISHED_MULTIPLIER: Final[float] = 20
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
-    HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
-    HUGE_KENJI_ONI_NAME: HUGE_KENJI_ONI_MULTIPLIER,
-    HUGE_SHADE_NAME: HUGE_SHADE_MULTIPLIER,
-    HUGE_MORTIS_NAME: HUGE_MORTIS_MULTIPLIER,
-    TITANIC_GRIFF_NAME: TITANIC_GRIFF_MULTIPLIER,
-    TITANIC_COLT_NAME: TITANIC_COLT_MULTIPLIER,
-    HUGE_SURGE_NAME: HUGE_SURGE_MULTIPLIER,
-    TITANIC_MEEPLE_NAME: TITANIC_MEEPLE_MULTIPLIER,
-    HUGE_BULL_NAME: HUGE_BULL_MULTIPLIER,
-    HUGE_BO_NAME: HUGE_BO_MULTIPLIER,
-    HUGE_CLANCY_NAME: HUGE_CLANCY_MULTIPLIER,
-    HUGE_ROSA_NAME: HUGE_ROSA_MULTIPLIER,
-    HUGE_WISHED_NAME: HUGE_WISHED_MULTIPLIER,
-    TITANIC_POCO_NAME: TITANIC_POCO_MULTIPLIER,
+HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
+HUGE_KENJI_ONI_NAME: HUGE_KENJI_ONI_MULTIPLIER,
+HUGE_SHADE_NAME: HUGE_SHADE_MULTIPLIER,
+HUGE_MORTIS_NAME: HUGE_MORTIS_MULTIPLIER,
+TITANIC_GRIFF_NAME: TITANIC_GRIFF_MULTIPLIER,
+TITANIC_COLT_NAME: TITANIC_COLT_MULTIPLIER,
+HUGE_SURGE_NAME: HUGE_SURGE_MULTIPLIER,
+TITANIC_MEEPLE_NAME: TITANIC_MEEPLE_MULTIPLIER,
+HUGE_BULL_NAME: HUGE_BULL_MULTIPLIER,
+HUGE_BO_NAME: HUGE_BO_MULTIPLIER,
+HUGE_CLANCY_NAME: HUGE_CLANCY_MULTIPLIER,
+HUGE_ROSA_NAME: HUGE_ROSA_MULTIPLIER,
+HUGE_WISHED_NAME: HUGE_WISHED_MULTIPLIER,
+TITANIC_POCO_NAME: TITANIC_POCO_MULTIPLIER,
+    HUGE_RED_KING_FRANK_NAME: HUGE_PET_MULTIPLIER,
 }
 
 HUGE_PET_MIN_LEVEL_MULTIPLIERS: Final[Dict[str, float]] = {
@@ -591,6 +593,7 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     HUGE_ROSA_NAME: "Ultra rare dans l'Œuf Huevo de Mexico — seuls les plus courageux la rencontrent.",
     TITANIC_POCO_NAME: "Récompense mythique de l'Œuf Huevo de Mexico, l'égale du Titanic Meeple.",
     HUGE_WISHED_NAME: "0,1% de chance d'apparaître lorsqu'un vol réussit.",
+    HUGE_RED_KING_FRANK_NAME: "Récompense d'événement liée à la Millionaire Race pour les coureurs acharnés.",
 }
 
 def get_egg_frenzy_window(
@@ -853,6 +856,14 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
         name=HUGE_WISHED_NAME,
         rarity="Secret",
         image_url="https://cdn.discordapp.com/emojis/1439605727575539752.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=HUGE_RED_KING_FRANK_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1442532497979084890.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0,
         is_huge=True,
@@ -1157,6 +1168,9 @@ PET_EMOJIS: Final[dict[str, str]] = {
     HUGE_BULL_NAME: os.getenv("PET_EMOJI_HUGE_BULL", "<:HugeBull:1433617222357487748>"),
     HUGE_WISHED_NAME: os.getenv("PET_EMOJI_HUGE_WISHED", "<:HugeWished:1439605727575539752>"),
     HUGE_BO_NAME: os.getenv("PET_EMOJI_HUGE_BO", "<:HugeBo:1435335892712685628>"),
+    HUGE_RED_KING_FRANK_NAME: os.getenv(
+        "PET_EMOJI_HUGE_RED_KING_FRANK", "<:HugeRedKingFrank:1442532497979084890>"
+    ),
     "Darryl": os.getenv("PET_EMOJI_DARRYL", "<:Darryl:1433376220980187177>"),
     "Rico": os.getenv("PET_EMOJI_RICO", "<:Rico:1433376959127228436>"),
     "Nani": os.getenv("PET_EMOJI_NANI", "<:Nani:1433377774122303582>"),

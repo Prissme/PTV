@@ -790,6 +790,17 @@ class HatchReplayView(discord.ui.View):
         await interaction.response.defer()
         await self.pets_cog._openbox_impl(self.ctx, self.egg_slug)
 
+    @discord.ui.button(label="AUTO", style=discord.ButtonStyle.primary, emoji="🤖")
+    async def auto_open(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.send_message(
+            "Ouverture automatique lancée dans un fil dédié.", ephemeral=True
+        )
+        if self.message is None:
+            return
+        await self.pets_cog._start_auto_hatch(self.ctx, self.egg_slug, self.message)
+
     async def on_timeout(self) -> None:
         for child in self.children:
             child.disabled = True
@@ -1330,6 +1341,7 @@ class Pets(commands.Cog):
             self._egg_lookup.setdefault(self._default_egg_slug, self._default_egg_slug)
         self._egg_open_locks: Dict[int, asyncio.Lock] = {}
         self._last_clock_sample = datetime.now(timezone.utc)
+        self._auto_hatch_tasks: Dict[int, asyncio.Task] = {}
 
     @staticmethod
     def _normalize_pet_key(value: str) -> str:
@@ -2848,7 +2860,9 @@ class Pets(commands.Cog):
         results: Sequence[PetHatchResult],
         *,
         mastery_perks: EggMasteryPerks | None = None,
+        channel_override: discord.abc.Messageable | None = None,
     ) -> None:
+        target_channel = channel_override or ctx.channel
         egg_title = egg.name
         egg_emoji = self._egg_emoji(ctx)
         animation_steps = (
@@ -2862,7 +2876,7 @@ class Pets(commands.Cog):
         step_delay = max(0.2, 1.1 / speed_factor)
         reveal_delay = max(0.2, 1.2 / speed_factor)
 
-        message = await ctx.send(
+        message = await target_channel.send(
             content=egg_emoji,
             embed=embeds.pet_animation_embed(
                 title=animation_steps[0][0],
@@ -3068,14 +3082,24 @@ class Pets(commands.Cog):
         async with lock:
             await self._openbox_impl(ctx, egg)
 
-    async def _openbox_impl(self, ctx: commands.Context, egg: str | None) -> None:
+    async def _openbox_impl(
+        self,
+        ctx: commands.Context,
+        egg: str | None,
+        *,
+        channel_override: discord.abc.Messageable | None = None,
+    ) -> None:
         log_context: Dict[str, Any] = {
             "user_id": ctx.author.id,
             "guild_id": getattr(ctx.guild, "id", None),
-            "channel_id": getattr(getattr(ctx, "channel", None), "id", None),
+            "channel_id": getattr(
+                channel_override or getattr(ctx, "channel", None), "id", None
+            ),
             "raw_request": egg,
             "stage": "start",
         }
+        target_channel: discord.abc.Messageable = channel_override or ctx.channel
+
         try:
             log_context["stage"] = "normalize_request"
             raw_request = (egg or "").strip()
@@ -3111,12 +3135,12 @@ class Pets(commands.Cog):
             egg_definition = self._resolve_egg(normalized_request)
             if egg_definition is None:
                 if normalized_request:
-                    await ctx.send(
+                    await target_channel.send(
                         embed=embeds.error_embed("Œuf introuvable. Voici les options disponibles :")
                     )
                     await self._send_egg_overview(ctx)
                 else:
-                    await ctx.send(
+                    await target_channel.send(
                         embed=embeds.error_embed("Aucun œuf n'est disponible pour le moment.")
                     )
                 return
@@ -3126,7 +3150,9 @@ class Pets(commands.Cog):
             log_context["stage"] = "resolve_zone"
             zone = self._get_zone_for_egg(egg_definition)
             if zone is None:
-                await ctx.send(embed=embeds.error_embed("La zone associée à cet œuf est introuvable."))
+                await target_channel.send(
+                    embed=embeds.error_embed("La zone associée à cet œuf est introuvable.")
+                )
                 return
 
             log_context["zone"] = zone.slug
@@ -3169,14 +3195,14 @@ class Pets(commands.Cog):
             if double_request:
                 log_context["stage"] = "inform_double_request"
                 if egg_perks.double_chance > 0:
-                    await ctx.send(
+                    await target_channel.send(
                         embed=embeds.info_embed(
                             "Le mode double est désormais automatique : tu as "
                             f"{egg_perks.double_chance * 100:.0f}% de chances d'obtenir un œuf bonus gratuitement à chaque ouverture."
                         )
                     )
                 else:
-                    await ctx.send(
+                    await target_channel.send(
                         embed=embeds.warning_embed(
                             "Atteins le niveau 5 de Maîtrise des œufs pour débloquer 5% de chance d'obtenir un deuxième œuf gratuit."
                         )
@@ -3189,7 +3215,7 @@ class Pets(commands.Cog):
             if force_gold_request:
                 log_context["stage"] = "handle_force_gold"
                 if rebirth_count <= 0:
-                    await ctx.send(
+                    await target_channel.send(
                         embed=embeds.warning_embed(
                             "Le gold garanti se débloque après ton premier rebirth."
                         )
@@ -3202,7 +3228,7 @@ class Pets(commands.Cog):
                         if egg_definition.currency == "gem"
                         else embeds.format_currency(egg_definition.price * price_multiplier)
                     )
-                    await ctx.send(
+                    await target_channel.send(
                         embed=embeds.info_embed(
                             f"Tu choisis de payer **{price_text}** pour garantir un pet or.",
                             title="Gold garanti activé",
@@ -3255,11 +3281,11 @@ class Pets(commands.Cog):
             if bonus_eggs:
                 egg_emoji = self._egg_emoji(ctx)
                 if triple_triggered:
-                    await ctx.send(
+                    await target_channel.send(
                         f"{egg_emoji} 🎉 **Chance triple !** Tu ouvres deux œufs bonus gratuitement !"
                     )
                 else:
-                    await ctx.send(
+                    await target_channel.send(
                         f"{egg_emoji} 🎉 **Chance !** Tu ouvres un œuf bonus gratuitement !"
                     )
                 for bonus_index in range(bonus_eggs):
@@ -3286,12 +3312,13 @@ class Pets(commands.Cog):
                 egg_definition,
                 results,
                 mastery_perks=egg_perks,
+                channel_override=target_channel,
             )
 
             log_context["stage"] = "send_auto_messages"
             for result in results:
                 for auto_message in result.auto_messages:
-                    await ctx.send(auto_message)
+                    await target_channel.send(auto_message)
 
             log_context["stage"] = "completed"
         except asyncio.CancelledError:
@@ -3309,7 +3336,7 @@ class Pets(commands.Cog):
                 extra=log_context,
             )
             try:
-                await ctx.send(
+                await target_channel.send(
                     embed=embeds.error_embed(
                         "Une erreur inattendue est survenue pendant l'ouverture de l'œuf. "
                         f"Merci de réessayer plus tard. (code : `{error_reference}`)"
@@ -3321,6 +3348,101 @@ class Pets(commands.Cog):
                     exc_info=True,
                     extra=log_context,
                 )
+
+    async def _start_auto_hatch(
+        self,
+        ctx: commands.Context,
+        egg_slug: str,
+        parent_message: discord.Message,
+    ) -> None:
+        if ctx.author.id in self._auto_hatch_tasks:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    "Une ouverture automatique est déjà en cours."
+                )
+            )
+            return
+
+        channel = parent_message.channel
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Le mode AUTO n'est disponible que dans un salon textuel."
+                )
+            )
+            return
+
+        try:
+            thread = await parent_message.create_thread(
+                name=f"Auto œufs — {ctx.author.display_name}",
+                auto_archive_duration=60,
+            )
+        except discord.HTTPException:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Impossible de créer un fil pour l'ouverture automatique."
+                )
+            )
+            return
+
+        stop_event = asyncio.Event()
+
+        def _message_check(message: discord.Message) -> bool:
+            return (
+                message.author.id == ctx.author.id
+                and not message.author.bot
+                and message.content is not None
+            )
+
+        async def _wait_for_user_message() -> None:
+            try:
+                await ctx.bot.wait_for("message", check=_message_check)
+            except asyncio.CancelledError:
+                return
+            stop_event.set()
+
+        wait_task = asyncio.create_task(_wait_for_user_message())
+
+        async def _runner() -> None:
+            await thread.send(
+                embed=embeds.info_embed(
+                    "Ouverture automatique activée. Envoie n'importe quel message pour arrêter.",
+                    title="AUTO en cours",
+                )
+            )
+            try:
+                while not stop_event.is_set():
+                    lock = self._get_open_lock(ctx.author.id)
+                    async with lock:
+                        await self._openbox_impl(
+                            ctx, egg_slug, channel_override=thread
+                        )
+
+                    try:
+                        await asyncio.wait_for(wait_task, timeout=1.5)
+                    except asyncio.TimeoutError:
+                        continue
+            finally:
+                stop_event.set()
+                if not wait_task.done():
+                    wait_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await wait_task
+                with contextlib.suppress(discord.HTTPException):
+                    await thread.send(
+                        embed=embeds.warning_embed(
+                            "Ouverture automatique arrêtée. Le fil va être supprimé."
+                        )
+                    )
+                    await thread.delete()
+
+        task = asyncio.create_task(_runner())
+        self._auto_hatch_tasks[ctx.author.id] = task
+
+        def _cleanup(_task: asyncio.Task) -> None:
+            self._auto_hatch_tasks.pop(ctx.author.id, None)
+
+        task.add_done_callback(_cleanup)
 
     @commands.group(
         name="petauto",
