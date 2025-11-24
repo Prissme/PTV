@@ -162,11 +162,6 @@ MILLIONAIRE_RACE_REWARD_POOL: tuple[MillionaireRaceReward, ...] = (
         slug="mastery_xp",
         scales_with_stage=True,
     ),
-    MillionaireRaceReward(
-        f"{PET_EMOJIS.get(HUGE_RED_KING_FRANK_NAME, '🐾')} {HUGE_RED_KING_FRANK_NAME}",
-        "pet",
-        pet_name=HUGE_RED_KING_FRANK_NAME,
-    ),
 )
 
 MILLIONAIRE_RACE_STAGES: tuple[MillionaireRaceStage, ...] = (
@@ -961,6 +956,13 @@ class MillionaireRaceSession:
         ]
 
         self.stage_index += 1
+
+        try:
+            await self.database.update_race_personal_best(
+                self.ctx.author.id, self.stage_index
+            )
+        except Exception:
+            logger.exception("Impossible de mettre à jour le record Millionaire Race")
 
         if self.stage_index >= len(MILLIONAIRE_RACE_STAGES):
             self.finished = True

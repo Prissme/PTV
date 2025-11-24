@@ -7,8 +7,18 @@ from datetime import datetime, timedelta, timezone
 import discord
 from discord.ext import commands
 
-from config import STATS_ACTIVE_WINDOW_DAYS, STATS_TOP_LIMIT
+from config import (
+    EGG_FRENZY_LUCK_BONUS,
+    EGG_LUCK_ROLE_ID,
+    MILLIONAIRE_RACE_STAGES,
+    STATS_ACTIVE_WINDOW_DAYS,
+    STATS_TOP_LIMIT,
+    STEAL_PROTECTED_ROLE_ID,
+    is_egg_frenzy_active,
+)
 from utils import embeds
+from utils.enchantments import compute_egg_luck_bonus
+from utils.mastery import EGG_MASTERY
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +55,114 @@ class ActivityStats(commands.Cog):
     # ------------------------------------------------------------------
     # Commandes
     # ------------------------------------------------------------------
-    @commands.command(name="stats", aliases=("statistiques",))
+    @commands.group(
+        name="stats",
+        aliases=("statistiques",),
+        invoke_without_command=True,
+    )
+    async def player_stats(
+        self, ctx: commands.Context, member: discord.Member | None = None
+    ) -> None:
+        target = member or ctx.author
+        if not isinstance(target, discord.Member):
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Impossible de trouver ce membre dans le serveur actuel."
+                )
+            )
+            return
+
+        embed = await self._build_player_stats_embed(ctx, target)
+        await ctx.send(embed=embed)
+
+    async def _build_player_stats_embed(
+        self, ctx: commands.Context, member: discord.Member
+    ) -> discord.Embed:
+        await self.database.ensure_user(member.id)
+
+        grade_level = await self.database.get_grade_level(member.id)
+        base_steal_success = min(1.0, 0.5 + max(0, grade_level) * 0.05)
+        has_protection = any(
+            role.id == STEAL_PROTECTED_ROLE_ID for role in getattr(member, "roles", [])
+        )
+        steal_risk = base_steal_success / 10 if has_protection else base_steal_success
+
+        mastery = await self.database.get_mastery_progress(member.id, EGG_MASTERY.slug)
+        mastery_level = int(mastery.get("level", 1) or 1)
+        mastery_bonus = 1.0 if mastery_level >= 64 else 0.0
+        enchantments = await self.database.get_enchantment_powers(member.id)
+        enchantment_bonus = compute_egg_luck_bonus(enchantments.get("egg_luck", 0))
+        active_potion = await self.database.get_active_potion(member.id)
+        potion_bonus = 0.0
+        potion_label = None
+        if active_potion:
+            potion_definition, potion_expires_at = active_potion
+            potion_bonus = max(0.0, float(potion_definition.effect_value))
+            remaining_seconds = max(
+                0, int((potion_expires_at - datetime.now(timezone.utc)).total_seconds())
+            )
+            potion_label = embeds.format_duration(remaining_seconds)
+        frenzy_active = is_egg_frenzy_active()
+        frenzy_bonus = EGG_FRENZY_LUCK_BONUS if frenzy_active else 0.0
+        role_bonus = 0.0
+        if any(role.id == EGG_LUCK_ROLE_ID for role in getattr(member, "roles", [])):
+            role_bonus = 0.10
+
+        egg_luck_total = (
+            mastery_bonus
+            + enchantment_bonus
+            + potion_bonus
+            + frenzy_bonus
+            + role_bonus
+        )
+        luck_breakdown: list[str] = []
+        if mastery_bonus:
+            luck_breakdown.append(f"Maîtrise des œufs : +{mastery_bonus * 100:.0f}%")
+        if enchantment_bonus:
+            luck_breakdown.append(
+                f"Enchantements : +{enchantment_bonus * 100:.0f}%"
+            )
+        if potion_bonus:
+            suffix = f" ({potion_label})" if potion_label else ""
+            luck_breakdown.append(
+                f"Potion chance d'œuf : +{potion_bonus * 100:.0f}%{suffix}"
+            )
+        if frenzy_bonus:
+            luck_breakdown.append(
+                f"Folie des œufs : +{frenzy_bonus * 100:.0f}% (actif)"
+            )
+        if role_bonus:
+            luck_breakdown.append(f"Rôle bonus luck : +{role_bonus * 100:.0f}%")
+        if not luck_breakdown:
+            luck_breakdown.append("Aucun bonus de luck actif pour le moment.")
+
+        mastermind_wins = await self.database.get_transaction_count(
+            member.id, transaction_type="mastermind_win"
+        )
+        race_best_stage = await self.database.get_race_personal_best(member.id)
+        bounded_stage = min(
+            max(0, race_best_stage), max(0, len(MILLIONAIRE_RACE_STAGES))
+        )
+        race_stage_label = (
+            MILLIONAIRE_RACE_STAGES[bounded_stage - 1].label
+            if bounded_stage >= 1 and bounded_stage <= len(MILLIONAIRE_RACE_STAGES)
+            else "Aucun record pour l'instant"
+        )
+
+        return embeds.player_stats_embed(
+            member=member,
+            steal_success=base_steal_success,
+            steal_risk=steal_risk,
+            steal_protected=has_protection,
+            egg_luck_total=egg_luck_total,
+            egg_luck_breakdown=luck_breakdown,
+            mastermind_wins=mastermind_wins,
+            race_best_stage=bounded_stage,
+            race_best_label=race_stage_label,
+            race_total_stages=len(MILLIONAIRE_RACE_STAGES),
+        )
+
+    @player_stats.command(name="serveur", aliases=("server",))
     async def guild_stats(self, ctx: commands.Context) -> None:
         if ctx.guild is None:
             await ctx.send(embed=embeds.error_embed("Cette commande doit être utilisée dans un serveur."))
