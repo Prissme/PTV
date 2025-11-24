@@ -3385,6 +3385,17 @@ class Pets(commands.Cog):
             )
             return
 
+        egg_definition = self._resolve_egg(egg_slug)
+        if egg_definition is None:
+            await thread.send(
+                embed=embeds.error_embed(
+                    "Cet œuf n'est plus disponible pour l'ouverture automatique."
+                )
+            )
+            with contextlib.suppress(discord.HTTPException):
+                await thread.delete()
+            return
+
         stop_event = asyncio.Event()
 
         def _message_check(message: discord.Message) -> bool:
@@ -3412,6 +3423,26 @@ class Pets(commands.Cog):
             )
             try:
                 while not stop_event.is_set():
+                    if egg_definition.currency == "gem":
+                        balance = await self.database.fetch_gems(ctx.author.id)
+                        if balance < egg_definition.price:
+                            await thread.send(
+                                embed=embeds.warning_embed(
+                                    "Tu n'as plus assez de gemmes pour continuer l'ouverture automatique."
+                                )
+                            )
+                            stop_event.set()
+                            break
+                    else:
+                        balance = await self.database.fetch_balance(ctx.author.id)
+                        if balance < egg_definition.price:
+                            await thread.send(
+                                embed=embeds.warning_embed(
+                                    "Tu n'as plus assez de PB pour continuer l'ouverture automatique."
+                                )
+                            )
+                            stop_event.set()
+                            break
                     lock = self._get_open_lock(ctx.author.id)
                     async with lock:
                         await self._openbox_impl(
