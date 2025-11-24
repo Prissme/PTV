@@ -2,14 +2,160 @@
 from __future__ import annotations
 
 import logging
+import re
+from typing import Iterable
 
 import discord
 from discord.ext import commands
 
+from config import PET_DEFINITIONS, PET_EMOJIS
 from database.db import DatabaseError
 from utils import embeds
 
 logger = logging.getLogger(__name__)
+
+
+def _build_pet_lookup(definitions: Iterable) -> dict[str, object]:
+    return {getattr(pet, "name", "").lower(): pet for pet in definitions}
+
+
+class AdminGrantPetModal(discord.ui.Modal):
+    def __init__(self, cog: "Admin") -> None:
+        super().__init__(title="🎛️ Panneau admin — Give un pet")
+        self.cog = cog
+
+        self.target_user = discord.ui.TextInput(
+            label="Utilisateur",
+            placeholder="ID ou mention du joueur",
+            min_length=1,
+            max_length=50,
+        )
+        self.pet_name = discord.ui.TextInput(
+            label="Nom du pet",
+            placeholder="Exemple : Titanic Colt",
+            min_length=1,
+            max_length=50,
+        )
+        self.flags = discord.ui.TextInput(
+            label="Options (facultatif)",
+            placeholder="gold, rainbow, galaxy, shiny",
+            required=False,
+            max_length=100,
+        )
+
+        self.add_item(self.target_user)
+        self.add_item(self.pet_name)
+        self.add_item(self.flags)
+
+    @staticmethod
+    def _parse_user_id(value: str) -> int | None:
+        digits = re.sub(r"\D", "", value)
+        if not digits:
+            return None
+        try:
+            return int(digits)
+        except ValueError:
+            return None
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        user_id = self._parse_user_id(self.target_user.value)
+        if user_id is None:
+            await interaction.followup.send(
+                embed=embeds.error_embed("Impossible de lire l'utilisateur visé."),
+                ephemeral=True,
+            )
+            return
+
+        pet_identifier = self.pet_name.value.strip().lower()
+        definition = self.cog.pet_lookup.get(pet_identifier)
+        if definition is None:
+            await interaction.followup.send(
+                embed=embeds.error_embed(
+                    "Pet introuvable. Vérifie l'orthographe exacte.", title="Pet introuvable"
+                ),
+                ephemeral=True,
+            )
+            return
+
+        normalized_flags = {flag.strip().lower() for flag in self.flags.value.split(",") if flag.strip()}
+        is_galaxy = "galaxy" in normalized_flags
+        is_rainbow = "rainbow" in normalized_flags and not is_galaxy
+        is_gold = "gold" in normalized_flags and not is_rainbow and not is_galaxy
+        is_shiny = "shiny" in normalized_flags
+        is_huge = bool(getattr(definition, "is_huge", False) or ("huge" in normalized_flags))
+
+        pet_id = getattr(definition, "pet_id", None)
+        if not pet_id:
+            pet_id = await self.cog.database.get_pet_id_by_name(definition.name)
+        if pet_id is None:
+            await interaction.followup.send(
+                embed=embeds.error_embed(
+                    "Impossible de retrouver l'identifiant interne de ce pet."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        try:
+            pet_row = await self.cog.database.add_user_pet(
+                user_id,
+                int(pet_id),
+                is_huge=is_huge,
+                is_gold=is_gold,
+                is_rainbow=is_rainbow,
+                is_galaxy=is_galaxy,
+                is_shiny=is_shiny,
+            )
+        except DatabaseError as exc:
+            await interaction.followup.send(embed=embeds.error_embed(str(exc)), ephemeral=True)
+            return
+
+        emoji = PET_EMOJIS.get(definition.name, PET_EMOJIS.get("default", "🐾"))
+        lines = [
+            f"👤 Cible : <@{user_id}> (`{user_id}`)",
+            f"🐾 Pet : {emoji} **{definition.name}** ({getattr(definition, 'rarity', 'Inconnu')})",
+            f"✨ Variantes : "
+            + ", ".join(
+                [label for label, active in (
+                    ("Huge/Titanic", is_huge),
+                    ("Or", is_gold),
+                    ("Rainbow", is_rainbow),
+                    ("Galaxy", is_galaxy),
+                    ("Shiny", is_shiny),
+                )
+                if active
+                ]
+                or ["Aucune"]
+            ),
+            f"🆔 ID inventaire : #{pet_row['id']}",
+        ]
+
+        await interaction.followup.send(
+            embed=embeds.success_embed("\n".join(lines), title="Pet attribué avec succès"),
+            ephemeral=True,
+        )
+        logger.info(
+            "Admin grant_pet",
+            extra={
+                "admin_id": interaction.user.id,
+                "target_id": user_id,
+                "pet_name": definition.name,
+            },
+        )
+
+
+class AdminPanelView(discord.ui.View):
+    def __init__(self, cog: "Admin") -> None:
+        super().__init__(timeout=600)
+        self.cog = cog
+
+    @discord.ui.button(label="🎁 Donner un pet", style=discord.ButtonStyle.success)
+    async def open_grant_modal(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ) -> None:
+        await interaction.response.send_modal(AdminGrantPetModal(self.cog))
 
 
 class Admin(commands.Cog):
@@ -18,6 +164,24 @@ class Admin(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.database = bot.database
+        self.pet_lookup = _build_pet_lookup(PET_DEFINITIONS)
+
+    @commands.command(name="adminpanel")
+    @commands.is_owner()
+    async def admin_panel(self, ctx: commands.Context) -> None:
+        """Affiche un panneau interactif pour attribuer rapidement un pet."""
+
+        view = AdminPanelView(self)
+        description = (
+            "Clique sur le bouton ci-dessous pour ouvrir un formulaire simple :\n"
+            "• Sélectionne le joueur (ID ou mention)\n"
+            "• Indique le nom exact du pet\n"
+            "• Ajoute des options (gold, rainbow, galaxy, shiny) si nécessaire"
+        )
+        await ctx.send(
+            embed=embeds.info_embed(description, title="🎛️ Panneau admin"),
+            view=view,
+        )
 
     @commands.command(name="addbalance")
     @commands.is_owner()
