@@ -27,6 +27,7 @@ from config import (
     HUGE_BO_NAME,
     HUGE_KENJI_ONI_NAME,
     HUGE_MORTIS_NAME,
+    HUGE_RED_KING_FRANK_NAME,
     HUGE_PET_MIN_INCOME,
     HUGE_WISHED_NAME,
     MASTERMIND_MASTERY_MAX_ROLE_ID,
@@ -132,6 +133,8 @@ class MillionaireRaceReward:
     pet_name: str | None = None
     role_id: int | None = None
     pet_variant: str | None = None
+    base_quantity: int = 1
+    scales_with_stage: bool = False
 
 
 @dataclass(frozen=True)
@@ -157,6 +160,12 @@ MILLIONAIRE_RACE_REWARD_POOL: tuple[MillionaireRaceReward, ...] = (
         "<:MasteryPotion:1442154862350700715> Potion de maîtrise",
         "potion",
         slug="mastery_xp",
+        scales_with_stage=True,
+    ),
+    MillionaireRaceReward(
+        f"{PET_EMOJIS.get(HUGE_RED_KING_FRANK_NAME, '🐾')} {HUGE_RED_KING_FRANK_NAME}",
+        "pet",
+        pet_name=HUGE_RED_KING_FRANK_NAME,
     ),
 )
 
@@ -891,7 +900,9 @@ class MillionaireRaceSession:
         self.database = database
         self.stage_index = 0
         self.secured_reward: MillionaireRaceReward | None = None
+        self.secured_quantity: int = 0
         self.previous_reward: MillionaireRaceReward | None = None
+        self.previous_quantity: int = 0
         self.rewards_history: list[str] = []
         self.reward_granted = False
         self.finished = False
@@ -934,12 +945,19 @@ class MillionaireRaceSession:
             return False
 
         reward = random.choice(MILLIONAIRE_RACE_REWARD_POOL)
+        quantity = max(1, int(reward.base_quantity))
+        if reward.scales_with_stage:
+            quantity = max(quantity, self.stage_index + 1)
+
         self.previous_reward = self.secured_reward
+        self.previous_quantity = self.secured_quantity
         self.secured_reward = reward
-        self.rewards_history.append(reward.label)
+        self.secured_quantity = quantity
+        formatted_reward = self._format_reward_label(reward, quantity)
+        self.rewards_history.append(formatted_reward)
         feedback = [
             f"✅ **{stage.label}** franchie !",
-            f"Nouvel item : **{reward.label}**",
+            f"Nouvel item : **{formatted_reward}**",
         ]
 
         self.stage_index += 1
@@ -996,16 +1014,33 @@ class MillionaireRaceSession:
             return slug
         return f"🧪 {definition.name}"
 
+    def _format_reward_label(
+        self, reward: MillionaireRaceReward, quantity: int | None = None
+    ) -> str:
+        display_quantity = max(1, int(quantity or reward.base_quantity or 1))
+        label = reward.label
+        if reward.reward_type == "pet" and reward.pet_name:
+            label = self._format_pet_name(reward.pet_name)
+        elif reward.reward_type == "potion" and reward.slug and not reward.label:
+            label = self._format_potion_display(reward.slug)
+        if display_quantity > 1:
+            return f"{label} ×{display_quantity}"
+        return label
+
     async def _finalize_reward(self) -> None:
         if self.reward_granted or self.secured_reward is None or self.failed:
             return
 
         reward = self.secured_reward
+        quantity = max(1, int(self.secured_quantity or reward.base_quantity or 1))
         try:
             if reward.reward_type == "potion" and reward.slug:
-                await self.database.add_user_potion(self.ctx.author.id, reward.slug)
+                await self.database.add_user_potion(
+                    self.ctx.author.id, reward.slug, quantity=quantity
+                )
             elif reward.reward_type == "pet":
-                await self._award_pet(reward)
+                for _ in range(quantity):
+                    await self._award_pet(reward)
             elif reward.reward_type == "role" and reward.role_id and self.ctx.guild:
                 role = self.ctx.guild.get_role(reward.role_id)
                 if role:
@@ -1049,12 +1084,19 @@ class MillionaireRaceSession:
 
         reward_lines: list[str] = []
         if self.secured_reward:
-            reward_lines.append(f"Item sécurisé : **{self.secured_reward.label}**")
+            reward_lines.append(
+                "Item sécurisé : **"
+                + self._format_reward_label(self.secured_reward, self.secured_quantity)
+                + "**"
+            )
         else:
             reward_lines.append("Item sécurisé : aucun")
 
         if self.previous_reward:
-            reward_lines.append(f"Ancien item : {self.previous_reward.label}")
+            reward_lines.append(
+                "Ancien item : "
+                + self._format_reward_label(self.previous_reward, self.previous_quantity)
+            )
 
         if self.rewards_history:
             reward_lines.append("Historique : " + " → ".join(self.rewards_history))
@@ -1126,7 +1168,9 @@ class MillionaireRaceView(discord.ui.View):
         self.session.finished = True
         self.session.failed = False
         kept = (
-            self.session.secured_reward.label
+            self.session._format_reward_label(
+                self.session.secured_reward, self.session.secured_quantity
+            )
             if self.session.secured_reward is not None
             else "rien du tout"
         )
