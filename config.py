@@ -421,8 +421,10 @@ HUGE_GALE_NAME: Final[str] = "Huge Gale"
 HUGE_GRIFF_NAME: Final[str] = "Huge Griff"
 HUGE_BULL_NAME: Final[str] = "Huge Bull"
 TITANIC_GRIFF_NAME: Final[str] = "Titanic Griff"
+TITANIC_COLT_NAME: Final[str] = "Titanic Colt"
 HUGE_KENJI_ONI_NAME: Final[str] = "Huge Kenji Oni"
 HUGE_GRIFF_MULTIPLIER: Final[float] = 6
+TITANIC_COLT_MULTIPLIER: Final[float] = 50
 TITANIC_GRIFF_MULTIPLIER: Final[float] = 35
 HUGE_GALE_MULTIPLIER: Final[float] = 10
 HUGE_KENJI_ONI_MULTIPLIER: Final[float] = 12
@@ -452,6 +454,7 @@ HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
     HUGE_SHADE_NAME: HUGE_SHADE_MULTIPLIER,
     HUGE_MORTIS_NAME: HUGE_MORTIS_MULTIPLIER,
     TITANIC_GRIFF_NAME: TITANIC_GRIFF_MULTIPLIER,
+    TITANIC_COLT_NAME: TITANIC_COLT_MULTIPLIER,
     HUGE_SURGE_NAME: HUGE_SURGE_MULTIPLIER,
     TITANIC_MEEPLE_NAME: TITANIC_MEEPLE_MULTIPLIER,
     HUGE_BULL_NAME: HUGE_BULL_MULTIPLIER,
@@ -575,6 +578,7 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     "Huge Trunk": "Peut apparaître dans l'œuf bio avec un taux minuscule.",
     HUGE_GRIFF_NAME: "Récompense spéciale lors d'événements ou de giveaways du staff.",
     TITANIC_GRIFF_NAME: "Jackpot quasi impossible du casino, 4 000× plus rare que Huge Griff.",
+    TITANIC_COLT_NAME: "Récompense mythique octroyée uniquement par l'équipe via le panneau admin.",
     HUGE_GALE_NAME: "Récompense finale du mode Millionaire Race (étape 20).",
     HUGE_KENJI_ONI_NAME: "Récompense rarissime du Mastermind pour les esprits les plus vifs.",
     HUGE_BULL_NAME: "Tirée chaque jour via la tombola Mastermind (tickets garantis par victoire).",
@@ -801,6 +805,14 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
         name=TITANIC_GRIFF_NAME,
         rarity="Secret",
         image_url="https://cdn.discordapp.com/emojis/1432161869342183525.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=TITANIC_COLT_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1442530708810760326.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0,
         is_huge=True,
@@ -1141,6 +1153,7 @@ PET_EMOJIS: Final[dict[str, str]] = {
     HUGE_MORTIS_NAME: os.getenv("PET_EMOJI_HUGE_MORTIS", "<:HugeMortis:1431435110590189638>"),
     HUGE_SURGE_NAME: os.getenv("PET_EMOJI_HUGE_SURGE", "<:HugeSurge:1433379423133892608>"),
     TITANIC_MEEPLE_NAME: os.getenv("PET_EMOJI_TITANIC_MEEPLE", "<:TITANICMEEPLE:1433380006557646878>"),
+    TITANIC_COLT_NAME: os.getenv("PET_EMOJI_TITANIC_COLT", "<:TitanicColt:1442530708810760326>"),
     HUGE_BULL_NAME: os.getenv("PET_EMOJI_HUGE_BULL", "<:HugeBull:1433617222357487748>"),
     HUGE_WISHED_NAME: os.getenv("PET_EMOJI_HUGE_WISHED", "<:HugeWished:1439605727575539752>"),
     HUGE_BO_NAME: os.getenv("PET_EMOJI_HUGE_BO", "<:HugeBo:1435335892712685628>"),
