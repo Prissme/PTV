@@ -245,6 +245,7 @@ class PotionDefinition:
     effect_type: str
     effect_value: float
     description: str
+    duration_seconds: int = 3600
 
 
 POTION_DEFINITIONS: Tuple[PotionDefinition, ...] = (
@@ -303,6 +304,14 @@ POTION_DEFINITIONS: Tuple[PotionDefinition, ...] = (
         "pb_boost",
         1.0,
         "Augmente les gains de PB de 100% pendant une courte durée.",
+    ),
+    PotionDefinition(
+        "mastery_xp",
+        "Potion de maîtrise",
+        "mastery_xp",
+        1.0,
+        "Double l'XP de maîtrise pendant 5 minutes.",
+        duration_seconds=300,
     ),
 )
 

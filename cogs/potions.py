@@ -64,16 +64,22 @@ class Potions(commands.Cog):
         return POTION_DEFINITION_MAP.get(slug)
 
     def _effect_description(self, definition: PotionDefinition) -> str:
+        duration_seconds = getattr(definition, "duration_seconds", self.DURATION_SECONDS)
         percentage = int(definition.effect_value * 100)
         if definition.effect_type == "pb_boost":
             return (
                 f"Tes gains de PB sont augmentés de {percentage}% pendant"
-                f" {_format_duration(self.DURATION_SECONDS)}."
+                f" {_format_duration(duration_seconds)}."
             )
         if definition.effect_type == "egg_luck":
             return (
                 f"Ta chance d'obtenir les meilleurs pets est augmentée de {percentage}%"
-                f" pendant {_format_duration(self.DURATION_SECONDS)}."
+                f" pendant {_format_duration(duration_seconds)}."
+            )
+        if definition.effect_type == "mastery_xp":
+            return (
+                f"Ton XP de maîtrise est multiplié par {1 + definition.effect_value:g}"
+                f" pendant {_format_duration(duration_seconds)}."
             )
         return "Effet appliqué."  # Sécurité pour d'éventuels effets futurs
 
@@ -139,8 +145,9 @@ class Potions(commands.Cog):
     async def _consume_and_schedule_potion(
         self, user_id: int, definition: PotionDefinition
     ) -> tuple[bool, PotionDefinition | None, float, datetime]:
+        duration_seconds = getattr(definition, "duration_seconds", self.DURATION_SECONDS)
         now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(seconds=self.DURATION_SECONDS)
+        expires_at = now + timedelta(seconds=duration_seconds)
         replaced_definition: PotionDefinition | None = None
         stacked_seconds = 0.0
 
@@ -167,7 +174,7 @@ class Potions(commands.Cog):
             if active_slug and isinstance(active_expires_at, datetime):
                 if active_expires_at > now and active_slug == definition.slug:
                     stacked_seconds = (active_expires_at - now).total_seconds()
-                    expires_at = active_expires_at + timedelta(seconds=self.DURATION_SECONDS)
+                    expires_at = active_expires_at + timedelta(seconds=duration_seconds)
                 elif active_expires_at > now:
                     replaced_definition = POTION_DEFINITION_MAP.get(active_slug)
                 else:
@@ -194,12 +201,13 @@ class Potions(commands.Cog):
         expires_at: datetime,
     ) -> discord.Embed:
         remaining_seconds = max(0.0, (expires_at - datetime.now(timezone.utc)).total_seconds())
+        duration_seconds = getattr(definition, "duration_seconds", self.DURATION_SECONDS)
 
         lines = [f"✅ {definition.name} activée !", self._effect_description(definition)]
         if stacked_seconds > 0:
             lines.append(
                 "La durée de ta potion a été prolongée "
-                f"de {_format_duration(self.DURATION_SECONDS)} (total {_format_duration(remaining_seconds)})."
+                f"de {_format_duration(duration_seconds)} (total {_format_duration(remaining_seconds)})."
             )
         elif replaced_definition and replaced_definition.slug != definition.slug:
             lines.append(f"L'ancienne potion **{replaced_definition.name}** a été remplacée.")
