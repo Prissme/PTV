@@ -389,6 +389,55 @@ def user_activity_embed(
     return _finalize_embed(embed)
 
 
+def player_stats_embed(
+    *,
+    member: discord.Member,
+    steal_success: float,
+    steal_risk: float,
+    steal_protected: bool,
+    egg_luck_total: float,
+    egg_luck_breakdown: Sequence[str],
+    mastermind_wins: int,
+    race_best_stage: int,
+    race_best_label: str,
+    race_total_stages: int,
+) -> discord.Embed:
+    steal_lines = [
+        f"Chance de réussir un vol : **{steal_success * 100:.0f}%**",
+    ]
+    if steal_protected:
+        steal_lines.append(
+            f"Protection active : seulement **{steal_risk * 100:.0f}%** de chances pour les voleurs"
+        )
+    else:
+        steal_lines.append("Aucune protection contre le vol.")
+
+    egg_lines = [f"Bonus total : **+{egg_luck_total * 100:.0f}%**"]
+    egg_lines.extend(f"• {line}" for line in egg_luck_breakdown)
+
+    race_summary = (
+        f"Étape {race_best_stage}/{race_total_stages} — {race_best_label}"
+        if race_best_stage > 0
+        else "Aucun record enregistré pour l'instant."
+    )
+
+    embed = _base_embed("📊 Statistiques du joueur", color=Colors.PRIMARY)
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    embed.add_field(name="🔓 Vol", value="\n".join(steal_lines), inline=False)
+    embed.add_field(name="🥚 Chance dans les œufs", value="\n".join(egg_lines), inline=False)
+    embed.add_field(
+        name="🧠 Mastermind",
+        value=f"Parties gagnées : **{mastermind_wins}**",
+        inline=False,
+    )
+    embed.add_field(
+        name="🏁 Millionaire Race",
+        value=f"Record : **{race_summary}**",
+        inline=False,
+    )
+    return _finalize_embed(embed)
+
+
 def _quest_progress_line(label: str, current: int, goal: int) -> str:
     if goal <= 0:
         return f"✅ {label} : aucune exigence"

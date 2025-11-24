@@ -578,6 +578,12 @@ class Database:
             )
             await connection.execute(
                 """
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS race_best_stage
+                INTEGER NOT NULL DEFAULT 0 CHECK (race_best_stage >= 0)
+                """
+            )
+            await connection.execute(
+                """
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS rebirth_count
                 INTEGER NOT NULL DEFAULT 0 CHECK (rebirth_count >= 0)
                 """
@@ -1088,6 +1094,59 @@ class Database:
             normalized,
         )
         return normalized
+
+    async def get_race_personal_best(self, user_id: int) -> int:
+        await self.ensure_user(user_id)
+        row = await self.pool.fetchrow(
+            "SELECT race_best_stage FROM users WHERE user_id = $1",
+            user_id,
+        )
+        if row is None:
+            return 0
+        return int(row.get("race_best_stage") or 0)
+
+    async def update_race_personal_best(
+        self, user_id: int, stage_cleared: int
+    ) -> int:
+        await self.ensure_user(user_id)
+        normalized_stage = max(0, int(stage_cleared))
+        async with self.transaction() as connection:
+            row = await connection.fetchrow(
+                "SELECT race_best_stage FROM users WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            current_best = int(row.get("race_best_stage") or 0) if row else 0
+            if normalized_stage <= current_best:
+                return current_best
+
+            updated = await connection.fetchrow(
+                """
+                UPDATE users
+                SET race_best_stage = $1
+                WHERE user_id = $2
+                RETURNING race_best_stage
+                """,
+                normalized_stage,
+                user_id,
+            )
+
+        return int(updated.get("race_best_stage") or normalized_stage)
+
+    async def get_transaction_count(
+        self, user_id: int, *, transaction_type: str
+    ) -> int:
+        row = await self.pool.fetchrow(
+            """
+            SELECT COUNT(*) AS total
+            FROM transactions
+            WHERE user_id = $1 AND transaction_type = $2
+            """,
+            user_id,
+            transaction_type,
+        )
+        if row is None:
+            return 0
+        return int(row.get("total") or 0)
 
     async def add_raffle_tickets(
         self,
