@@ -138,7 +138,6 @@ class MillionaireRaceReward:
 class MillionaireRaceStage:
     label: str
     success_rate: float
-    reward: MillionaireRaceReward
     color: int
 
 
@@ -153,139 +152,108 @@ MILLIONAIRE_RACE_COLORS: tuple[int, ...] = (
     Colors.ERROR,
 )
 
+MILLIONAIRE_RACE_REWARD_POOL: tuple[MillionaireRaceReward, ...] = (
+    MillionaireRaceReward(
+        "<:MasteryPotion:1442154862350700715> Potion de maîtrise",
+        "potion",
+        slug="mastery_xp",
+    ),
+)
+
 MILLIONAIRE_RACE_STAGES: tuple[MillionaireRaceStage, ...] = (
     MillionaireRaceStage(
         "Sprint Émeraude",
         0.95,
-        MillionaireRaceReward("Boîte surprise", "potion", slug="luck_i"),
         MILLIONAIRE_RACE_COLORS[0],
     ),
     MillionaireRaceStage(
         "Relais Rubis",
         0.90,
-        MillionaireRaceReward("Bombe à fric", "potion", slug="fortune_i"),
         MILLIONAIRE_RACE_COLORS[1],
     ),
     MillionaireRaceStage(
         "Virage Saphir",
         0.85,
-        MillionaireRaceReward("Spray XP", "potion", slug="luck_i"),
         MILLIONAIRE_RACE_COLORS[2],
     ),
     MillionaireRaceStage(
         "Montée Jade",
         0.80,
-        MillionaireRaceReward("Gants porte-bonheur", "potion", slug="fortune_i"),
         MILLIONAIRE_RACE_COLORS[3],
     ),
     MillionaireRaceStage(
         "Ascension Ambrée",
         0.75,
-        MillionaireRaceReward("Jeton doublon", "potion", slug="luck_ii"),
         MILLIONAIRE_RACE_COLORS[4],
     ),
     MillionaireRaceStage(
         "Échappée Turquoise",
         0.70,
-        MillionaireRaceReward("Badge scintillant", "potion", slug="fortune_ii"),
         MILLIONAIRE_RACE_COLORS[5],
     ),
     MillionaireRaceStage(
         "Secteur Améthyste",
         0.65,
-        MillionaireRaceReward("Capuche chroma", "potion", slug="luck_ii"),
         MILLIONAIRE_RACE_COLORS[0],
     ),
     MillionaireRaceStage(
         "Piste Onyx",
         0.60,
-        MillionaireRaceReward("Boussole prismatique", "potion", slug="fortune_ii"),
         MILLIONAIRE_RACE_COLORS[1],
     ),
     MillionaireRaceStage(
         "Canyon Rubis",
         0.55,
-        MillionaireRaceReward("Cartouche mythique", "potion", slug="luck_iii"),
         MILLIONAIRE_RACE_COLORS[2],
     ),
     MillionaireRaceStage(
         "Vallée Cristal",
         0.50,
-        MillionaireRaceReward("Relique stellaire", "potion", slug="fortune_iii"),
         MILLIONAIRE_RACE_COLORS[3],
     ),
     MillionaireRaceStage(
         "Ciel Prisme",
         0.45,
-        MillionaireRaceReward("Carte VIP (rare)", "role", role_id=VIP_ROLE_ID),
         MILLIONAIRE_RACE_COLORS[4],
     ),
     MillionaireRaceStage(
         "Spirale Stellaire",
         0.40,
-        MillionaireRaceReward("Essence arcanique", "potion", slug="fortune_iv"),
         MILLIONAIRE_RACE_COLORS[5],
     ),
     MillionaireRaceStage(
         "Portail Titan",
         0.35,
-        MillionaireRaceReward("Tincture cosmique", "potion", slug="luck_iii"),
         MILLIONAIRE_RACE_COLORS[0],
     ),
     MillionaireRaceStage(
         "Faille Temporelle",
         0.30,
-        MillionaireRaceReward("Sceau antique", "potion", slug="fortune_iv"),
         MILLIONAIRE_RACE_COLORS[1],
     ),
     MillionaireRaceStage(
         "Abîme Infini",
         0.25,
-        MillionaireRaceReward("Huge Gale", "pet", pet_name=HUGE_GALE_NAME),
         MILLIONAIRE_RACE_COLORS[2],
     ),
     MillionaireRaceStage(
         "Dimension Chaos",
         0.20,
-        MillionaireRaceReward(
-            "Huge Gale Doré",
-            "pet",
-            pet_name=HUGE_GALE_NAME,
-            pet_variant="gold",
-        ),
         MILLIONAIRE_RACE_COLORS[3],
     ),
     MillionaireRaceStage(
         "Royaume Perdu",
         0.15,
-        MillionaireRaceReward(
-            "Huge Gale Rainbow",
-            "pet",
-            pet_name=HUGE_GALE_NAME,
-            pet_variant="rainbow",
-        ),
         MILLIONAIRE_RACE_COLORS[4],
     ),
     MillionaireRaceStage(
         "Faille Légendaire",
         0.10,
-        MillionaireRaceReward(
-            "Huge Gale Galaxy",
-            "pet",
-            pet_name=HUGE_GALE_NAME,
-            pet_variant="galaxy",
-        ),
         MILLIONAIRE_RACE_COLORS[5],
     ),
     MillionaireRaceStage(
         "Couronne Millionnaire",
         0.07,
-        MillionaireRaceReward(
-            "Huge Gale Shiny",
-            "pet",
-            pet_name=HUGE_GALE_NAME,
-            pet_variant="shiny",
-        ),
         MILLIONAIRE_RACE_COLORS[0],
     ),
 )
@@ -957,12 +925,21 @@ class MillionaireRaceSession:
             ]
             return False
 
+        if not MILLIONAIRE_RACE_REWARD_POOL:
+            self.finished = True
+            self.last_feedback = [
+                "⚠️ La course ne propose actuellement aucune récompense.",
+                "Réessaie plus tard pendant que nous réapprovisionnons le pool.",
+            ]
+            return False
+
+        reward = random.choice(MILLIONAIRE_RACE_REWARD_POOL)
         self.previous_reward = self.secured_reward
-        self.secured_reward = stage.reward
-        self.rewards_history.append(stage.reward.label)
+        self.secured_reward = reward
+        self.rewards_history.append(reward.label)
         feedback = [
             f"✅ **{stage.label}** franchie !",
-            f"Nouvel item : **{stage.reward.label}**",
+            f"Nouvel item : **{reward.label}**",
         ]
 
         self.stage_index += 1

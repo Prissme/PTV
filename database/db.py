@@ -4728,6 +4728,32 @@ class Database:
 
         await self.ensure_user(user_id)
         async with self.transaction() as connection:
+            now = datetime.now(timezone.utc)
+            user_row = await connection.fetchrow(
+                """
+                SELECT active_potion_slug, active_potion_expires_at
+                FROM users
+                WHERE user_id = $1
+                FOR UPDATE
+                """,
+                user_id,
+            )
+
+            potion_multiplier = 1.0
+            potion_slug = str(user_row.get("active_potion_slug") or "") if user_row else ""
+            potion_expires_at = user_row.get("active_potion_expires_at") if user_row else None
+            if potion_slug and isinstance(potion_expires_at, datetime):
+                if potion_expires_at > now:
+                    potion_definition = POTION_DEFINITION_MAP.get(potion_slug)
+                    if potion_definition and potion_definition.effect_type == "mastery_xp":
+                        potion_multiplier += float(potion_definition.effect_value)
+                else:
+                    await self.clear_active_potion(user_id, connection=connection)
+            elif potion_slug:
+                await self.clear_active_potion(user_id, connection=connection)
+
+            adjusted_amount = int(round(amount * potion_multiplier))
+
             row = await connection.fetchrow(
                 """
                 SELECT level, experience
@@ -4758,7 +4784,7 @@ class Database:
                 experience = int(row["experience"])
 
             previous_level = level
-            experience += int(amount)
+            experience += int(adjusted_amount)
             experience = max(0, min(experience, sys.maxsize))
             levels_gained = 0
             new_levels: List[int] = []
