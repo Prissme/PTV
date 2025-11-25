@@ -269,6 +269,7 @@ class Database:
         total_income: int,
         effective_incomes: Sequence[float],
         hourly_income: float,
+        elapsed_hours: float,
     ) -> Dict[int, tuple[int, int]]:
         if total_income <= 0 or hourly_income <= 0 or not rows:
             return {}
@@ -276,12 +277,12 @@ class Database:
             rows, effective_incomes, hourly_income, total_income
         )
         progress_updates: Dict[int, tuple[int, int]] = {}
+        time_weight = max(1.0, float(elapsed_hours))
         for share_amount, row in zip(shares, rows):
             if not bool(row.get("is_huge")):
                 continue
-            xp_gain = share_amount // 1_000
-            if xp_gain <= 0:
-                xp_gain = 1
+            base_xp_gain = max(share_amount / 1_000, 1.0)
+            xp_gain = int(round(base_xp_gain * time_weight))
             level = max(1, int(row.get("huge_level") or 1))
             current_xp = max(0, int(row.get("huge_xp") or 0))
             new_level = level
@@ -4686,7 +4687,9 @@ class Database:
                     user_id,
                 )
 
-            progress_updates = self._calculate_huge_progress(rows, income, effective_incomes, hourly_income)
+            progress_updates = self._calculate_huge_progress(
+                rows, income, effective_incomes, hourly_income, elapsed_hours
+            )
             for pet_id, (new_level, new_xp) in progress_updates.items():
                 await connection.execute(
                     "UPDATE user_pets SET huge_level = $2, huge_xp = $3 WHERE id = $1",

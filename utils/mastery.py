@@ -31,30 +31,30 @@ EGG_MASTERY_SLUG = "egg"
 EGG_MASTERY = MasteryDefinition(
     slug=EGG_MASTERY_SLUG,
     display_name="Maîtrise des œufs",
-    max_level=64,
-    base_xp=15,
-    growth_factor=1.22,
-    broadcast_levels=(10, 30, 50, 64),
+    max_level=99,
+    base_xp=12,
+    growth_factor=1.26,
+    broadcast_levels=(10, 30, 50, 75, 90, 99),
 )
 
 PET_MASTERY_SLUG = "pet"
 PET_MASTERY = MasteryDefinition(
     slug=PET_MASTERY_SLUG,
     display_name="Maîtrise des pets",
-    max_level=64,
-    base_xp=20,
-    growth_factor=1.24,
-    broadcast_levels=(10, 30, 50, 64),
+    max_level=99,
+    base_xp=16,
+    growth_factor=1.30,
+    broadcast_levels=(10, 30, 50, 75, 90, 99),
 )
 
 MASTERMIND_MASTERY_SLUG = "mastermind"
 MASTERMIND_MASTERY = MasteryDefinition(
     slug=MASTERMIND_MASTERY_SLUG,
     display_name="Maîtrise Mastermind",
-    max_level=64,
-    base_xp=12,
-    growth_factor=1.28,
-    broadcast_levels=(10, 30, 50, 64),
+    max_level=99,
+    base_xp=10,
+    growth_factor=1.34,
+    broadcast_levels=(10, 30, 50, 75, 90, 99),
 )
 
 MASTERIES: Dict[str, MasteryDefinition] = {
