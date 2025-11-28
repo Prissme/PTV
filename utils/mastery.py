@@ -23,7 +23,7 @@ class MasteryDefinition:
             return 0
 
         exponent = max(0, level - 1)
-        required = int(round(self.base_xp * (self.growth_factor ** exponent)))
+        required = int(round(self.base_xp * (self.growth_factor ** exponent) / 3))
         return max(1, required)
 
 
