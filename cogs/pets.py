@@ -3475,6 +3475,29 @@ class Pets(commands.Cog):
 
         task.add_done_callback(_cleanup)
 
+    @commands.command(name="stop")
+    async def stop_auto_open(self, ctx: commands.Context) -> None:
+        """Arrête l'ouverture automatique d'œufs en cours."""
+
+        task = self._auto_hatch_tasks.get(ctx.author.id)
+        if task is None:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    "Tu n'as aucune ouverture automatique en cours."
+                )
+            )
+            return
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        await ctx.send(
+            embed=embeds.success_embed(
+                "Ouverture automatique arrêtée.", title="AUTO interrompu"
+            )
+        )
+
     @commands.group(
         name="petauto",
         invoke_without_command=True,
