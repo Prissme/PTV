@@ -520,6 +520,38 @@ class Database:
                 logger.exception("Erreur lors de la libération de la connexion")
             self._lock_connection = None
 
+    async def _ensure_transactions_table(
+        self, executor: asyncpg.Connection | asyncpg.Pool
+    ) -> None:
+        await executor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transactions (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                transaction_type VARCHAR(50) NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'pb',
+                amount BIGINT NOT NULL,
+                balance_before BIGINT NOT NULL,
+                balance_after BIGINT NOT NULL,
+                description TEXT,
+                related_user_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        await executor.execute(
+            "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'pb'"
+        )
+        await executor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id)"
+        )
+        await executor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(transaction_type)"
+        )
+        await executor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(created_at)"
+        )
+
     async def _initialise_schema(self) -> None:
         async with self.pool.acquire() as connection:
             await connection.execute(
@@ -718,34 +750,7 @@ class Database:
                 """
             )
 
-            await connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS transactions (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                    transaction_type VARCHAR(50) NOT NULL,
-                    currency TEXT NOT NULL DEFAULT 'pb',
-                    amount BIGINT NOT NULL,
-                    balance_before BIGINT NOT NULL,
-                    balance_after BIGINT NOT NULL,
-                    description TEXT,
-                    related_user_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            await connection.execute(
-                "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'pb'"
-            )
-            await connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id)"
-            )
-            await connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(transaction_type)"
-            )
-            await connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(created_at)"
-            )
+            await self._ensure_transactions_table(connection)
 
             await connection.execute(
                 """
@@ -1966,8 +1971,19 @@ class Database:
         )
 
         if connection is not None:
-            await connection.execute(query, *params)
-        else:
+            try:
+                await connection.execute(query, *params)
+            except asyncpg.exceptions.UndefinedTableError:
+                logger.warning("Transactions table missing — recreating before retry")
+                await self._ensure_transactions_table(connection)
+                await connection.execute(query, *params)
+            return
+
+        try:
+            await self.pool.execute(query, *params)
+        except asyncpg.exceptions.UndefinedTableError:
+            logger.warning("Transactions table missing — recreating before retry")
+            await self._ensure_transactions_table(self.pool)
             await self.pool.execute(query, *params)
 
     # ------------------------------------------------------------------
@@ -5114,7 +5130,12 @@ class Database:
             ORDER BY created_at DESC
             LIMIT $2
         """
-        return await self.pool.fetch(query, user_id, limit)
+        try:
+            return await self.pool.fetch(query, user_id, limit)
+        except asyncpg.exceptions.UndefinedTableError:
+            logger.warning("Transactions table missing — recreating before retry")
+            await self._ensure_transactions_table(self.pool)
+            return await self.pool.fetch(query, user_id, limit)
 
     # ------------------------------------------------------------------
     # Stand de la plaza (listings)
