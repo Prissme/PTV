@@ -11,8 +11,10 @@ from utils import embeds
 from utils.enchantments import (
     ENCHANTMENT_DEFINITION_MAP,
     ENCHANTMENT_DEFINITIONS,
+    ENCHANTMENT_SELL_PRICES,
     format_enchantment,
     get_enchantment_emoji,
+    get_enchantment_sell_price,
 )
 
 
@@ -357,6 +359,102 @@ class Enchantments(commands.Cog):
                 f"{label} a été retiré de tes slots.", title="Enchantements"
             )
         )
+
+    @commands.command(name="adminshop")
+    async def adminshop(
+        self,
+        ctx: commands.Context,
+        slug: Optional[str] = None,
+        power: Optional[int] = None,
+        quantity: int = 1,
+    ) -> None:
+        if not slug or power is None:
+            price_lines = [
+                f"• Niveau {level} : {embeds.format_gems(price)}"
+                for level, price in sorted(ENCHANTMENT_SELL_PRICES.items())
+            ]
+            description = [
+                "Revends tes enchantements contre des gemmes (achat par le shop admin, pas entre joueurs).",
+                "Utilisation :",
+                f"`{PREFIX}adminshop <enchantement> <niveau> [quantité]`",
+                "",
+                "**Barème des ventes :**",
+                *price_lines,
+            ]
+            embed = embeds.info_embed(
+                "\n".join(description), title="Admin shop — Enchantements"
+            )
+            await ctx.send(embed=embed)
+            return
+
+        resolved_slug = self._resolve_slug(slug)
+        definition = ENCHANTMENT_DEFINITION_MAP.get(resolved_slug or "")
+        if resolved_slug is None or definition is None:
+            await ctx.send(embed=embeds.error_embed("Cet enchantement est inconnu."))
+            return
+
+        if power < 1 or power > 10:
+            await ctx.send(
+                embed=embeds.error_embed("Le niveau doit être compris entre 1 et 10."),
+            )
+            return
+        if quantity <= 0:
+            await ctx.send(
+                embed=embeds.error_embed("La quantité doit être positive."),
+            )
+            return
+
+        unit_price = get_enchantment_sell_price(power)
+        if unit_price is None:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Ce niveau n'est pas vendable actuellement dans l'admin shop."
+                )
+            )
+            return
+
+        status, payout, gems_before, gems_after, remaining_qty = (
+            await self.database.sell_enchantment_for_gems(
+                ctx.author.id,
+                resolved_slug,
+                power=power,
+                quantity=quantity,
+                unit_price=unit_price,
+            )
+        )
+
+        label = format_enchantment(definition, power)
+        if status == "missing":
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Tu ne possèdes pas cet enchantement à ce niveau."
+                )
+            )
+            return
+        if status == "insufficient":
+            await ctx.send(
+                embed=embeds.error_embed(
+                    f"Quantité insuffisante. Tu en possèdes {remaining_qty} à ce niveau."
+                )
+            )
+            return
+        if status != "sold":
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Impossible de finaliser la vente pour le moment. Réessaie plus tard."
+                )
+            )
+            return
+
+        lines = [
+            f"{label} ×{quantity} vendu pour {embeds.format_gems(payout)}.",
+            f"Gemmes avant : {embeds.format_gems(gems_before)}",
+            f"Gemmes après : {embeds.format_gems(gems_after)}",
+        ]
+        if remaining_qty <= 0:
+            lines.append("Cet enchantement n'est plus présent à ce niveau dans ton inventaire.")
+
+        await ctx.send(embed=embeds.success_embed("\n".join(lines), title="Admin shop"))
 
 
 async def setup(bot: commands.Bot) -> None:  # pragma: no cover - hook discord.py
