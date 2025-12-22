@@ -1648,6 +1648,106 @@ class Database:
             )
         return True
 
+    async def sell_enchantment_for_gems(
+        self,
+        user_id: int,
+        slug: str,
+        *,
+        power: int,
+        quantity: int = 1,
+        unit_price: int,
+    ) -> tuple[str, int, int, int, int]:
+        if quantity <= 0:
+            return "invalid_quantity", 0, 0, 0, 0
+        if power < 1 or power > 10:
+            return "invalid_power", 0, 0, 0, 0
+        if unit_price < 0:
+            return "invalid_price", 0, 0, 0, 0
+
+        await self.ensure_user(user_id)
+
+        async with self.transaction() as connection:
+            owned_row = await connection.fetchrow(
+                """
+                SELECT quantity
+                FROM user_enchantments
+                WHERE user_id = $1 AND slug = $2 AND power = $3
+                FOR UPDATE
+                """,
+                user_id,
+                slug,
+                power,
+            )
+            if owned_row is None:
+                return "missing", 0, 0, 0, 0
+
+            current_qty = int(owned_row.get("quantity") or 0)
+            if current_qty < quantity:
+                return "insufficient", 0, 0, 0, current_qty
+
+            remaining_qty = current_qty - quantity
+            if remaining_qty > 0:
+                await connection.execute(
+                    """
+                    UPDATE user_enchantments
+                    SET quantity = $4
+                    WHERE user_id = $1 AND slug = $2 AND power = $3
+                    """,
+                    user_id,
+                    slug,
+                    power,
+                    remaining_qty,
+                )
+            else:
+                await connection.execute(
+                    """
+                    DELETE FROM user_enchantments
+                    WHERE user_id = $1 AND slug = $2 AND power = $3
+                    """,
+                    user_id,
+                    slug,
+                    power,
+                )
+                await connection.execute(
+                    """
+                    DELETE FROM user_equipped_enchantments
+                    WHERE user_id = $1 AND slug = $2 AND power = $3
+                    """,
+                    user_id,
+                    slug,
+                    power,
+                )
+
+            gems_row = await connection.fetchrow(
+                "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            if gems_row is None:
+                raise DatabaseError("Utilisateur introuvable lors de la vente d'enchantements")
+
+            gems_before = int(gems_row.get("gems") or 0)
+            payout = max(0, unit_price * quantity)
+            tentative_after = gems_before + payout
+            gems_after = tentative_after if tentative_after >= 0 else 0
+
+            await connection.execute(
+                "UPDATE users SET gems = $1 WHERE user_id = $2",
+                gems_after,
+                user_id,
+            )
+            await self.record_transaction(
+                connection=connection,
+                user_id=user_id,
+                transaction_type="enchantment_sell",
+                currency="gem",
+                amount=gems_after - gems_before,
+                balance_before=gems_before,
+                balance_after=gems_after,
+                description=f"Vente de {slug} niv {power} x{quantity}",
+            )
+
+            return "sold", payout, gems_before, gems_after, remaining_qty
+
     async def get_user_enchantments(self, user_id: int) -> Sequence[asyncpg.Record]:
         await self.ensure_user(user_id)
         return await self.pool.fetch(

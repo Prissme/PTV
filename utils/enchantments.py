@@ -52,6 +52,19 @@ ENCHANTMENT_EMOJIS: Final[dict[str, str]] = {
     "slots_luck": "<:SlotsLuckEnchant:1438600197780537424>",
 }
 
+ENCHANTMENT_SELL_PRICES: Final[dict[int, int]] = {
+    1: 100,
+    2: 200,
+    3: 400,
+    4: 800,
+    5: 1_600,
+    6: 3_200,
+    7: 6_400,
+    8: 12_800,
+    9: 25_160,
+    10: 50_320,
+}
+
 # Drop rates pour chaque activité. Ces valeurs restent faibles pour préserver la rareté.
 ENCHANTMENT_SOURCE_DROP: Final[dict[str, float]] = {
     "distributor": 0.22,
@@ -94,6 +107,10 @@ def pick_random_enchantment() -> EnchantmentDefinition:
 def should_drop_enchantment(source: str) -> bool:
     rate = ENCHANTMENT_SOURCE_DROP.get(source, 0.0)
     return rate > 0 and random.random() <= rate
+
+
+def get_enchantment_sell_price(power: int) -> int | None:
+    return ENCHANTMENT_SELL_PRICES.get(power)
 
 
 def get_source_label(source: str) -> str:
