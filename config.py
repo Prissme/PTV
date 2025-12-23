@@ -69,7 +69,7 @@ if not DATABASE_URL:
 # ---------------------------------------------------------------------------
 DAILY_REWARD = (10_000, 20_000)
 DAILY_COOLDOWN = 86_400  # 24 heures
-MESSAGE_REWARD = 1
+MESSAGE_REWARD = 0
 MESSAGE_COOLDOWN = 60
 LEADERBOARD_LIMIT = 10
 

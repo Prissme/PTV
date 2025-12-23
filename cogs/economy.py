@@ -2309,6 +2309,8 @@ class Economy(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
+        if MESSAGE_REWARD <= 0:
+            return
         if message.author.bot or not message.guild:
             return
         if not message.content.strip():
