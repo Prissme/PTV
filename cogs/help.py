@@ -170,7 +170,7 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "description": "Collecte ta récompense quotidienne et maintiens ta série.",
                 },
                 {
-                    "command": f"{PREFIX}give @membre montant",
+                    "command": f"{PREFIX}give @membre montant | 100% | all",
                     "description": "Offre des PrissBucks à un joueur pour soutenir sa progression.",
                 },
                 {
@@ -388,7 +388,7 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "description": "Collect your daily reward and keep your streak alive.",
                 },
                 {
-                    "command": f"{PREFIX}give @member amount",
+                    "command": f"{PREFIX}give @member amount | 100% | all",
                     "description": "Gift PrissBucks to another player to support their progress.",
                 },
                 {

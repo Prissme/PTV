@@ -1691,12 +1691,12 @@ class Pets(commands.Cog):
 
     @staticmethod
     def _compute_huge_income(
-        best_non_huge_income: int | None,
+        reference_income: int | None,
         *,
         pet_name: str | None = None,
         level: int = 1,
     ) -> int:
-        best_value = max(0, int(best_non_huge_income or 0))
+        best_value = max(0, int(reference_income or 0))
         multiplier = get_huge_level_multiplier(pet_name or "", level)
         return compute_huge_income(best_value, multiplier)
 
@@ -1748,9 +1748,14 @@ class Pets(commands.Cog):
             level = int(record.get("huge_level") or 1)
             xp = int(record.get("huge_xp") or 0)
             self._apply_huge_progress_fields(data, level, xp)
-            data["_reference_income"] = int(best_non_huge_income or 0)
+            reference_income = (
+                best_non_huge_income
+                if best_non_huge_income and best_non_huge_income > 0
+                else base_income
+            )
+            data["_reference_income"] = int(reference_income or 0)
             effective_income = self._compute_huge_income(
-                best_non_huge_income, pet_name=pet_name, level=level
+                reference_income, pet_name=pet_name, level=level
             )
         else:
             data.pop("huge_level", None)
@@ -2818,8 +2823,13 @@ class Pets(commands.Cog):
         )
         if pet_definition.is_huge:
             best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
+            reference_income = (
+                best_non_huge_income
+                if best_non_huge_income and best_non_huge_income > 0
+                else pet_definition.base_income_per_hour
+            )
             income_per_hour = self._compute_huge_income(
-                best_non_huge_income, pet_name=pet_definition.name, level=1
+                reference_income, pet_name=pet_definition.name, level=1
             )
         else:
             multiplier = self._variant_income_multiplier(
@@ -3474,6 +3484,26 @@ class Pets(commands.Cog):
             self._auto_hatch_tasks.pop(ctx.author.id, None)
 
         task.add_done_callback(_cleanup)
+
+    @commands.command(name="stop")
+    async def stop_auto_hatch(self, ctx: commands.Context) -> None:
+        task = self._auto_hatch_tasks.get(ctx.author.id)
+        if task is None or task.done():
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    "Aucune ouverture automatique en cours."
+                )
+            )
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await ctx.send(
+            embed=embeds.success_embed(
+                "Ouverture automatique arrêtée.",
+                title="AUTO arrêté",
+            )
+        )
 
     @commands.group(
         name="petauto",
