@@ -2461,12 +2461,36 @@ class Economy(commands.Cog):
             return "Le montant doit être supérieur à 0."
         return None
 
+    @staticmethod
+    def _parse_give_amount(raw: str, balance: int) -> tuple[int | None, str | None]:
+        cleaned = raw.strip().lower()
+        if not cleaned:
+            return None, "Montant invalide."
+        if cleaned in {"all", "tout"}:
+            return max(0, int(balance)), None
+        if cleaned.endswith("%"):
+            percent_value = cleaned[:-1].strip()
+            try:
+                percent = float(percent_value.replace(",", "."))
+            except ValueError:
+                return None, "Pourcentage invalide."
+            if percent <= 0 or percent > 100:
+                return None, "Le pourcentage doit être compris entre 1 et 100."
+            amount = int(balance * (percent / 100))
+            if amount <= 0:
+                return None, "Le pourcentage est trop faible par rapport à ton solde."
+            return amount, None
+        try:
+            return int(cleaned), None
+        except ValueError:
+            return None, "Montant invalide."
+
     @commands.group(name="give", invoke_without_command=True)
     async def give(
         self,
         ctx: commands.Context,
         member: discord.Member | None = None,
-        amount: int | None = None,
+        amount: str | None = None,
     ) -> None:
         if ctx.invoked_subcommand is not None:
             return
@@ -2480,16 +2504,24 @@ class Economy(commands.Cog):
             )
             return
 
-        error = self._validate_give_request(ctx.author, member, amount)
-        if error:
-            await ctx.send(embed=embeds.error_embed(error))
-            return
-
         await self.database.ensure_user(ctx.author.id)
         await self.database.ensure_user(member.id)
 
         balance = await self.database.fetch_balance(ctx.author.id)
-        if balance < amount:
+        parsed_amount, parse_error = self._parse_give_amount(amount, balance)
+        if parse_error:
+            await ctx.send(embed=embeds.error_embed(parse_error))
+            return
+        if parsed_amount is None:
+            await ctx.send(embed=embeds.error_embed("Montant invalide."))
+            return
+
+        error = self._validate_give_request(ctx.author, member, parsed_amount)
+        if error:
+            await ctx.send(embed=embeds.error_embed(error))
+            return
+
+        if balance < parsed_amount:
             await ctx.send(
                 embed=embeds.error_embed("Tu n'as pas assez de PB pour ce transfert."),
             )
@@ -2499,7 +2531,7 @@ class Economy(commands.Cog):
             transfer = await self.database.transfer_balance(
                 sender_id=ctx.author.id,
                 recipient_id=member.id,
-                amount=amount,
+                amount=parsed_amount,
                 send_transaction_type="give_send",
                 receive_transaction_type="give_receive",
                 send_description=f"Transfert vers {member.id}",
@@ -2516,7 +2548,7 @@ class Economy(commands.Cog):
 
         lines = [
             f"{ctx.author.mention} → {member.mention}",
-            f"Montant : {embeds.format_currency(amount)}",
+            f"Montant : {embeds.format_currency(parsed_amount)}",
             f"Ton solde : {embeds.format_currency(transfer['sender']['after'])}",
             f"Solde de {member.display_name} : {embeds.format_currency(transfer['recipient']['after'])}",
         ]
