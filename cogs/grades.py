@@ -1,6 +1,7 @@
 """Système de grades avec quêtes et récompenses progressives."""
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from typing import Mapping, Optional
@@ -290,7 +291,7 @@ class GradeSystem(commands.Cog):
     # ------------------------------------------------------------------
     # Commandes
     # ------------------------------------------------------------------
-    @commands.command(name="grade", aliases=("rank",))
+    @commands.command(name="grade")
     async def grade_command(
         self, ctx: commands.Context, member: Optional[discord.Member] = None
     ) -> None:
@@ -383,6 +384,38 @@ class GradeSystem(commands.Cog):
             },
             rap_total=rap_total,
             pet_slots=slot_limit,
+        )
+        await ctx.send(embed=embed)
+
+    @commands.command(name="rank")
+    async def rank_command(
+        self, ctx: commands.Context, member: Optional[discord.Member] = None
+    ) -> None:
+        target = member or ctx.author
+        if not isinstance(target, discord.Member):
+            await ctx.send(embed=embeds.error_embed("Commande utilisable uniquement sur le serveur."))
+            return
+
+        try:
+            gems, best_pet, rank_data = await asyncio.gather(
+                self.database.fetch_gems(target.id),
+                self.database.get_user_best_pet_value(target.id),
+                self.database.get_user_balance_rank(target.id),
+            )
+        except Exception:
+            logger.exception("Impossible de récupérer les stats pour %s", target.id)
+            await ctx.send(embed=embeds.error_embed("Impossible de récupérer les statistiques du joueur."))
+            return
+
+        best_pet_name, best_pet_value = best_pet
+        embed = embeds.rank_profile_embed(
+            member=target,
+            balance=int(rank_data.get("balance", 0)),
+            gems=int(gems),
+            best_pet_name=best_pet_name,
+            best_pet_value=int(best_pet_value),
+            pb_rank=int(rank_data.get("rank", 0)),
+            pb_total=int(rank_data.get("total", 0)),
         )
         await ctx.send(embed=embed)
 

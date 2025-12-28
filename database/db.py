@@ -2199,6 +2199,33 @@ class Database:
         row = await self.pool.fetchrow("SELECT gems FROM users WHERE user_id = $1", user_id)
         return int(row["gems"]) if row else 0
 
+    async def get_user_balance_rank(self, user_id: int) -> Mapping[str, int]:
+        await self.ensure_user(user_id)
+        row = await self.pool.fetchrow(
+            """
+            SELECT
+                u.balance,
+                1 + (
+                    SELECT COUNT(*)
+                    FROM users other
+                    WHERE other.balance > u.balance
+                ) AS rank,
+                (
+                    SELECT COUNT(*) FROM users
+                ) AS total
+            FROM users u
+            WHERE u.user_id = $1
+            """,
+            user_id,
+        )
+        if row is None:
+            return {"balance": 0, "rank": 0, "total": 0}
+        return {
+            "balance": int(row.get("balance") or 0),
+            "rank": int(row.get("rank") or 0),
+            "total": int(row.get("total") or 0),
+        }
+
     async def get_extra_pet_slots(self, user_id: int) -> int:
         await self.ensure_user(user_id)
         row = await self.pool.fetchrow(
@@ -3236,6 +3263,68 @@ class Database:
                 value = clamp_income_value(value, minimum=HUGE_PET_MIN_INCOME)
             rap_total += max(0, int(value))
         return rap_total
+
+    async def get_user_best_pet_value(
+        self,
+        user_id: int,
+        *,
+        connection: asyncpg.Connection | None = None,
+    ) -> tuple[str | None, int]:
+        market_values = await self.get_pet_market_values()
+        query = """
+            SELECT
+                up.pet_id,
+                up.is_gold,
+                up.is_huge,
+                up.is_rainbow,
+                up.is_galaxy,
+                up.is_shiny,
+                up.huge_level,
+                p.base_income_per_hour,
+                p.name
+            FROM user_pets AS up
+            JOIN pets AS p ON p.pet_id = up.pet_id
+            WHERE up.user_id = $1
+        """
+        fetcher = connection.fetch if connection is not None else self.pool.fetch
+        rows = await fetcher(query, user_id)
+
+        best_value = 0
+        best_name: str | None = None
+        for row in rows:
+            pet_id = int(row["pet_id"])
+            base_income = int(row["base_income_per_hour"])
+            name = str(row.get("name", ""))
+            value = self._resolve_market_price(
+                pet_id,
+                is_gold=bool(row.get("is_gold")),
+                is_rainbow=bool(row.get("is_rainbow")),
+                is_galaxy=bool(row.get("is_galaxy")),
+                is_shiny=bool(row.get("is_shiny")),
+                market_values=market_values,
+            )
+            if value <= 0:
+                value = max(base_income * 120, 1_000)
+            if bool(row.get("is_galaxy")):
+                value = int(value * GALAXY_PET_MULTIPLIER)
+            elif bool(row.get("is_rainbow")):
+                value = int(value * RAINBOW_PET_MULTIPLIER)
+            elif bool(row.get("is_gold")):
+                value = int(value * GOLD_PET_MULTIPLIER)
+            if bool(row.get("is_shiny")):
+                value = int(value * SHINY_PET_MULTIPLIER)
+            if bool(row.get("is_huge")):
+                level = int(row.get("huge_level") or 1)
+                multiplier = get_huge_level_multiplier(name, level)
+                bonus_floor = safe_multiply_income(base_income, multiplier * 150)
+                value = max(value, bonus_floor)
+                value = clamp_income_value(value, minimum=HUGE_PET_MIN_INCOME)
+            value = max(0, int(value))
+            if value > best_value:
+                best_value = value
+                best_name = name
+
+        return best_name, best_value
 
     async def get_hourly_income_leaderboard(self, limit: int) -> list[tuple[int, int]]:
         clamped_limit = max(0, int(limit))

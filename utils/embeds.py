@@ -85,6 +85,7 @@ __all__ = [
     "leaderboard_embed",
     "stats_overview_embed",
     "user_activity_embed",
+    "rank_profile_embed",
     "grade_profile_embed",
     "grade_completed_embed",
     "pet_animation_embed",
@@ -513,6 +514,40 @@ def grade_profile_embed(
     embed = _base_embed(f"{Emojis.XP} Profil de grade", description, color=Colors.INFO)
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
     embed.add_field(name="Quêtes", value="\n".join(quest_lines), inline=False)
+    return _finalize_embed(embed)
+
+
+def rank_profile_embed(
+    *,
+    member: discord.Member,
+    balance: int,
+    gems: int,
+    best_pet_name: str | None,
+    best_pet_value: int,
+    pb_rank: int,
+    pb_total: int,
+) -> discord.Embed:
+    description = (
+        "Voici un aperçu rapide de tes stats économiques et de ton rang PB."
+    )
+    embed = _base_embed("🏆 Carte de joueur", description, color=Colors.PRIMARY)
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="💰 PB", value=format_currency(balance), inline=True)
+    embed.add_field(name="💎 Gemmes", value=format_gems(gems), inline=True)
+
+    if best_pet_name and best_pet_value > 0:
+        pet_label = f"{pet_emoji(best_pet_name)} {best_pet_name}"
+        best_pet_line = f"{pet_label}\nValeur : {format_gems(best_pet_value)}"
+    else:
+        best_pet_line = "Aucun pet enregistré."
+    embed.add_field(name="🐾 Meilleur pet", value=best_pet_line, inline=False)
+
+    if pb_rank > 0 and pb_total > 0:
+        rank_line = f"**#{pb_rank}** sur **{pb_total}**"
+    else:
+        rank_line = "Classement indisponible."
+    embed.add_field(name="🏅 Classement PB", value=rank_line, inline=True)
     return _finalize_embed(embed)
 
 
@@ -1183,4 +1218,3 @@ def clan_overview_embed(
         text="Plus ton clan rugit, plus tes gains explosent. Active-toi et fais trembler le classement !"
     )
     return _finalize_embed(embed)
-
