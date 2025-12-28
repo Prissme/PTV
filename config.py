@@ -201,6 +201,9 @@ GRADE_ROLE_IDS: Tuple[int, ...] = (
 # ---------------------------------------------------------------------------
 
 VIP_ROLE_ID: Final[int] = 1_431_428_621_959_954_623
+TOP_PB_ROLE_ID: Final[int] = 1_454_894_276_768_174_244
+TOP_PB_ROLE_LIMIT: Final[int] = 30
+TOP_PB_ROLE_REFRESH_MINUTES: Final[int] = 10
 EGG_MASTERY_MAX_ROLE_ID: Final[int] = 1_433_423_014_065_602_600
 PET_MASTERY_MAX_ROLE_ID: Final[int] = 1_433_425_659_182_448_720
 MASTERMIND_MASTERY_MAX_ROLE_ID: Final[int] = 1_433_426_656_361_447_646
@@ -1217,4 +1220,3 @@ PET_RARITY_ORDER: Final[dict[str, int]] = {
     "Épique": 3,
     "Secret": 4,
 }
-

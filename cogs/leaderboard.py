@@ -1,12 +1,22 @@
 """Commandes de classement économique."""
 from __future__ import annotations
 
-from discord.ext import commands
+import logging
 
-from config import LEADERBOARD_LIMIT
+import discord
+from discord.ext import commands, tasks
+
+from config import (
+    LEADERBOARD_LIMIT,
+    TOP_PB_ROLE_ID,
+    TOP_PB_ROLE_LIMIT,
+    TOP_PB_ROLE_REFRESH_MINUTES,
+)
 from database.db import DatabaseError
 from utils.mastery import EGG_MASTERY, MASTERMIND_MASTERY, PET_MASTERY, MasteryDefinition
 from utils import embeds
+
+logger = logging.getLogger(__name__)
 
 
 class Leaderboard(commands.Cog):
@@ -15,6 +25,69 @@ class Leaderboard(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.database = bot.database
+        self._top_pb_role_loop.start()
+
+    def cog_unload(self) -> None:
+        self._top_pb_role_loop.cancel()
+
+    @tasks.loop(minutes=TOP_PB_ROLE_REFRESH_MINUTES)
+    async def _top_pb_role_loop(self) -> None:
+        await self._refresh_top_pb_roles()
+
+    @_top_pb_role_loop.before_loop
+    async def _before_top_pb_role_loop(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def _refresh_top_pb_roles(self) -> None:
+        if TOP_PB_ROLE_ID <= 0:
+            return
+
+        try:
+            rows = await self.database.get_balance_leaderboard(TOP_PB_ROLE_LIMIT)
+        except Exception:
+            logger.exception("Impossible de récupérer le classement PB pour le rôle top.")
+            return
+
+        top_ids = {int(row["user_id"]) for row in rows}
+        if not top_ids:
+            return
+
+        for guild in self.bot.guilds:
+            role = guild.get_role(TOP_PB_ROLE_ID)
+            if role is None:
+                continue
+            await self._sync_top_role_for_guild(role, top_ids)
+
+    async def _sync_top_role_for_guild(self, role: discord.Role, top_ids: set[int]) -> None:
+        reason = "Mise à jour automatique du top 30 PB"
+        guild = role.guild
+        members_to_remove = [
+            member
+            for member in role.members
+            if not member.bot and member.id not in top_ids
+        ]
+        for member in members_to_remove:
+            try:
+                await member.remove_roles(role, reason=reason)
+            except Exception:
+                logger.exception(
+                    "Impossible de retirer le rôle top PB de %s sur %s",
+                    member.id,
+                    guild.id,
+                )
+
+        for user_id in top_ids:
+            member = guild.get_member(user_id)
+            if member is None or member.bot or role in member.roles:
+                continue
+            try:
+                await member.add_roles(role, reason=reason)
+            except Exception:
+                logger.exception(
+                    "Impossible d'ajouter le rôle top PB à %s sur %s",
+                    member.id,
+                    guild.id,
+                )
 
     @commands.command(name="leaderboard", aliases=("lb",))
     async def leaderboard(self, ctx: commands.Context) -> None:
