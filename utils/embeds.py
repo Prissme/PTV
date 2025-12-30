@@ -122,6 +122,14 @@ def _base_embed(title: str, description: str, *, color: int) -> discord.Embed:
     return _finalize_embed(embed)
 
 
+def _set_member_author(embed: discord.Embed, member: discord.Member) -> None:
+    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+
+
+def _set_member_thumbnail(embed: discord.Embed, member: discord.Member) -> None:
+    embed.set_thumbnail(url=member.display_avatar.url)
+
+
 def cooldown_embed(command: str, remaining: float) -> discord.Embed:
     minutes, seconds = divmod(int(max(0, remaining)), 60)
     hours, minutes = divmod(minutes, 60)
@@ -163,7 +171,7 @@ def balance_embed(
         lines.append(f"{Emojis.GEM} **Gemmes :** {format_gems(gems)}")
     description = "\n".join(lines)
     embed = _base_embed("Solde", description, color=Colors.SUCCESS if balance else Colors.NEUTRAL)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    _set_member_author(embed, member)
     embed.set_footer(text=f"Utilise {PREFIX}daily pour collecter ta récompense")
     return _finalize_embed(embed)
 
@@ -171,7 +179,7 @@ def balance_embed(
 def daily_embed(member: discord.Member, *, amount: int) -> discord.Embed:
     description = f"Tu as reçu {format_currency(amount)} aujourd'hui."
     embed = _base_embed(f"{Emojis.DAILY} Récompense quotidienne", description, color=Colors.SUCCESS)
-    embed.set_thumbnail(url=member.display_avatar.url)
+    _set_member_thumbnail(embed, member)
     embed.set_footer(text="Reviens demain pour récupérer ta prochaine récompense !")
     return _finalize_embed(embed)
 
@@ -211,7 +219,7 @@ def slot_machine_embed(
         color = Colors.ERROR
 
     embed = _base_embed("🎰 Machine à sous", "\n".join(lines), color=color)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    _set_member_author(embed, member)
     return _finalize_embed(embed)
 
 
@@ -237,7 +245,7 @@ def mastermind_board_embed(
         "Compose ta tentative avec les boutons ci-dessous puis valide-la.",
     ]
     embed = _base_embed("🧠 Mastermind", "\n".join(description_lines), color=color)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    _set_member_author(embed, member)
 
     if attempts:
         history_lines = [
@@ -280,7 +288,7 @@ def raffle_overview_embed(
         "Utilise les boutons pour miser ou retirer des tickets depuis ton inventaire.",
     ]
     embed = _base_embed("🎟️ Tombola Mastermind", "\n".join(description_lines), color=Colors.INFO)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    _set_member_author(embed, member)
 
     player_lines = [
         f"Inventaire : **{max(0, inventory_tickets)}** {ticket_emoji}",
@@ -386,7 +394,7 @@ def user_activity_embed(
     lines.append(window_info)
 
     embed = _base_embed("📊 Statistiques personnelles", "\n".join(lines), color=Colors.INFO)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    _set_member_author(embed, member)
     return _finalize_embed(embed)
 
 
@@ -423,7 +431,7 @@ def player_stats_embed(
     )
 
     embed = _base_embed("📊 Statistiques du joueur", color=Colors.PRIMARY)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    _set_member_author(embed, member)
     embed.add_field(name="🔓 Vol", value="\n".join(steal_lines), inline=False)
     embed.add_field(name="🥚 Chance dans les œufs", value="\n".join(egg_lines), inline=False)
     embed.add_field(
@@ -512,7 +520,7 @@ def grade_profile_embed(
         ]
 
     embed = _base_embed(f"{Emojis.XP} Profil de grade", description, color=Colors.INFO)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    _set_member_author(embed, member)
     embed.add_field(name="Quêtes", value="\n".join(quest_lines), inline=False)
     return _finalize_embed(embed)
 
@@ -531,8 +539,8 @@ def rank_profile_embed(
         "Voici un aperçu rapide de tes stats économiques et de ton rang PB."
     )
     embed = _base_embed("🏆 Carte de joueur", description, color=Colors.PRIMARY)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
-    embed.set_thumbnail(url=member.display_avatar.url)
+    _set_member_author(embed, member)
+    _set_member_thumbnail(embed, member)
     embed.add_field(name="💰 PB", value=format_currency(balance), inline=True)
     embed.add_field(name="💎 Gemmes", value=format_gems(gems), inline=True)
 
@@ -568,7 +576,7 @@ def grade_completed_embed(
         f"Gemmes actuelles : {format_gems(gems_after)}",
     ]
     embed = _base_embed("🎖️ Grade amélioré !", "\n".join(lines), color=Colors.SUCCESS)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    _set_member_author(embed, member)
     return _finalize_embed(embed)
 
 
@@ -735,7 +743,7 @@ def pet_collection_embed(
         embed_description += "\n\nAucun pet pour le moment. Ouvre un œuf avec e!openbox."
 
     embed = _base_embed("Inventaire des pets", embed_description, color=Colors.INFO)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    _set_member_author(embed, member)
 
     current_page = max(1, page)
     total_pages = max(1, page_count)
@@ -773,7 +781,7 @@ def pet_index_embed(
     market_values: Mapping[str, int] | None = None,
 ) -> discord.Embed:
     embed = _base_embed("Index des pets", "", color=Colors.INFO)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    _set_member_author(embed, member)
 
     huge_info = dict(huge_descriptions or {})
     total_pets = len(pet_definitions)
@@ -909,7 +917,7 @@ def pet_equip_embed(
     embed = _base_embed(title, "\n".join(lines), color=color)
     if display.image_url:
         embed.set_thumbnail(url=display.image_url)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    _set_member_author(embed, member)
     return _finalize_embed(embed)
 
 
@@ -1001,7 +1009,7 @@ def pet_claim_embed(
     if extra_info:
         description_text += "\n" + " • ".join(extra_info)
     embed = _base_embed("Gains des pets", description_text, color=color)
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    _set_member_author(embed, member)
 
     reward_lines: list[str] = []
     if farm_rewards:
@@ -1066,7 +1074,7 @@ def mastery_overview_embed(
         "Voici un aperçu de tes progrès sur les différentes maîtrises.",
         color=Colors.INFO,
     )
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    _set_member_author(embed, member)
 
     total_levels = 0
     for definition in masteries:
@@ -1123,7 +1131,7 @@ def mastery_detail_embed(
         "Survole chaque palier pour préparer ta progression.",
         color=Colors.INFO,
     )
-    embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    _set_member_author(embed, member)
 
     lines = [f"Niveau actuel : **{level}/{max_level}**"]
     if xp_to_next > 0:
