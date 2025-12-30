@@ -892,7 +892,7 @@ class PetIndexView(discord.ui.View):
             key.casefold(): value for key, value in (market_values or {}).items() if key
         }
         self.index_bonus_percent = max(0.0, float(index_bonus_percent))
-        self.per_page = 8
+        self.per_page = 6
         self.current_category = "normal"
         self.current_page = 0
         self.message: discord.Message | None = None
@@ -1103,6 +1103,8 @@ class PetIndexView(discord.ui.View):
 class PetSelectionView(discord.ui.View):
     """Vue interactive permettant de sélectionner un pet parmi plusieurs."""
 
+    PAGE_SIZE = 20
+
     def __init__(
         self,
         *,
@@ -1116,26 +1118,116 @@ class PetSelectionView(discord.ui.View):
         self.selection: Optional[Mapping[str, Any]] = None
         self.cancelled = False
         self.message: discord.Message | None = None
+        self.page_size = max(1, min(self.PAGE_SIZE, len(self.candidates)))
+        self.page_count = max(1, math.ceil(len(self.candidates) / self.page_size))
+        self.page = 0
 
-        for index, candidate in enumerate(self.candidates, start=1):
-            label = self._build_label(candidate, index)
-            button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary)
-            button.callback = self._make_callback(index - 1)
-            self.add_item(button)
+        self.select = self.PetSelect(self)
+        self.previous_button = self.PreviousPageButton(self)
+        self.next_button = self.NextPageButton(self)
+        self.cancel_button = self.CancelButton(self)
 
-        cancel_button = discord.ui.Button(label="Annuler", style=discord.ButtonStyle.secondary)
-        cancel_button.callback = self._cancel
-        self.add_item(cancel_button)
+        self.add_item(self.select)
+        self.add_item(self.previous_button)
+        self.add_item(self.next_button)
+        self.add_item(self.cancel_button)
+        self._refresh_options()
+        self._sync_buttons()
+
+    class PetSelect(discord.ui.Select):
+        def __init__(self, view: "PetSelectionView") -> None:
+            self._selection_view = view
+            super().__init__(
+                placeholder="Sélectionne un pet",
+                min_values=1,
+                max_values=1,
+                options=[],
+                row=0,
+            )
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            selection_view = self._selection_view
+            if interaction.user.id != selection_view.ctx.author.id:
+                await interaction.response.send_message(
+                    "Tu ne peux pas sélectionner un pet pour quelqu'un d'autre.",
+                    ephemeral=True,
+                )
+                return
+            if not self.values:
+                return
+            try:
+                index = int(self.values[0])
+            except (TypeError, ValueError):
+                return
+            if index < 0 or index >= len(selection_view.candidates):
+                return
+            selection_view.selection = selection_view.candidates[index]
+            selection_view.disable_all()
+            if interaction.response.is_done():
+                await interaction.followup.edit_message(interaction.message.id, view=selection_view)
+            else:
+                await interaction.response.edit_message(view=selection_view)
+            selection_view.stop()
+
+    class PreviousPageButton(discord.ui.Button):
+        def __init__(self, view: "PetSelectionView") -> None:
+            self._selection_view = view
+            super().__init__(emoji="◀️", style=discord.ButtonStyle.secondary, row=1)
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            selection_view = self._selection_view
+            if selection_view.page > 0:
+                selection_view.page -= 1
+            selection_view._refresh_options()
+            selection_view._sync_buttons()
+            await interaction.response.edit_message(view=selection_view)
+
+    class NextPageButton(discord.ui.Button):
+        def __init__(self, view: "PetSelectionView") -> None:
+            self._selection_view = view
+            super().__init__(emoji="▶️", style=discord.ButtonStyle.secondary, row=1)
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            selection_view = self._selection_view
+            if selection_view.page < selection_view.page_count - 1:
+                selection_view.page += 1
+            selection_view._refresh_options()
+            selection_view._sync_buttons()
+            await interaction.response.edit_message(view=selection_view)
+
+    class CancelButton(discord.ui.Button):
+        def __init__(self, view: "PetSelectionView") -> None:
+            self._selection_view = view
+            super().__init__(label="Annuler", style=discord.ButtonStyle.secondary, row=1)
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            selection_view = self._selection_view
+            if interaction.user.id != selection_view.ctx.author.id:
+                await interaction.response.send_message(
+                    "Tu ne peux pas annuler cette sélection.",
+                    ephemeral=True,
+                )
+                return
+            selection_view.cancelled = True
+            selection_view.selection = None
+            selection_view.disable_all()
+            if interaction.response.is_done():
+                await interaction.followup.edit_message(interaction.message.id, view=selection_view)
+            else:
+                await interaction.response.edit_message(view=selection_view)
+            selection_view.stop()
 
     @staticmethod
     def _build_label(candidate: Mapping[str, Any], index: int) -> str:
         data = candidate.get("data", {})
+        record = candidate.get("record", {})
         name = str(data.get("name", "Pet"))
         is_galaxy = bool(data.get("is_galaxy"))
         is_rainbow = bool(data.get("is_rainbow"))
         is_gold = bool(data.get("is_gold"))
         is_active = bool(data.get("is_active"))
         income = int(data.get("base_income_per_hour", 0))
+        identifier = record.get("id")
         if is_galaxy:
             marker = " 🌌"
         elif is_rainbow:
@@ -1145,43 +1237,31 @@ class PetSelectionView(discord.ui.View):
         else:
             marker = ""
         active_marker = "⭐ " if is_active else ""
-        base_label = f"{index}. {active_marker}{name}{marker}"
+        id_label = f" #{identifier}" if identifier else ""
+        base_label = f"{index}. {active_marker}{name}{marker}{id_label}"
         income_part = f" • {income:,} PB/h" if income else ""
         label = f"{base_label}{income_part}".replace(",", " ")
         return label[:80]
 
-    def _make_callback(self, index: int):
-        async def _callback(interaction: discord.Interaction) -> None:
-            if interaction.user.id != self.ctx.author.id:
-                await interaction.response.send_message(
-                    "Tu ne peux pas sélectionner un pet pour quelqu'un d'autre.",
-                    ephemeral=True,
-                )
-                return
-            self.selection = self.candidates[index]
-            self.disable_all()
-            if interaction.response.is_done():
-                await interaction.followup.edit_message(interaction.message.id, view=self)
-            else:
-                await interaction.response.edit_message(view=self)
-            self.stop()
-
-        return _callback
-
-    async def _cancel(self, interaction: discord.Interaction) -> None:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message(
-                "Tu ne peux pas annuler cette sélection.", ephemeral=True
+    def _refresh_options(self) -> None:
+        start = self.page * self.page_size
+        end = start + self.page_size
+        options: list[discord.SelectOption] = []
+        for index, candidate in enumerate(self.candidates[start:end], start=start + 1):
+            label = self._build_label(candidate, index)
+            options.append(
+                discord.SelectOption(label=label, value=str(index - 1))
             )
-            return
-        self.cancelled = True
-        self.selection = None
-        self.disable_all()
-        if interaction.response.is_done():
-            await interaction.followup.edit_message(interaction.message.id, view=self)
+        self.select.options = options
+        if self.page_count > 1:
+            self.select.placeholder = f"Sélectionne un pet (page {self.page + 1}/{self.page_count})"
         else:
-            await interaction.response.edit_message(view=self)
-        self.stop()
+            self.select.placeholder = "Sélectionne un pet"
+
+    def _sync_buttons(self) -> None:
+        has_multiple_pages = self.page_count > 1
+        self.previous_button.disabled = not has_multiple_pages or self.page <= 0
+        self.next_button.disabled = not has_multiple_pages or self.page >= self.page_count - 1
 
     def disable_all(self) -> None:
         for child in self.children:
@@ -2183,6 +2263,7 @@ class Pets(commands.Cog):
             is_rainbow = bool(data.get("is_rainbow"))
             income = int(data.get("base_income_per_hour", 0))
             acquired_at = record.get("acquired_at")
+            identifier = int(record.get("id") or 0)
             acquired_text = ""
             if isinstance(acquired_at, datetime):
                 acquired_text = acquired_at.strftime("%d/%m/%Y")
@@ -2198,6 +2279,8 @@ class Pets(commands.Cog):
             if rarity:
                 line += f" ({rarity})"
             line += f"\n{status}"
+            if identifier:
+                line += f" • ID: {identifier}"
             if acquired_text:
                 line += f" • Obtenu le {acquired_text}"
             lines.append(line)
@@ -3669,6 +3752,94 @@ class Pets(commands.Cog):
             message = await ctx.send(embed=embed, view=view)
             view.message = message
 
+    @commands.command(name="sellpet", aliases=("sellpets", "vendrepet", "vendrepets"))
+    async def sell_pet(self, ctx: commands.Context, user_pet_id: int | None = None) -> None:
+        if user_pet_id is None:
+            await ctx.send(
+                embed=embeds.info_embed(
+                    "Utilise `e!sellpet <id>` pour revendre un pet contre des gemmes.",
+                )
+            )
+            return
+
+        record = await self.database.get_user_pet(ctx.author.id, user_pet_id)
+        if record is None:
+            await ctx.send(embed=embeds.error_embed("Pet introuvable."))
+            return
+
+        if bool(record.get("is_active")):
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Ce pet est actuellement équipé. Retire-le avant de le revendre.",
+                )
+            )
+            return
+        if bool(record.get("on_market")):
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Ce pet est en vente sur la plaza. Retire-le avant de le revendre.",
+                )
+            )
+            return
+
+        market_values = await self.database.get_pet_market_values()
+        price = self._resolve_market_value(
+            market_values,
+            pet_id=int(record.get("pet_id") or 0),
+            is_gold=bool(record.get("is_gold")),
+            is_rainbow=bool(record.get("is_rainbow")),
+            is_galaxy=bool(record.get("is_galaxy")),
+            is_shiny=bool(record.get("is_shiny")),
+        )
+        if price <= 0:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Ce pet ne peut pas être revendu pour le moment.",
+                )
+            )
+            return
+
+        status, payout, gems_before, gems_after = await self.database.sell_user_pet_for_gems(
+            ctx.author.id,
+            user_pet_id,
+            price,
+        )
+        if status == "missing":
+            await ctx.send(embed=embeds.error_embed("Pet introuvable."))
+            return
+        if status == "forbidden":
+            await ctx.send(embed=embeds.error_embed("Ce pet ne t'appartient pas."))
+            return
+        if status == "active":
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Ce pet est actuellement équipé. Retire-le avant de le revendre.",
+                )
+            )
+            return
+        if status == "on_market":
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Ce pet est en vente sur la plaza. Retire-le avant de le revendre.",
+                )
+            )
+            return
+        if status != "sold":
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Impossible de finaliser la vente pour le moment.",
+                )
+            )
+            return
+
+        name = str(record.get("name", "Pet"))
+        lines = [
+            f"{name} (ID {user_pet_id}) vendu pour {embeds.format_gems(payout)}.",
+            f"Gemmes avant : {embeds.format_gems(gems_before)}",
+            f"Gemmes après : {embeds.format_gems(gems_after)}",
+        ]
+        await ctx.send(embed=embeds.success_embed("\n".join(lines), title="Vente de pet"))
+
     @commands.command(name="index", aliases=("petindex", "dex"))
     async def pet_index_command(self, ctx: commands.Context) -> None:
         (
@@ -4686,17 +4857,13 @@ class Pets(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name="fuse")
-    async def fuse(self, ctx: commands.Context, *user_pet_ids: int) -> None:
-        if not user_pet_ids:
-            await ctx.send(
-                embed=embeds.info_embed(
-                    "Utilise `e!fuse <id1> <id2> … <id10>` pour sacrifier 10 pets et en obtenir un nouveau."
-                )
-            )
-            return
+    async def fuse(self, ctx: commands.Context, *user_pet_inputs: str) -> None:
+        auto_mode = not user_pet_inputs
+        if user_pet_inputs:
+            auto_mode = any(str(value).lower() in {"auto", "random"} for value in user_pet_inputs)
 
-        unique_ids = []
-        for value in user_pet_ids:
+        unique_ids: list[int] = []
+        for value in user_pet_inputs:
             try:
                 parsed = int(value)
             except (TypeError, ValueError):
@@ -4705,6 +4872,36 @@ class Pets(commands.Cog):
                 unique_ids.append(parsed)
             if len(unique_ids) >= 10:
                 break
+
+        auto_selected = False
+        if auto_mode and not unique_ids:
+            rows = await self.database.get_user_pets(ctx.author.id)
+            available = [
+                row
+                for row in rows
+                if not bool(row.get("is_active"))
+                and not bool(row.get("on_market"))
+                and not bool(row.get("is_huge"))
+            ]
+            if len(available) < 10:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "La machine a besoin de **10 pets différents** disponibles."
+                        " Pense à retirer les pets actifs ou en vente, puis réessaie.",
+                    )
+                )
+                return
+            unique_ids = [int(row["id"]) for row in available[:10]]
+            auto_selected = True
+
+        if not unique_ids:
+            await ctx.send(
+                embed=embeds.info_embed(
+                    "Utilise `e!fuse <id1> <id2> … <id10>` pour sacrifier 10 pets et en obtenir un nouveau."
+                    " Tu peux aussi lancer `e!fuse auto` pour choisir automatiquement.",
+                )
+            )
+            return
 
         if len(unique_ids) < 10:
             await ctx.send(
@@ -4815,6 +5012,9 @@ class Pets(commands.Cog):
             suffix = f" ({', '.join(tags)})" if tags else ""
             lines.append(f"{embeds.format_currency(income)}/h — **{name}**{suffix}")
 
+        if auto_selected:
+            used_ids = ", ".join(str(pet_id) for pet_id in consumed_ids)
+            lines.append(f"IDs utilisés : {used_ids}")
         if bonus_label:
             lines.append(bonus_label)
 

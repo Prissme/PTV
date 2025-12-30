@@ -224,6 +224,16 @@ class PetDisplay:
             parts.append(" ".join(flags))
         if quantity > 1:
             parts.append(f"x{quantity}")
+        if identifiers:
+            filtered = [int(value) for value in identifiers if value]
+            if filtered:
+                preview = filtered[:5]
+                remainder = len(filtered) - len(preview)
+                ids_text = ", ".join(str(value) for value in preview)
+                if remainder > 0:
+                    ids_text = f"{ids_text} (+{remainder})"
+                label = "IDs" if len(filtered) > 1 else "ID"
+                parts.append(f"{label}: {ids_text}")
         return " ".join(part for part in parts if part).replace("  ", " ")
 
     def equipment_lines(self, activated: bool, active_count: int, slot_limit: int) -> list[str]:

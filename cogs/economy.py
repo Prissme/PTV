@@ -353,10 +353,10 @@ MASTERMIND_CONFIG = MastermindConfig(colors=MASTERMIND_COLORS)
 MASTERMIND_HELPER = MastermindHelper(MASTERMIND_CONFIG)
 
 
-MASTERMIND_GUESS_XP = 4
-MASTERMIND_VICTORY_XP = 20
-MASTERMIND_FAILURE_XP = 10
-MASTERMIND_TIMEOUT_XP = 6
+MASTERMIND_GUESS_XP = 6
+MASTERMIND_VICTORY_XP = 30
+MASTERMIND_FAILURE_XP = 15
+MASTERMIND_TIMEOUT_XP = 10
 
 
 @dataclass(frozen=True)
@@ -939,7 +939,14 @@ class MillionaireRaceSession:
             ]
             return False
 
-        reward = random.choice(MILLIONAIRE_RACE_REWARD_POOL)
+        if self.stage_index == len(MILLIONAIRE_RACE_STAGES) - 1:
+            reward = MillionaireRaceReward(
+                HUGE_GALE_NAME,
+                "pet",
+                pet_name=HUGE_GALE_NAME,
+            )
+        else:
+            reward = random.choice(MILLIONAIRE_RACE_REWARD_POOL)
         quantity = max(1, int(reward.base_quantity))
         if reward.scales_with_stage:
             quantity = max(quantity, self.stage_index + 1)
