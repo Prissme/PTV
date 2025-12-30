@@ -916,7 +916,7 @@ _ROBOT_EGG_PETS: Tuple[PetDefinition, ...] = (
         rarity="Secret",
         image_url="https://cdn.discordapp.com/emojis/1433380006557646878.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.0000001,
+        drop_rate=0.0000005,
         is_huge=True,
     ),
 )
@@ -955,7 +955,7 @@ _ANIMALERIE_EGG_PETS: Tuple[PetDefinition, ...] = (
         rarity="Secret",
         image_url="https://cdn.discordapp.com/emojis/1433616256522649712.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.00001,
+        drop_rate=0.00005,
         is_huge=True,
     ),
 )
@@ -987,7 +987,7 @@ _MEXICO_EGG_PETS: Tuple[PetDefinition, ...] = (
         rarity="Secret",
         image_url="https://cdn.discordapp.com/emojis/1437826071503311010.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.0000005,
+        drop_rate=0.000002,
         is_huge=True,
     ),
     PetDefinition(
@@ -995,7 +995,7 @@ _MEXICO_EGG_PETS: Tuple[PetDefinition, ...] = (
         rarity="Secret",
         image_url="https://cdn.discordapp.com/emojis/1437826145486770176.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.0000001,
+        drop_rate=0.0000005,
         is_huge=True,
     ),
 )
@@ -1113,7 +1113,7 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         name="Mexico",
         slug=MEXICO_ZONE_SLUG,
         grade_required=15,
-        entry_cost=777_777_777_777,
+        entry_cost=500_000_000_000,
         eggs=_eggs_for_zone(MEXICO_ZONE_SLUG),
         rebirth_required=2,
     ),

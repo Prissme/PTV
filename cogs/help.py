@@ -1,10 +1,9 @@
 """Commande d'aide interactive avec menu déroulant."""
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Sequence, Tuple, cast
-
-from dataclasses import dataclass
 
 import discord
 from discord.ext import commands
@@ -267,6 +266,16 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "description": "Revends tes enchantements contre des gemmes directement au shop admin.",
                 },
                 {
+                    "command": f"{PREFIX}sellpet <id>",
+                    "description": "Revends un pet contre des gemmes selon sa valeur marché.",
+                    "aliases": ("vendrepet", "vendrepets"),
+                },
+                {
+                    "command": f"{PREFIX}sellpotion <slug> [quantité]",
+                    "description": "Revends tes potions contre des PB.",
+                    "aliases": ("sellpotions", "vendrepotions"),
+                },
+                {
                     "command": f"{PREFIX}distributeur",
                     "description": "Récupère une potion et un pet doré à Mexico (cooldown de 10 min).",
                     "aliases": ("mexico",),
@@ -494,6 +503,16 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "description": "Sell your enchantments for gems directly to the admin shop.",
                 },
                 {
+                    "command": f"{PREFIX}sellpet <id>",
+                    "description": "Sell a pet for gems based on its market value.",
+                    "aliases": ("sellpets",),
+                },
+                {
+                    "command": f"{PREFIX}sellpotion <slug> [quantity]",
+                    "description": "Sell your potions for PB.",
+                    "aliases": ("sellpotions",),
+                },
+                {
                     "command": f"{PREFIX}enchants",
                     "description": "Manage your enchantment inventory, equip them, and track your available slots.",
                 },
@@ -554,6 +573,8 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
         },
     ),
 }
+
+HELP_SECTIONS_PER_PAGE = 3
 
 
 _HELP_STRINGS: Dict[str, HelpLocaleStrings] = {
@@ -662,7 +683,11 @@ class HelpMenuSelect(discord.ui.Select):
             return
 
         help_view = cast(HelpMenuView, self.view)
-        embed = help_view.get_embed(self.values[0])
+        help_view.current_key = self.values[0]
+        if help_view.current_key == "all":
+            help_view.current_page = 0
+        help_view._sync_navigation()
+        embed = help_view.get_embed(help_view.current_key)
         await interaction.response.edit_message(embed=embed, view=help_view)
 
 
@@ -676,7 +701,7 @@ class HelpMenuView(discord.ui.View):
         sections: Sequence[HelpSection],
         strings: HelpLocaleStrings,
         build_section_embed: Callable[[HelpSection], discord.Embed],
-        build_all_embed: Callable[[], discord.Embed],
+        build_all_embed: Callable[[Sequence[HelpSection], int, int], discord.Embed],
         timeout: float = 180,
     ) -> None:
         super().__init__(timeout=timeout)
@@ -687,7 +712,39 @@ class HelpMenuView(discord.ui.View):
         self._build_section_embed = build_section_embed
         self._build_all_embed = build_all_embed
         self.message: Optional[discord.Message] = None
+        self.current_key = "all"
+        self.current_page = 0
+        self._all_pages = self._build_all_pages()
         self.add_item(HelpMenuSelect(self))
+        self.add_item(self.PreviousPageButton(self))
+        self.add_item(self.NextPageButton(self))
+        self._sync_navigation()
+
+    class PreviousPageButton(discord.ui.Button):
+        def __init__(self, view: "HelpMenuView") -> None:
+            self._help_view = view
+            super().__init__(emoji="◀️", style=discord.ButtonStyle.secondary, row=1)
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            help_view = self._help_view
+            if help_view.current_page > 0:
+                help_view.current_page -= 1
+            help_view._sync_navigation()
+            embed = help_view.get_embed("all")
+            await interaction.response.edit_message(embed=embed, view=help_view)
+
+    class NextPageButton(discord.ui.Button):
+        def __init__(self, view: "HelpMenuView") -> None:
+            self._help_view = view
+            super().__init__(emoji="▶️", style=discord.ButtonStyle.secondary, row=1)
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            help_view = self._help_view
+            if help_view.current_page < help_view._all_page_count - 1:
+                help_view.current_page += 1
+            help_view._sync_navigation()
+            embed = help_view.get_embed("all")
+            await interaction.response.edit_message(embed=embed, view=help_view)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user and interaction.user.id == self.author.id:
@@ -701,7 +758,7 @@ class HelpMenuView(discord.ui.View):
 
     def get_embed(self, key: str) -> discord.Embed:
         if key == "all":
-            return self._build_all_embed()
+            return self._all_pages[self.current_page]
 
         section = self.section_map.get(key)
         if section is None:
@@ -709,12 +766,38 @@ class HelpMenuView(discord.ui.View):
 
         return self._build_section_embed(section)
 
+    def _build_all_pages(self) -> list[discord.Embed]:
+        sections = list(self.section_order)
+        per_page = max(1, HELP_SECTIONS_PER_PAGE)
+        pages: list[discord.Embed] = []
+        total_pages = max(1, math.ceil(len(sections) / per_page))
+        for index in range(total_pages):
+            start = index * per_page
+            end = start + per_page
+            pages.append(self._build_all_embed(sections[start:end], index + 1, total_pages))
+        return pages
+
+    @property
+    def _all_page_count(self) -> int:
+        return max(1, len(self._all_pages))
+
+    def _sync_navigation(self) -> None:
+        has_multiple_pages = self._all_page_count > 1
+        for child in self.children:
+            if isinstance(child, (HelpMenuView.PreviousPageButton, HelpMenuView.NextPageButton)):
+                child.disabled = self.current_key != "all"
+        for child in self.children:
+            if isinstance(child, HelpMenuView.PreviousPageButton):
+                child.disabled = child.disabled or not has_multiple_pages or self.current_page <= 0
+            if isinstance(child, HelpMenuView.NextPageButton):
+                child.disabled = child.disabled or not has_multiple_pages or self.current_page >= self._all_page_count - 1
+
     async def on_timeout(self) -> None:
         if self.message is None:
             return
 
         for child in self.children:
-            if isinstance(child, discord.ui.Select):
+            if isinstance(child, (discord.ui.Select, discord.ui.Button)):
                 child.disabled = True
 
         await self.message.edit(view=self)
@@ -790,7 +873,9 @@ class Help(commands.Cog):
             return
 
         build_section_embed = lambda section: self._build_section_embed(section, strings)
-        build_all_embed = lambda: self._build_all_embed(sections, strings)
+        build_all_embed = lambda selected_sections, page, total_pages: self._build_all_embed(
+            selected_sections, strings, page=page, total_pages=total_pages
+        )
 
         view = HelpMenuView(
             author=ctx.author,
@@ -799,12 +884,17 @@ class Help(commands.Cog):
             build_section_embed=build_section_embed,
             build_all_embed=build_all_embed,
         )
-        embed = build_all_embed()
+        embed = build_all_embed(sections[:HELP_SECTIONS_PER_PAGE], 1, max(1, math.ceil(len(sections) / HELP_SECTIONS_PER_PAGE)))
         message = await ctx.send(embed=embed, view=view)
         view.message = message
 
     def _build_all_embed(
-        self, sections: Sequence[HelpSection], strings: HelpLocaleStrings
+        self,
+        sections: Sequence[HelpSection],
+        strings: HelpLocaleStrings,
+        *,
+        page: int = 1,
+        total_pages: int = 1,
     ) -> discord.Embed:
         embed = embeds.info_embed(strings.all_embed_description, title=strings.all_embed_title)
 
@@ -820,7 +910,10 @@ class Help(commands.Cog):
             )
             embed.add_field(name=section.label, value=formatted_commands, inline=False)
 
-        embed.set_footer(text=strings.footer_text)
+        footer_text = strings.footer_text
+        if total_pages > 1:
+            footer_text = f"{footer_text} • Page {page}/{total_pages}"
+        embed.set_footer(text=footer_text)
         return embed
 
     def _build_section_embed(

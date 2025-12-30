@@ -4097,6 +4097,64 @@ class Database:
             user_pet_id,
         )
 
+    async def sell_user_pet_for_gems(
+        self, user_id: int, user_pet_id: int, price: int
+    ) -> tuple[str, int, int, int]:
+        if price <= 0:
+            raise ValueError("Le prix de vente doit être positif.")
+
+        await self.ensure_user(user_id)
+        async with self.transaction() as connection:
+            pet_row = await connection.fetchrow(
+                """
+                SELECT id, user_id, is_active, on_market
+                FROM user_pets
+                WHERE id = $1
+                FOR UPDATE
+                """,
+                user_pet_id,
+            )
+            if pet_row is None:
+                return "missing", 0, 0, 0
+            if int(pet_row.get("user_id") or 0) != user_id:
+                return "forbidden", 0, 0, 0
+            if bool(pet_row.get("is_active")):
+                return "active", 0, 0, 0
+            if bool(pet_row.get("on_market")):
+                return "on_market", 0, 0, 0
+
+            balance_row = await connection.fetchrow(
+                "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            if balance_row is None:
+                raise DatabaseError("Utilisateur introuvable lors de la vente de pet.")
+
+            before_balance = int(balance_row.get("gems") or 0)
+            after_balance = before_balance + price
+
+            await connection.execute(
+                "DELETE FROM user_pets WHERE id = $1",
+                user_pet_id,
+            )
+            await connection.execute(
+                "UPDATE users SET gems = $2 WHERE user_id = $1",
+                user_id,
+                after_balance,
+            )
+            await self.record_transaction(
+                user_id=user_id,
+                transaction_type="pet_sell",
+                currency="gem",
+                amount=price,
+                balance_before=before_balance,
+                balance_after=after_balance,
+                description="Revente de pet",
+                connection=connection,
+            )
+
+        return "sold", price, before_balance, after_balance
+
     async def admin_transfer_user_pet(
         self,
         source_user_id: int,
