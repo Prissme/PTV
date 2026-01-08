@@ -19,6 +19,137 @@ from utils import embeds
 logger = logging.getLogger(__name__)
 
 
+class LeaderboardView(discord.ui.View):
+    """Vue paginée pour les classements économiques."""
+
+    def __init__(
+        self,
+        ctx: commands.Context,
+        cog: "Leaderboard",
+        *,
+        initial_type: str = "rap",
+    ) -> None:
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.cog = cog
+        self.current_type = initial_type
+        self.page = 0
+        self.total_entries = 0
+        self.per_page = LEADERBOARD_LIMIT
+        self.message: discord.Message | None = None
+        self._sync_buttons()
+
+    def _max_page(self) -> int:
+        if self.total_entries <= 0:
+            return 1
+        return max(1, (self.total_entries + self.per_page - 1) // self.per_page)
+
+    def _sync_buttons(self) -> None:
+        max_page = self._max_page()
+        if hasattr(self, "previous_page"):
+            self.previous_page.disabled = self.page <= 0
+        if hasattr(self, "next_page"):
+            self.next_page.disabled = self.page >= max_page - 1
+
+    async def _fetch_entries(self) -> tuple[list[tuple[int, int]], int, str, str]:
+        offset = self.page * self.per_page
+        if self.current_type == "pb":
+            rows, total = await self.cog.database.get_balance_leaderboard_page(
+                self.per_page, offset
+            )
+            entries = [(int(row["user_id"]), int(row["balance"])) for row in rows]
+            return entries, total, "Classement des plus riches", "PB"
+        if self.current_type == "gem":
+            rows, total = await self.cog.database.get_gem_leaderboard_page(
+                self.per_page, offset
+            )
+            entries = [(int(row["user_id"]), int(row["gems"])) for row in rows]
+            return entries, total, "Classement des gemmes", "GEM"
+        entries, total = await self.cog.database.get_pet_rap_leaderboard_page(
+            self.per_page, offset
+        )
+        return entries, total, "Classement des plus gros RAP", "RAP"
+
+    async def build_embed(self) -> discord.Embed:
+        try:
+            entries, total, title, symbol = await self._fetch_entries()
+        except Exception:
+            logger.exception("Impossible de récupérer le classement %s", self.current_type)
+            return embeds.error_embed("Impossible de récupérer le classement demandé.")
+
+        self.total_entries = total
+        self._sync_buttons()
+        return embeds.leaderboard_embed(
+            title=title,
+            entries=entries,
+            bot=self.cog.bot,
+            symbol=symbol,
+            start_rank=self.page * self.per_page + 1,
+        )
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seule la personne qui a lancé la commande peut utiliser ces boutons.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def _refresh(self, interaction: discord.Interaction) -> None:
+        embed = await self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary, row=0)
+    async def previous_page(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if self.page > 0:
+            self.page -= 1
+        await self._refresh(interaction)
+
+    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary, row=0)
+    async def next_page(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if self.page < self._max_page() - 1:
+            self.page += 1
+        await self._refresh(interaction)
+
+    @discord.ui.button(label="RAP", style=discord.ButtonStyle.primary, row=1)
+    async def show_rap(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.current_type = "rap"
+        self.page = 0
+        await self._refresh(interaction)
+
+    @discord.ui.button(label="PB", style=discord.ButtonStyle.secondary, row=1)
+    async def show_pb(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.current_type = "pb"
+        self.page = 0
+        await self._refresh(interaction)
+
+    @discord.ui.button(label="Gemmes", style=discord.ButtonStyle.secondary, row=1)
+    async def show_gems(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.current_type = "gem"
+        self.page = 0
+        await self._refresh(interaction)
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+
 class Leaderboard(commands.Cog):
     """Expose le classement économique minimal."""
 
@@ -43,12 +174,12 @@ class Leaderboard(commands.Cog):
             return
 
         try:
-            rows = await self.database.get_balance_leaderboard(TOP_PB_ROLE_LIMIT)
+            rows = await self.database.get_pet_rap_leaderboard(TOP_PB_ROLE_LIMIT)
         except Exception:
-            logger.exception("Impossible de récupérer le classement PB pour le rôle top.")
+            logger.exception("Impossible de récupérer le classement RAP pour le rôle top.")
             return
 
-        top_ids = {int(row["user_id"]) for row in rows}
+        top_ids = {int(user_id) for user_id, _value in rows}
         if not top_ids:
             return
 
@@ -59,7 +190,7 @@ class Leaderboard(commands.Cog):
             await self._sync_top_role_for_guild(role, top_ids)
 
     async def _sync_top_role_for_guild(self, role: discord.Role, top_ids: set[int]) -> None:
-        reason = "Mise à jour automatique du top 30 PB"
+        reason = "Mise à jour automatique du top 30 RAP"
         guild = role.guild
         members_to_remove = [
             member
@@ -91,14 +222,10 @@ class Leaderboard(commands.Cog):
 
     @commands.command(name="leaderboard", aliases=("lb",))
     async def leaderboard(self, ctx: commands.Context) -> None:
-        rows = await self.database.get_balance_leaderboard(LEADERBOARD_LIMIT)
-        embed = embeds.leaderboard_embed(
-            title="Classement des plus riches",
-            entries=[(row["user_id"], row["balance"]) for row in rows],
-            bot=self.bot,
-            symbol="PB",
-        )
-        await ctx.send(embed=embed)
+        view = LeaderboardView(ctx, self, initial_type="rap")
+        embed = await view.build_embed()
+        message = await ctx.send(embed=embed, view=view)
+        view.message = message
 
     @commands.command(name="gemlb", aliases=("gemleaderboard",))
     async def gem_leaderboard(self, ctx: commands.Context) -> None:
@@ -120,7 +247,7 @@ class Leaderboard(commands.Cog):
             return
 
         embed = embeds.leaderboard_embed(
-            title="Classement RAP des collectionneurs",
+            title="Classement des plus gros RAP",
             entries=[(user_id, rap) for user_id, rap in rows],
             bot=self.bot,
             symbol="RAP",

@@ -387,6 +387,7 @@ class PetZoneDefinition:
 
 
 EGG_FRENZY_LUCK_BONUS: Final[float] = 0.50
+REBIRTH_EGG_LUCK_BONUS: Final[float] = 0.50
 EGG_FRENZY_START_TIME: Final[time] = time(hour=20, minute=0)
 EGG_FRENZY_END_TIME: Final[time] = time(hour=21, minute=0)
 EGG_FRENZY_TIMEZONE: Final[timezone] = _resolve_timezone(
@@ -659,42 +660,42 @@ _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name="Shelly",
         rarity="Commun",
-        image_url="https://example.com/document43.png",
+        image_url="https://cdn.discordapp.com/emojis/1430584949215596654.png",
         base_income_per_hour=10,
         drop_rate=0.50,
     ),
     PetDefinition(
         name="Colt",
         rarity="Atypique",
-        image_url="https://example.com/document44.png",
+        image_url="https://cdn.discordapp.com/emojis/1430585480394838196.png",
         base_income_per_hour=15,
         drop_rate=0.25,
     ),
     PetDefinition(
         name="Barley",
         rarity="Rare",
-        image_url="https://example.com/document45.png",
+        image_url="https://cdn.discordapp.com/emojis/1430586754041381036.png",
         base_income_per_hour=30,
         drop_rate=0.15,
     ),
     PetDefinition(
         name="Poco",
         rarity="Rare",
-        image_url="https://example.com/document46.png",
+        image_url="https://cdn.discordapp.com/emojis/1430586108336672878.png",
         base_income_per_hour=60,
         drop_rate=0.08,
     ),
     PetDefinition(
         name="Rosa",
         rarity="Épique",
-        image_url="https://example.com/document47.png",
+        image_url="https://cdn.discordapp.com/emojis/1430584871406928075.png",
         base_income_per_hour=150,
         drop_rate=0.019,
     ),
     PetDefinition(
         name=HUGE_PET_NAME,
         rarity="Secret",
-        image_url="https://example.com/document48.png",
+        image_url="https://cdn.discordapp.com/emojis/1430587331819212831.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.00015,
         is_huge=True,
@@ -978,7 +979,7 @@ _MEXICO_EGG_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name="Mina",
         rarity="Mythique",
-        image_url="https://cdn.discordapp.com/emojis/1430584871406928075.png",
+        image_url="https://cdn.discordapp.com/emojis/1437826273673089238.png",
         base_income_per_hour=9_000_000,
         drop_rate=0.099999,
     ),
@@ -1084,6 +1085,7 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         grade_required=3,
         entry_cost=50_000,
         eggs=_eggs_for_zone(FORET_ZONE_SLUG),
+        egg_mastery_required=3,
     ),
     PetZoneDefinition(
         name="Manoir Hanté",
@@ -1091,6 +1093,8 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         grade_required=7,
         entry_cost=500_000,
         eggs=_eggs_for_zone(MANOIR_ZONE_SLUG),
+        egg_mastery_required=5,
+        pet_mastery_required=5,
     ),
     PetZoneDefinition(
         name="Zone Robotique",

@@ -314,11 +314,12 @@ def leaderboard_embed(
     entries: Sequence[tuple[int, int]],
     bot: commands.Bot,
     symbol: str,
+    start_rank: int = 1,
 ) -> discord.Embed:
     embed = _base_embed(title, "", color=Colors.GOLD)
     lines = []
     normalized_symbol = symbol.upper()
-    for rank, (user_id, value) in enumerate(entries, start=1):
+    for rank, (user_id, value) in enumerate(entries, start=start_rank):
         user = bot.get_user(user_id)
         name = user.display_name if user else f"Utilisateur {user_id}"
         if normalized_symbol == "PB":
@@ -530,19 +531,21 @@ def rank_profile_embed(
     member: discord.Member,
     balance: int,
     gems: int,
+    rap_total: int,
     best_pet_name: str | None,
     best_pet_value: int,
-    pb_rank: int,
-    pb_total: int,
+    rap_rank: int,
+    rap_total_players: int,
 ) -> discord.Embed:
     description = (
-        "Voici un aperçu rapide de tes stats économiques et de ton rang PB."
+        "Voici un aperçu rapide de tes stats économiques et de ton rang RAP."
     )
     embed = _base_embed("🏆 Carte de joueur", description, color=Colors.PRIMARY)
     _set_member_author(embed, member)
     _set_member_thumbnail(embed, member)
     embed.add_field(name="💰 PB", value=format_currency(balance), inline=True)
     embed.add_field(name="💎 Gemmes", value=format_gems(gems), inline=True)
+    embed.add_field(name="📊 RAP total", value=format_gems(rap_total), inline=True)
 
     if best_pet_name and best_pet_value > 0:
         pet_label = f"{pet_emoji(best_pet_name)} {best_pet_name}"
@@ -551,11 +554,11 @@ def rank_profile_embed(
         best_pet_line = "Aucun pet enregistré."
     embed.add_field(name="🐾 Meilleur pet", value=best_pet_line, inline=False)
 
-    if pb_rank > 0 and pb_total > 0:
-        rank_line = f"**#{pb_rank}** sur **{pb_total}**"
+    if rap_rank > 0 and rap_total_players > 0:
+        rank_line = f"**#{rap_rank}** sur **{rap_total_players}**"
     else:
         rank_line = "Classement indisponible."
-    embed.add_field(name="🏅 Classement PB", value=rank_line, inline=True)
+    embed.add_field(name="🏅 Classement RAP", value=rank_line, inline=True)
     return _finalize_embed(embed)
 
 

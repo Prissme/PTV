@@ -31,6 +31,7 @@ from config import (
     PET_ZONES,
     POTION_DEFINITIONS,
     EGG_FRENZY_LUCK_BONUS,
+    REBIRTH_EGG_LUCK_BONUS,
     get_egg_frenzy_window,
     is_egg_frenzy_active,
     RAINBOW_PET_CHANCE,
@@ -232,28 +233,28 @@ GEMSHOP_ROLE_OFFERS: Final[tuple[GemshopRoleOffer, ...]] = (
         role_id=EGG_LUCK_ROLE_ID,
         description="+30% d'XP • +10% Luck dans les œufs",
         price=5_000,
-        stock=4,
+        stock=7,
         slug="luck",
     ),
     GemshopRoleOffer(
         role_id=VOICE_XP_ROLE_ID,
         description="+15% d'XP • Salon voc illimité",
         price=1_500,
-        stock=10,
+        stock=13,
         slug="vocal",
     ),
     GemshopRoleOffer(
         role_id=XP_BOOST_ROLE_ID,
         description="+50% d'XP",
         price=4_000,
-        stock=4,
+        stock=7,
         slug="xp",
     ),
     GemshopRoleOffer(
         role_id=STEAL_PROTECTED_ROLE_ID,
         description="Divise par 10 les chances de vol",
         price=10_000,
-        stock=4,
+        stock=7,
         slug="protege",
     ),
 )
@@ -1769,6 +1770,57 @@ class Pets(commands.Cog):
         self._last_clock_sample = current
         return current
 
+    def _build_egg_luck_breakdown(
+        self,
+        *,
+        mastery_perks: EggMasteryPerks | None,
+        active_potion: tuple[PotionDefinition, datetime] | None,
+        frenzy_active: bool,
+        rebirth_count: int,
+        enchantments: Mapping[str, int] | None,
+        has_luck_role: bool,
+    ) -> tuple[float, list[str]]:
+        total_bonus = 0.0
+        lines: list[str] = []
+
+        if mastery_perks and mastery_perks.luck_bonus > 0:
+            bonus = max(0.0, float(mastery_perks.luck_bonus))
+            total_bonus += bonus
+            lines.append(f"Maîtrise des œufs : +{bonus * 100:.0f}%")
+
+        if active_potion:
+            potion_definition, potion_expires_at = active_potion
+            if (
+                potion_definition.effect_type == "egg_luck"
+                and potion_expires_at > self._monotonic_now()
+            ):
+                bonus = max(0.0, float(potion_definition.effect_value))
+                total_bonus += bonus
+                lines.append(f"Potion : +{bonus * 100:.0f}%")
+
+        if frenzy_active:
+            bonus = max(0.0, float(EGG_FRENZY_LUCK_BONUS))
+            total_bonus += bonus
+            lines.append(f"Egg Frenzy : +{bonus * 100:.0f}%")
+
+        if rebirth_count > 0:
+            bonus = max(0.0, float(REBIRTH_EGG_LUCK_BONUS))
+            total_bonus += bonus
+            lines.append(f"Rebirth : +{bonus * 100:.0f}%")
+
+        if enchantments:
+            bonus = compute_egg_luck_bonus(enchantments.get("egg_luck", 0))
+            if bonus > 0:
+                total_bonus += bonus
+                lines.append(f"Enchantement chance : +{bonus * 100:.0f}%")
+
+        if has_luck_role:
+            bonus = 0.10
+            total_bonus += bonus
+            lines.append(f"Rôle chance : +{bonus * 100:.0f}%")
+
+        return total_bonus, lines
+
     @staticmethod
     def _compute_huge_income(
         reference_income: int | None,
@@ -2709,6 +2761,7 @@ class Pets(commands.Cog):
         pet_mastery_perks: PetMasteryPerks | None = None,
         clan_shiny_multiplier: float = 1.0,
         active_potion: tuple[PotionDefinition, datetime] | None = None,
+        rebirth_count: int = 0,
         charge_cost: bool = True,
         bonus: bool = False,
         price_multiplier: int = 1,
@@ -2766,6 +2819,8 @@ class Pets(commands.Cog):
                 effective_luck_bonus += max(0.0, float(potion_definition.effect_value))
         if frenzy_active:
             effective_luck_bonus += max(0.0, float(EGG_FRENZY_LUCK_BONUS))
+        if rebirth_count > 0:
+            effective_luck_bonus += max(0.0, float(REBIRTH_EGG_LUCK_BONUS))
         if enchantments:
             effective_luck_bonus += compute_egg_luck_bonus(
                 enchantments.get("egg_luck", 0)
@@ -2953,6 +3008,8 @@ class Pets(commands.Cog):
         results: Sequence[PetHatchResult],
         *,
         mastery_perks: EggMasteryPerks | None = None,
+        luck_bonus_total: float = 0.0,
+        luck_bonus_lines: Sequence[str] | None = None,
         channel_override: discord.abc.Messageable | None = None,
     ) -> None:
         target_channel = channel_override or ctx.channel
@@ -3051,6 +3108,25 @@ class Pets(commands.Cog):
                     )
                 embed.set_footer(text=footer_text)
 
+        if luck_bonus_lines is not None:
+            if luck_bonus_lines:
+                bonus_details = [f"Bonus total : **+{luck_bonus_total * 100:.0f}%**"]
+                bonus_details.extend(f"• {line}" for line in luck_bonus_lines)
+            else:
+                bonus_details = [
+                    f"Bonus total : **+{luck_bonus_total * 100:.0f}%**",
+                    "Aucun bonus actif.",
+                ]
+            embed.add_field(
+                name="🍀 Bonus de chance",
+                value="\n".join(bonus_details),
+                inline=False,
+            )
+
+        embed.set_author(
+            name=ctx.author.display_name,
+            icon_url=ctx.author.display_avatar.url,
+        )
         replay_view = HatchReplayView(ctx, self, egg.slug)
         replay_view.message = message
         await message.edit(content=egg_emoji, embed=embed, view=replay_view)
@@ -3342,6 +3418,24 @@ class Pets(commands.Cog):
             else:
                 log_context["active_potion"] = None
 
+            log_context["stage"] = "fetch_enchantments"
+            enchantments = await self.database.get_enchantment_powers(ctx.author.id)
+            log_context["enchantments_loaded"] = bool(enchantments)
+
+            frenzy_active = is_egg_frenzy_active()
+            has_luck_role = (
+                isinstance(ctx.author, discord.Member)
+                and any(role.id == EGG_LUCK_ROLE_ID for role in ctx.author.roles)
+            )
+            luck_bonus_total, luck_bonus_lines = self._build_egg_luck_breakdown(
+                mastery_perks=egg_perks,
+                active_potion=active_potion,
+                frenzy_active=frenzy_active,
+                rebirth_count=rebirth_count,
+                enchantments=enchantments,
+                has_luck_role=has_luck_role,
+            )
+
             log_context["stage"] = "hatch_primary"
             primary_result = await self._hatch_pet(
                 ctx,
@@ -3350,6 +3444,7 @@ class Pets(commands.Cog):
                 clan_shiny_multiplier=clan_shiny_multiplier,
                 active_potion=active_potion,
                 mastery_perks=egg_perks,
+                rebirth_count=rebirth_count,
                 price_multiplier=price_multiplier,
                 force_gold=force_gold_request,
                 index_bonus=index_bonus_ratio,
@@ -3391,6 +3486,7 @@ class Pets(commands.Cog):
                         clan_shiny_multiplier=clan_shiny_multiplier,
                         active_potion=active_potion,
                         mastery_perks=egg_perks,
+                        rebirth_count=rebirth_count,
                         charge_cost=False,
                         bonus=True,
                         index_bonus=index_bonus_ratio,
@@ -3405,6 +3501,8 @@ class Pets(commands.Cog):
                 egg_definition,
                 results,
                 mastery_perks=egg_perks,
+                luck_bonus_total=luck_bonus_total,
+                luck_bonus_lines=luck_bonus_lines,
                 channel_override=target_channel,
             )
 
@@ -4104,7 +4202,26 @@ class Pets(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    async def _fetch_gemshop_state(self, user_id: int) -> GemshopState:
+    def _fetch_gemshop_role_counts(
+        self, guild: discord.Guild | None = None
+    ) -> Dict[int, int]:
+        counts: Dict[int, int] = {}
+        guilds = [guild] if guild is not None else list(self.bot.guilds)
+        for offer in GEMSHOP_ROLE_OFFERS:
+            total = 0
+            for candidate in guilds:
+                if candidate is None:
+                    continue
+                role = candidate.get_role(offer.role_id)
+                if role is None:
+                    continue
+                total += sum(1 for member in role.members if not member.bot)
+            counts[offer.role_id] = total
+        return counts
+
+    async def _fetch_gemshop_state(
+        self, user_id: int, *, guild: discord.Guild | None = None
+    ) -> GemshopState:
         grade_level = await self.database.get_grade_level(user_id)
         extra_slots = await self.database.get_extra_pet_slots(user_id)
         base_capacity = BASE_PET_SLOTS + grade_level
@@ -4118,7 +4235,7 @@ class Pets(commands.Cog):
             and total_slots < hard_cap
         ):
             next_cost = self._compute_slot_purchase_cost(extra_slots)
-        role_sales = await self.database.get_gemshop_role_sales()
+        role_sales = self._fetch_gemshop_role_counts(guild)
         return GemshopState(
             grade_level=grade_level,
             base_capacity=base_capacity,
@@ -4206,7 +4323,8 @@ class Pets(commands.Cog):
     async def _attempt_gemshop_purchase(
         self, user: discord.abc.User
     ) -> GemshopPurchaseResult:
-        state = await self._fetch_gemshop_state(user.id)
+        guild = user.guild if isinstance(user, discord.Member) else None
+        state = await self._fetch_gemshop_state(user.id, guild=guild)
 
         if state.has_reached_hard_cap or state.base_capacity >= state.hard_cap:
             embed = embeds.error_embed(
@@ -4274,13 +4392,13 @@ class Pets(commands.Cog):
                     transaction_type="gemshop_refund",
                     description="Remboursement slot pets",
                 )
-            new_state = await self._fetch_gemshop_state(user.id)
+            new_state = await self._fetch_gemshop_state(user.id, guild=guild)
             embed = embeds.error_embed(
                 "Impossible d'ajouter un slot supplémentaire pour le moment. Tes fonds ont été remboursés."
             )
             return GemshopPurchaseResult(embed=embed, state=new_state, success=False)
 
-        new_state = await self._fetch_gemshop_state(user.id)
+        new_state = await self._fetch_gemshop_state(user.id, guild=guild)
         lines = [
             f"Slot acheté pour {self._format_slot_cost(price)}.",
             f"Tu peux maintenant équiper **{new_state.total_slots}** pet{'s' if new_state.total_slots > 1 else ''}.",
@@ -4313,12 +4431,7 @@ class Pets(commands.Cog):
         *,
         guild: discord.Guild | None = None,
     ) -> GemshopPurchaseResult:
-        state = await self._fetch_gemshop_state(user.id)
-        sold = int(state.role_sales.get(offer.role_id, 0))
-        remaining = offer.stock - sold
-        if remaining <= 0:
-            embed = embeds.error_embed("Ce rôle est déjà en rupture de stock.")
-            return GemshopPurchaseResult(embed=embed, state=state, success=False)
+        state = await self._fetch_gemshop_state(user.id, guild=guild)
 
         if not isinstance(user, discord.Member) or guild is None:
             embed = embeds.error_embed(
@@ -4329,6 +4442,11 @@ class Pets(commands.Cog):
         role = guild.get_role(offer.role_id)
         if role is None:
             embed = embeds.error_embed("Impossible de trouver ce rôle sur le serveur.")
+            return GemshopPurchaseResult(embed=embed, state=state, success=False)
+        current_count = sum(1 for member in role.members if not member.bot)
+        remaining = offer.stock - current_count
+        if remaining <= 0:
+            embed = embeds.error_embed("Ce rôle est déjà en rupture de stock.")
             return GemshopPurchaseResult(embed=embed, state=state, success=False)
         if role in user.roles:
             embed = embeds.error_embed("Tu possèdes déjà ce rôle.")
@@ -4363,13 +4481,13 @@ class Pets(commands.Cog):
             await self.database.refund_gemshop_role_purchase(
                 user.id, role_id=offer.role_id, price=offer.price
             )
-            new_state = await self._fetch_gemshop_state(user.id)
+            new_state = await self._fetch_gemshop_state(user.id, guild=guild)
             embed = embeds.error_embed(
                 "Impossible d'attribuer le rôle automatiquement. Tes gemmes ont été remboursées."
             )
             return GemshopPurchaseResult(embed=embed, state=new_state, success=False)
 
-        new_state = await self._fetch_gemshop_state(user.id)
+        new_state = await self._fetch_gemshop_state(user.id, guild=guild)
         gems_after = int(purchase.get("buyer_after", 0))
         lines = [
             f"{role.mention} acheté pour {embeds.format_gems(offer.price)}.",
@@ -4387,7 +4505,7 @@ class Pets(commands.Cog):
     async def gemshop(self, ctx: commands.Context, *, action: str | None = None) -> None:
         await self.database.ensure_user(ctx.author.id)
 
-        state = await self._fetch_gemshop_state(ctx.author.id)
+        state = await self._fetch_gemshop_state(ctx.author.id, guild=ctx.guild)
 
         raw_action = (action or "").strip()
         normalized_action = raw_action.lower().replace(" ", "").replace("-", "")

@@ -162,6 +162,12 @@ MILLIONAIRE_RACE_REWARD_POOL: tuple[MillionaireRaceReward, ...] = (
         slug="mastery_xp",
         scales_with_stage=True,
     ),
+    MillionaireRaceReward(
+        "Gemmes",
+        "gems",
+        base_quantity=500,
+        scales_with_stage=True,
+    ),
 )
 
 MILLIONAIRE_RACE_STAGES: tuple[MillionaireRaceStage, ...] = (
@@ -1032,6 +1038,8 @@ class MillionaireRaceSession:
             label = self._format_pet_name(reward.pet_name)
         elif reward.reward_type == "potion" and reward.slug and not reward.label:
             label = self._format_potion_display(reward.slug)
+        elif reward.reward_type == "gems":
+            return embeds.format_gems(display_quantity)
         if display_quantity > 1:
             return f"{label} ×{display_quantity}"
         return label
@@ -1046,6 +1054,13 @@ class MillionaireRaceSession:
             if reward.reward_type == "potion" and reward.slug:
                 await self.database.add_user_potion(
                     self.ctx.author.id, reward.slug, quantity=quantity
+                )
+            elif reward.reward_type == "gems":
+                await self.database.increment_gems(
+                    self.ctx.author.id,
+                    quantity,
+                    transaction_type="millionaire_race_reward",
+                    description="Récompense Millionaire Race",
                 )
             elif reward.reward_type == "pet":
                 for _ in range(quantity):
