@@ -2967,6 +2967,42 @@ class Database:
         query = "SELECT user_id, gems FROM users ORDER BY gems DESC LIMIT $1"
         return await self.pool.fetch(query, limit)
 
+    async def get_balance_leaderboard_page(
+        self, limit: int, offset: int
+    ) -> tuple[Sequence[asyncpg.Record], int]:
+        clamped_limit = max(0, int(limit))
+        clamped_offset = max(0, int(offset))
+        total_row = await self.pool.fetchrow("SELECT COUNT(*) AS total FROM users")
+        total = int(total_row["total"]) if total_row else 0
+        if clamped_limit == 0 or total <= 0:
+            return [], total
+        query = """
+            SELECT user_id, balance
+            FROM users
+            ORDER BY balance DESC
+            LIMIT $1 OFFSET $2
+        """
+        rows = await self.pool.fetch(query, clamped_limit, clamped_offset)
+        return rows, total
+
+    async def get_gem_leaderboard_page(
+        self, limit: int, offset: int
+    ) -> tuple[Sequence[asyncpg.Record], int]:
+        clamped_limit = max(0, int(limit))
+        clamped_offset = max(0, int(offset))
+        total_row = await self.pool.fetchrow("SELECT COUNT(*) AS total FROM users")
+        total = int(total_row["total"]) if total_row else 0
+        if clamped_limit == 0 or total <= 0:
+            return [], total
+        query = """
+            SELECT user_id, gems
+            FROM users
+            ORDER BY gems DESC
+            LIMIT $1 OFFSET $2
+        """
+        rows = await self.pool.fetch(query, clamped_limit, clamped_offset)
+        return rows, total
+
     async def get_mastery_leaderboard(
         self, mastery_slug: str, limit: int
     ) -> Sequence[asyncpg.Record]:
@@ -3147,11 +3183,7 @@ class Database:
         """
         return await self.pool.fetch(query, limit)
 
-    async def get_pet_rap_leaderboard(self, limit: int) -> list[tuple[int, int]]:
-        clamped_limit = max(0, int(limit))
-        if clamped_limit == 0:
-            return []
-
+    async def _compute_pet_rap_totals(self) -> list[tuple[int, int]]:
         market_values = await self.get_pet_market_values()
         rows = await self.pool.fetch(
             """
@@ -3161,7 +3193,6 @@ class Database:
                 up.is_gold,
                 up.is_huge,
                 up.is_rainbow,
-
                 up.is_galaxy,
                 up.is_shiny,
                 up.huge_level,
@@ -3204,8 +3235,44 @@ class Database:
                 value = clamp_income_value(value, minimum=HUGE_PET_MIN_INCOME)
             rap_totals[user_id] += max(0, int(value))
 
-        sorted_totals = sorted(rap_totals.items(), key=lambda item: item[1], reverse=True)
+        return sorted(rap_totals.items(), key=lambda item: item[1], reverse=True)
+
+    async def get_pet_rap_leaderboard(self, limit: int) -> list[tuple[int, int]]:
+        clamped_limit = max(0, int(limit))
+        if clamped_limit == 0:
+            return []
+
+        sorted_totals = await self._compute_pet_rap_totals()
         return sorted_totals[:clamped_limit]
+
+    async def get_pet_rap_leaderboard_page(
+        self, limit: int, offset: int
+    ) -> tuple[list[tuple[int, int]], int]:
+        clamped_limit = max(0, int(limit))
+        clamped_offset = max(0, int(offset))
+        sorted_totals = await self._compute_pet_rap_totals()
+        total = len(sorted_totals)
+        if clamped_limit == 0 or total == 0:
+            return [], total
+        return sorted_totals[clamped_offset : clamped_offset + clamped_limit], total
+
+    async def get_user_pet_rap_rank(self, user_id: int) -> Mapping[str, int]:
+        await self.ensure_user(user_id)
+        sorted_totals = await self._compute_pet_rap_totals()
+        rap_total = 0
+        rank = 0
+        for idx, (entry_user_id, value) in enumerate(sorted_totals, start=1):
+            if int(entry_user_id) == user_id:
+                rap_total = int(value)
+                rank = idx
+                break
+        if rank == 0:
+            rap_total = await self.get_user_pet_rap(user_id)
+            rank = 1 + sum(1 for _user_id, value in sorted_totals if value > rap_total)
+
+        total_row = await self.pool.fetchrow("SELECT COUNT(*) AS total FROM users")
+        total = int(total_row["total"]) if total_row else 0
+        return {"rap_total": int(rap_total), "rank": int(rank), "total": int(total)}
 
     async def get_user_pet_rap(
         self,

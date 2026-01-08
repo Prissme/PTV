@@ -397,10 +397,11 @@ class GradeSystem(commands.Cog):
             return
 
         try:
-            gems, best_pet, rank_data = await asyncio.gather(
+            balance, gems, best_pet, rank_data = await asyncio.gather(
+                self.database.fetch_balance(target.id),
                 self.database.fetch_gems(target.id),
                 self.database.get_user_best_pet_value(target.id),
-                self.database.get_user_balance_rank(target.id),
+                self.database.get_user_pet_rap_rank(target.id),
             )
         except Exception:
             logger.exception("Impossible de récupérer les stats pour %s", target.id)
@@ -410,12 +411,13 @@ class GradeSystem(commands.Cog):
         best_pet_name, best_pet_value = best_pet
         embed = embeds.rank_profile_embed(
             member=target,
-            balance=int(rank_data.get("balance", 0)),
+            balance=int(balance),
             gems=int(gems),
+            rap_total=int(rank_data.get("rap_total", 0)),
             best_pet_name=best_pet_name,
             best_pet_value=int(best_pet_value),
-            pb_rank=int(rank_data.get("rank", 0)),
-            pb_total=int(rank_data.get("total", 0)),
+            rap_rank=int(rank_data.get("rank", 0)),
+            rap_total_players=int(rank_data.get("total", 0)),
         )
         await ctx.send(embed=embed)
 
