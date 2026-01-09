@@ -7,6 +7,7 @@ import asyncio
 import os
 import random
 import sys
+import statistics
 from collections import defaultdict
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -64,6 +65,10 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 _HUGE_PET_NAME_LOOKUP = {name.lower() for name in HUGE_PET_NAMES}
+_MARKET_HISTORY_SAMPLE = 20
+_MARKET_BASE_MULTIPLIER = 120
+_MARKET_MIN_MULTIPLIER = 0.6
+_MARKET_MAX_MULTIPLIER = 2.5
 
 
 @dataclass(frozen=True)
@@ -5350,15 +5355,29 @@ class Database:
 
         rows = await self.pool.fetch(
             """
-            SELECT pet_id, is_gold, is_rainbow, is_galaxy, is_shiny, price
-            FROM pet_trade_history
-            ORDER BY recorded_at DESC, id DESC
-        """
+            SELECT
+                h.pet_id,
+                h.is_gold,
+                h.is_rainbow,
+                h.is_galaxy,
+                h.is_shiny,
+                h.price,
+                p.base_income_per_hour,
+                p.name
+            FROM pet_trade_history AS h
+            JOIN pets AS p ON p.pet_id = h.pet_id
+            ORDER BY h.recorded_at DESC, h.id DESC
+            """
         )
 
-        latest_values: Dict[Tuple[int, str], int] = {}
+        prices_by_key: Dict[Tuple[int, str], list[int]] = defaultdict(list)
+        base_income_by_pet: Dict[int, int] = {}
+        name_by_pet: Dict[int, str] = {}
         for row in rows:
             pet_id = int(row["pet_id"])
+            price = int(row["price"])
+            if price <= 0:
+                continue
             code = self._build_variant_code(
                 bool(row.get("is_gold")),
                 bool(row.get("is_rainbow")),
@@ -5366,10 +5385,38 @@ class Database:
                 bool(row.get("is_shiny")),
             )
             key = (pet_id, code)
-            if key in latest_values:
+            prices = prices_by_key[key]
+            if len(prices) >= _MARKET_HISTORY_SAMPLE:
                 continue
-            latest_values[key] = int(row["price"])
-        return latest_values
+            prices.append(price)
+            if pet_id not in base_income_by_pet:
+                base_income_by_pet[pet_id] = int(row.get("base_income_per_hour") or 0)
+            if pet_id not in name_by_pet:
+                name_by_pet[pet_id] = str(row.get("name", ""))
+
+        market_values: Dict[Tuple[int, str], int] = {}
+        for (pet_id, code), prices in prices_by_key.items():
+            if not prices:
+                continue
+            median_price = statistics.median(prices)
+            value = int(round(median_price))
+            base_income = base_income_by_pet.get(pet_id, 0)
+            base_value = max(base_income * _MARKET_BASE_MULTIPLIER, 1_000)
+            pet_name = name_by_pet.get(pet_id, "")
+            if pet_name.lower() in _HUGE_PET_NAME_LOOKUP:
+                multiplier = get_huge_level_multiplier(pet_name, 1)
+                bonus_floor = safe_multiply_income(base_income, multiplier * 150)
+                base_value = max(base_value, bonus_floor)
+                base_value = clamp_income_value(base_value, minimum=HUGE_PET_MIN_INCOME)
+            min_value = max(1, int(base_value * _MARKET_MIN_MULTIPLIER))
+            max_value = max(min_value, int(base_value * _MARKET_MAX_MULTIPLIER))
+            if value < min_value:
+                value = min_value
+            elif value > max_value:
+                value = max_value
+            market_values[(pet_id, code)] = max(0, int(value))
+
+        return market_values
 
     # ------------------------------------------------------------------
     # King of the Hill
