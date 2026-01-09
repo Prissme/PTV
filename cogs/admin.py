@@ -450,6 +450,66 @@ class Admin(commands.Cog):
         embed = embeds.info_embed(description, title="Statistiques base de données")
         await ctx.send(embed=embed)
 
+    @commands.command(name="analytics")
+    @commands.is_owner()
+    async def analytics(self, ctx: commands.Context) -> None:
+        """Admin: Résumé système et analytics avancées."""
+
+        try:
+            totals = await self.database.get_server_economy_totals()
+            pet_values = await self.database.get_pet_value_overview()
+        except DatabaseError as exc:
+            await ctx.send(embed=embeds.error_embed(str(exc)))
+            return
+
+        summary_lines = [
+            "EcoBot est un bot d'économie complet centré sur les pets, l'épargne et le commerce.",
+            "Les joueurs gagnent des PB via le daily, l'activité et les revenus des pets équipés.",
+            "Les gemmes servent aux achats premium (boutique, enchères, échanges spéciaux).",
+            "Le RAP mesure la valeur cumulée des pets possédés (base + variations).",
+            "Un marché et des annonces permettent de vendre/échanger des pets entre joueurs.",
+            "Les systèmes de grades, clans, potions et enchantements enrichissent la progression.",
+        ]
+        embed = embeds.info_embed("\n".join(summary_lines), title="📊 Analytics admin")
+
+        totals_lines = [
+            f"💰 PB totaux : **{embeds.format_currency(totals['total_pb'])}**",
+            f"💎 Gemmes totales : **{embeds.format_gems(totals['total_gems'])}**",
+            f"📈 RAP total : **{embeds.format_gems(totals['total_rap'])}**",
+        ]
+        embed.add_field(name="Totaux serveur", value="\n".join(totals_lines), inline=False)
+        await ctx.send(embed=embed)
+
+        if not pet_values:
+            await ctx.send(embed=embeds.warning_embed("Aucun pet trouvé pour calculer les valeurs."))
+            return
+
+        sorted_values = sorted(pet_values, key=lambda item: int(item["value"]), reverse=True)
+        pet_lines: list[str] = []
+        for pet in sorted_values:
+            name = str(pet["name"])
+            emoji = PET_EMOJIS.get(name, PET_EMOJIS.get("default", "🐾"))
+            value = embeds.format_gems(int(pet["value"]))
+            pet_lines.append(f"{emoji} **{name}** — {value}")
+
+        chunk: list[str] = []
+        chunk_length = 0
+        chunks: list[str] = []
+        for line in pet_lines:
+            line_length = len(line) + 1
+            if chunk and chunk_length + line_length > 900:
+                chunks.append("\n".join(chunk))
+                chunk = []
+                chunk_length = 0
+            chunk.append(line)
+            chunk_length += line_length
+        if chunk:
+            chunks.append("\n".join(chunk))
+
+        for index, block in enumerate(chunks, start=1):
+            title = "🐾 Valeur des pets" if index == 1 else f"🐾 Valeur des pets (suite {index})"
+            await ctx.send(embed=embeds.info_embed(block, title=title))
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Admin(bot))

@@ -6778,3 +6778,51 @@ class Database:
         if row is None:
             raise DatabaseError("Impossible de récupérer les statistiques de la base")
         return row
+
+    async def get_server_economy_totals(self) -> Mapping[str, int]:
+        row = await self.pool.fetchrow(
+            """
+            SELECT
+                COALESCE(SUM(balance), 0) AS total_pb,
+                COALESCE(SUM(gems), 0) AS total_gems
+            FROM users
+            """
+        )
+        if row is None:
+            raise DatabaseError("Impossible de récupérer les statistiques économiques")
+        total_rap = await self.get_total_pet_rap()
+        return {
+            "total_pb": int(row["total_pb"]),
+            "total_gems": int(row["total_gems"]),
+            "total_rap": int(total_rap),
+        }
+
+    async def get_total_pet_rap(self) -> int:
+        sorted_totals = await self._compute_pet_rap_totals()
+        return sum(int(value) for _, value in sorted_totals)
+
+    async def get_pet_value_overview(self) -> Sequence[Mapping[str, int | str]]:
+        pets = await self.get_all_pets()
+        market_values = await self.get_pet_market_values()
+        results: list[dict[str, int | str]] = []
+        for pet in pets:
+            pet_id = int(pet["pet_id"])
+            base_income = int(pet["base_income_per_hour"])
+            value = self._resolve_market_price(
+                pet_id,
+                is_gold=False,
+                is_rainbow=False,
+                is_galaxy=False,
+                is_shiny=False,
+                market_values=market_values,
+            )
+            if value <= 0:
+                value = max(base_income * 120, 1_000)
+            results.append(
+                {
+                    "pet_id": pet_id,
+                    "name": str(pet["name"]),
+                    "value": int(value),
+                }
+            )
+        return results
