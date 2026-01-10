@@ -87,6 +87,7 @@ __all__ = [
     "user_activity_embed",
     "rank_profile_embed",
     "grade_profile_embed",
+    "quests_embed",
     "grade_completed_embed",
     "pet_animation_embed",
     "pet_reveal_embed",
@@ -176,8 +177,20 @@ def balance_embed(
     return _finalize_embed(embed)
 
 
-def daily_embed(member: discord.Member, *, amount: int) -> discord.Embed:
-    description = f"Tu as reçu {format_currency(amount)} aujourd'hui."
+def daily_embed(
+    member: discord.Member,
+    *,
+    amount: int,
+    gems: int = 0,
+    streak: int = 0,
+    streak_bonus: float = 0.0,
+) -> discord.Embed:
+    lines = [f"Tu as reçu {format_currency(amount)} aujourd'hui."]
+    if gems:
+        lines.append(f"Bonus gemmes : {format_gems(gems)}")
+    if streak > 0:
+        lines.append(f"Streak actuel : **{streak}** (+{streak_bonus * 100:.0f}%)")
+    description = "\n".join(lines)
     embed = _base_embed(f"{Emojis.DAILY} Récompense quotidienne", description, color=Colors.SUCCESS)
     _set_member_thumbnail(embed, member)
     embed.set_footer(text="Reviens demain pour récupérer ta prochaine récompense !")
@@ -523,6 +536,33 @@ def grade_profile_embed(
     embed = _base_embed(f"{Emojis.XP} Profil de grade", description, color=Colors.INFO)
     _set_member_author(embed, member)
     embed.add_field(name="Quêtes", value="\n".join(quest_lines), inline=False)
+    return _finalize_embed(embed)
+
+
+def quests_embed(
+    *,
+    member: discord.Member,
+    daily_lines: Sequence[str],
+    weekly_lines: Sequence[str],
+    progression_lines: Sequence[str],
+    reward_line: str | None = None,
+) -> discord.Embed:
+    description = "Retrouve ici tes quêtes et les récompenses associées."
+    embed = _base_embed("📜 Journal des quêtes", description, color=Colors.INFO)
+    _set_member_author(embed, member)
+    daily_value = "\n".join(daily_lines) if daily_lines else "Aucune quête quotidienne active."
+    weekly_value = "\n".join(weekly_lines) if weekly_lines else "Aucune quête hebdomadaire active."
+    progression_value = (
+        "\n".join(progression_lines)
+        if progression_lines
+        else "Aucune quête de progression disponible."
+    )
+    embed.add_field(name="🗓️ Quêtes du jour", value=daily_value, inline=False)
+    embed.add_field(name="📆 Quêtes hebdo", value=weekly_value, inline=False)
+    if reward_line:
+        progression_value = f"{progression_value}\n{reward_line}"
+    embed.add_field(name="🏆 Progression", value=progression_value, inline=False)
+    embed.set_footer(text=f"Utilise {PREFIX}daily pour entretenir ta streak.")
     return _finalize_embed(embed)
 
 

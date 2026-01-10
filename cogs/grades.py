@@ -11,15 +11,24 @@ from discord.ext import commands
 
 from config import (
     BASE_PET_SLOTS,
+    CACHE_TTL_PROFILE,
+    DAILY_COOLDOWN,
+    DAILY_GEMS_BASE,
+    DAILY_GEMS_CAP,
+    DAILY_REWARD,
+    DEBUG_CACHE,
     GRADE_DEFINITIONS,
     GRADE_ROLE_IDS,
     LEADERBOARD_LIMIT,
     GradeDefinition,
     ANIMALERIE_ZONE_SLUG,
     ROBOT_ZONE_SLUG,
+    QUEST_WEEKLY_RESET_WEEKDAY,
+    QUEST_WEEKLY_RESET_HOUR,
 )
 from database.db import DatabaseError
 from utils import embeds
+from utils.cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +42,7 @@ class GradeSystem(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.database = bot.database
+        self._profile_cache = TTLCache[dict[str, object]](CACHE_TTL_PROFILE)
 
     class RebirthConfirmView(discord.ui.View):
         def __init__(self, author_id: int) -> None:
@@ -74,6 +84,63 @@ class GradeSystem(commands.Cog):
 
     async def cog_load(self) -> None:
         logger.info("Cog Grades chargé")
+
+    async def _ack_heavy_command(self, ctx: commands.Context) -> None:
+        interaction = getattr(ctx, "interaction", None)
+        if interaction is not None and not interaction.response.is_done():
+            await interaction.response.defer()
+            return
+        with contextlib.suppress(discord.HTTPException):
+            await ctx.trigger_typing()
+
+    async def _get_profile_snapshot(self, user_id: int) -> dict[str, object]:
+        cached = self._profile_cache.get(user_id)
+        if cached is not None:
+            return cached
+        try:
+            grade_row, rap_total, daily_state = await asyncio.gather(
+                self.database.get_user_grade(user_id),
+                self.database.get_user_pet_rap(user_id),
+                self.database.get_daily_state(user_id),
+            )
+        except Exception:
+            logger.exception("Impossible de charger le profil de quêtes pour %s", user_id)
+            raise
+        last_daily, daily_streak = daily_state
+        snapshot = {
+            "grade_row": grade_row,
+            "rap_total": rap_total,
+            "last_daily": last_daily,
+            "daily_streak": daily_streak,
+        }
+        self._profile_cache.set(user_id, snapshot)
+        if DEBUG_CACHE:
+            logger.debug("Cache profil mis à jour", extra={"user_id": user_id})
+        return snapshot
+
+    @staticmethod
+    def _format_progress_line(label: str, current: int, goal: int) -> str:
+        if goal <= 0:
+            return f"✅ {label} : aucune exigence"
+        status = "✅" if current >= goal else "▫️"
+        return f"{status} {label} : **{current}/{goal}**"
+
+    @staticmethod
+    def _format_currency_progress_line(label: str, current: int, goal: int, formatter) -> str:
+        if goal <= 0:
+            return f"✅ {label} : aucune exigence"
+        status = "✅" if current >= goal else "▫️"
+        return f"{status} {label} : **{formatter(current)} / {formatter(goal)}**"
+
+    @staticmethod
+    def _next_weekly_reset(now: datetime) -> datetime:
+        weekday = max(0, min(6, QUEST_WEEKLY_RESET_WEEKDAY))
+        hour = max(0, min(23, QUEST_WEEKLY_RESET_HOUR))
+        target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        days_ahead = (weekday - target.weekday()) % 7
+        if days_ahead == 0 and target <= now:
+            days_ahead = 7
+        return target + timedelta(days=days_ahead)
 
     # ------------------------------------------------------------------
     # Listeners de progression
@@ -386,6 +453,121 @@ class GradeSystem(commands.Cog):
             pet_slots=slot_limit,
         )
         await ctx.send(embed=embed)
+
+    async def _send_quests_overview(
+        self, ctx: commands.Context, target: discord.Member
+    ) -> None:
+        await self._ack_heavy_command(ctx)
+        try:
+            snapshot = await self._get_profile_snapshot(target.id)
+        except Exception:
+            await ctx.send(embed=embeds.error_embed("Impossible de récupérer les quêtes pour le moment."))
+            return
+
+        grade_row = snapshot["grade_row"]
+        grade_level = int(grade_row["grade_level"])
+        current_grade = GRADE_DEFINITIONS[grade_level - 1] if grade_level > 0 else None
+        next_grade = GRADE_DEFINITIONS[grade_level] if grade_level < self.total_grades else None
+        rap_total = int(snapshot.get("rap_total", 0) or 0)
+
+        progression_lines = []
+        if next_grade is None:
+            progression_lines.append("✅ Toutes les quêtes de progression sont terminées.")
+            reward_line = "🎉 Tu as atteint le grade maximum."
+        else:
+            progression_lines = [
+                self._format_progress_line(
+                    "Gagner des parties de Mastermind",
+                    int(grade_row["mastermind_progress"]),
+                    next_grade.mastermind_goal,
+                ),
+                self._format_progress_line(
+                    "Ouvrir des œufs",
+                    int(grade_row["egg_progress"]),
+                    next_grade.egg_goal,
+                ),
+                self._format_currency_progress_line(
+                    "Atteindre un RAP total",
+                    rap_total,
+                    next_grade.rap_goal,
+                    embeds.format_gems,
+                ),
+                self._format_currency_progress_line(
+                    "Perdre des Prissbucks au casino",
+                    int(grade_row["sale_progress"]),
+                    next_grade.casino_loss_goal,
+                    embeds.format_currency,
+                ),
+                self._format_progress_line(
+                    "Boire des potions",
+                    int(grade_row["potion_progress"]),
+                    next_grade.potion_goal,
+                ),
+            ]
+            reward_line = (
+                f"Prochaine récompense : **{embeds.format_gems(next_grade.reward_gems)}** + 1 slot"
+            )
+
+        now = datetime.now(timezone.utc)
+        last_daily = snapshot.get("last_daily")
+        daily_streak = int(snapshot.get("daily_streak") or 0)
+        daily_lines = []
+        if isinstance(last_daily, datetime):
+            elapsed = (now - last_daily).total_seconds()
+        else:
+            elapsed = None
+        if elapsed is None or elapsed >= DAILY_COOLDOWN:
+            daily_lines.append("✅ Récompense quotidienne disponible.")
+        else:
+            remaining = max(0, DAILY_COOLDOWN - elapsed)
+            daily_lines.append(f"⏳ Disponible dans {embeds._format_duration(remaining)}")
+        daily_lines.append(
+            f"Récompense : {embeds.format_currency(DAILY_REWARD[0])}"
+            f"–{embeds.format_currency(DAILY_REWARD[1])}"
+        )
+        if DAILY_GEMS_CAP > 0:
+            daily_lines.append(
+                f"Gemmes : {embeds.format_gems(DAILY_GEMS_BASE)}"
+                f" + bonus (cap {embeds.format_gems(DAILY_GEMS_CAP)})"
+            )
+        daily_lines.append(f"Streak actuelle : **{daily_streak}**")
+
+        weekly_lines = ["Aucune quête hebdomadaire active pour le moment."]
+        next_weekly = self._next_weekly_reset(now)
+        weekly_remaining = (next_weekly - now).total_seconds()
+        weekly_lines.append(f"Prochaine rotation : {embeds._format_duration(weekly_remaining)}")
+
+        title_suffix = f" — {current_grade.name}" if current_grade else ""
+        embed = embeds.quests_embed(
+            member=target,
+            daily_lines=daily_lines,
+            weekly_lines=weekly_lines,
+            progression_lines=progression_lines,
+            reward_line=reward_line,
+        )
+        if title_suffix:
+            embed.title = f"{embed.title}{title_suffix}"
+        await ctx.send(embed=embed)
+
+    @commands.command(name="quests", aliases=("quest", "missions"))
+    async def quests_command(
+        self, ctx: commands.Context, member: Optional[discord.Member] = None
+    ) -> None:
+        target = member or ctx.author
+        if not isinstance(target, discord.Member):
+            await ctx.send(embed=embeds.error_embed("Commande utilisable uniquement sur le serveur."))
+            return
+        await self._send_quests_overview(ctx, target)
+
+    @commands.command(name="profile", aliases=("profil",))
+    async def profile_command(
+        self, ctx: commands.Context, member: Optional[discord.Member] = None
+    ) -> None:
+        target = member or ctx.author
+        if not isinstance(target, discord.Member):
+            await ctx.send(embed=embeds.error_embed("Commande utilisable uniquement sur le serveur."))
+            return
+        await self._send_quests_overview(ctx, target)
 
     @commands.command(name="rank")
     async def rank_command(
