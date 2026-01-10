@@ -58,6 +58,17 @@ from config import (
     HUGE_MORTIS_NAME,
     HUGE_WISHED_NAME,
     EGG_LUCK_ROLE_ID,
+    FUSION_COST_BASE,
+    FUSION_COST_COUNT_EXPONENT,
+    FUSION_COST_MAX,
+    FUSION_COST_MIN,
+    FUSION_COST_OUTPUT_MULTIPLIER,
+    FUSION_COST_POWER_LOG_BASE,
+    FUSION_COST_POWER_SCALE,
+    FUSION_COST_RARITY_MULTIPLIERS,
+    PETS_PAGE_SIZE,
+    CACHE_TTL_PETS,
+    DEBUG_CACHE,
     STEAL_PROTECTED_ROLE_ID,
     VOICE_XP_ROLE_ID,
     XP_BOOST_ROLE_ID,
@@ -72,6 +83,7 @@ from config import (
     PetZoneDefinition,
 )
 from utils import embeds
+from utils.cache import TTLCache
 from utils.pet_formatting import pet_emoji
 from cogs.economy import (
     CASINO_HUGE_CHANCE_PER_PB,
@@ -1425,12 +1437,21 @@ class Pets(commands.Cog):
         self._egg_open_locks: Dict[int, asyncio.Lock] = {}
         self._last_clock_sample = datetime.now(timezone.utc)
         self._auto_hatch_tasks: Dict[int, asyncio.Task] = {}
+        self._pets_cache = TTLCache[tuple[Sequence[Mapping[str, object]], Mapping[int, int]]](CACHE_TTL_PETS)
 
     @staticmethod
     def _normalize_pet_key(value: str) -> str:
         normalized = unicodedata.normalize("NFKD", value)
         normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
         return "".join(ch for ch in normalized.lower() if ch.isalnum())
+
+    async def _ack_heavy_command(self, ctx: commands.Context) -> None:
+        interaction = getattr(ctx, "interaction", None)
+        if interaction is not None and not interaction.response.is_done():
+            await interaction.response.defer()
+            return
+        with contextlib.suppress(discord.HTTPException):
+            await ctx.trigger_typing()
 
     @staticmethod
     def _generate_alias_variants(token: str | None) -> Set[str]:
@@ -1454,6 +1475,25 @@ class Pets(commands.Cog):
             _add_variant(without_diacritics)
 
         return variants
+
+    @staticmethod
+    def _compute_fusion_cost(
+        *,
+        rarity: str,
+        power_value: int,
+        consumed_count: int,
+        output_count: int,
+    ) -> int:
+        rarity_multiplier = float(FUSION_COST_RARITY_MULTIPLIERS.get(rarity, 1.0))
+        safe_power = max(0, int(power_value))
+        log_base = max(2.0, float(FUSION_COST_POWER_LOG_BASE))
+        power_factor = math.log(safe_power + 1, log_base) if safe_power > 0 else 0.0
+        power_multiplier = 1.0 + float(FUSION_COST_POWER_SCALE) * power_factor
+        count_multiplier = max(1.0, float(consumed_count) ** float(FUSION_COST_COUNT_EXPONENT))
+        output_multiplier = 1.0 + float(FUSION_COST_OUTPUT_MULTIPLIER) * max(0, output_count - 1)
+        cost = float(FUSION_COST_BASE) * rarity_multiplier * power_multiplier * count_multiplier * output_multiplier
+        cost_int = int(round(cost))
+        return max(FUSION_COST_MIN, min(FUSION_COST_MAX, cost_int))
 
     def _can_use_external_emojis(self, ctx: commands.Context) -> bool:
         """Return True if the bot can use external emojis in the channel."""
@@ -3249,6 +3289,7 @@ class Pets(commands.Cog):
     @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.command(name="openbox", aliases=("buyegg", "openegg", "egg"))
     async def openbox(self, ctx: commands.Context, egg: str | None = None) -> None:
+        await self._ack_heavy_command(ctx)
         lock = self._get_open_lock(ctx.author.id)
         async with lock:
             await self._openbox_impl(ctx, egg)
@@ -3822,11 +3863,21 @@ class Pets(commands.Cog):
 
     @commands.command(name="pets", aliases=("collection",))
     async def pets_command(self, ctx: commands.Context) -> None:
-        records = await self.database.get_user_pets(ctx.author.id)
-        market_values = await self.database.get_pet_market_values()
+        await self._ack_heavy_command(ctx)
+        cached = self._pets_cache.get(ctx.author.id)
+        if cached is not None:
+            records, market_values = cached
+        else:
+            records, market_values = await asyncio.gather(
+                self.database.get_user_pets(ctx.author.id),
+                self.database.get_pet_market_values(),
+            )
+            self._pets_cache.set(ctx.author.id, (records, market_values))
+            if DEBUG_CACHE:
+                logger.debug("Cache pets mis à jour", extra={"user_id": ctx.author.id})
         pets = self._sort_pets_for_display(records, market_values)
         active_income = sum(int(pet["income"]) for pet in pets if pet.get("is_active"))
-        per_page = 8
+        per_page = PETS_PAGE_SIZE
         total_count = len(pets)
         page_count = max(1, math.ceil(total_count / per_page))
         if page_count <= 1:
@@ -4505,6 +4556,7 @@ class Pets(commands.Cog):
         aliases=("shop", "gem", "gems", "gemmes"),
     )
     async def gemshop(self, ctx: commands.Context, *, action: str | None = None) -> None:
+        await self._ack_heavy_command(ctx)
         await self.database.ensure_user(ctx.author.id)
 
         state = await self._fetch_gemshop_state(ctx.author.id, guild=ctx.guild)
@@ -4978,6 +5030,7 @@ class Pets(commands.Cog):
 
     @commands.command(name="fuse")
     async def fuse(self, ctx: commands.Context, *user_pet_inputs: str) -> None:
+        await self._ack_heavy_command(ctx)
         auto_mode = not user_pet_inputs
         if user_pet_inputs:
             auto_mode = any(str(value).lower() in {"auto", "random"} for value in user_pet_inputs)
@@ -5086,6 +5139,17 @@ class Pets(commands.Cog):
         consumed_ids = unique_ids[:10]
 
         primary_definition = selected_defs[0]
+        rarity_label = "Huge" if primary_definition.is_huge else str(primary_definition.rarity)
+        power_value = max(
+            int(getattr(definition, "base_income_per_hour", 0) or 0)
+            for definition in selected_defs
+        )
+        fusion_cost = self._compute_fusion_cost(
+            rarity=rarity_label,
+            power_value=power_value,
+            consumed_count=len(consumed_ids),
+            output_count=total_outputs,
+        )
         primary_shiny = _roll_shiny(pet_perks.egg_shiny_chance)
         try:
             primary_record = await self.database.fuse_user_pets(
@@ -5094,7 +5158,15 @@ class Pets(commands.Cog):
                 self._pet_ids[primary_definition.name],
                 make_shiny=primary_shiny,
                 result_is_huge=primary_definition.is_huge,
+                cost=fusion_cost,
             )
+        except InsufficientBalanceError:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    f"Tu n'as pas assez de PB pour payer la fusion ({embeds.format_currency(fusion_cost)})."
+                )
+            )
+            return
         except DatabaseError as exc:
             await ctx.send(embed=embeds.error_embed(str(exc)))
             return
@@ -5137,6 +5209,7 @@ class Pets(commands.Cog):
             lines.append(f"IDs utilisés : {used_ids}")
         if bonus_label:
             lines.append(bonus_label)
+        lines.append(f"Coût : {embeds.format_currency(fusion_cost)}")
 
         embed.description = "\n".join(lines)
         await ctx.send(embed=embed)

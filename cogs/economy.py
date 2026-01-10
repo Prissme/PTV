@@ -23,7 +23,18 @@ from config import (
     CASINO_TITANIC_CHANCE_PER_PB,
     CASINO_TITANIC_MAX_CHANCE,
     DAILY_COOLDOWN,
+    DAILY_GEMS_BASE,
+    DAILY_GEMS_BONUS_CHANCE,
+    DAILY_GEMS_BONUS_MAX,
+    DAILY_GEMS_BONUS_MIN,
+    DAILY_GEMS_CAP,
     DAILY_REWARD,
+    DAILY_STREAK_TOLERANCE,
+    CACHE_TTL_INVENTORY,
+    DEBUG_CACHE,
+    INVENTORY_ENCHANTMENTS_PAGE_SIZE,
+    INVENTORY_PETS_PAGE_SIZE,
+    INVENTORY_POTIONS_PAGE_SIZE,
     GRADE_DEFINITIONS,
     Emojis,
     HUGE_GALE_NAME,
@@ -48,10 +59,13 @@ from config import (
     STEAL_PROTECTED_ROLE_ID,
     TITANIC_GRIFF_NAME,
     VIP_ROLE_ID,
+    compute_daily_streak_bonus,
+    compute_steal_success_chance,
     compute_huge_income,
     get_huge_level_multiplier,
 )
 from utils import embeds
+from utils.cache import TTLCache
 from database.db import (
     Database,
     DatabaseError,
@@ -1605,7 +1619,7 @@ class InventoryView(discord.ui.View):
 
     def _build_potions(self) -> discord.Embed:
         rows = [row for row in self.snapshot.potions if int(row.get("quantity") or 0) > 0]
-        per_page = 6
+        per_page = INVENTORY_POTIONS_PAGE_SIZE
         page = self.page_index.get("potions", 0)
         total_pages = max(1, (len(rows) + per_page - 1) // per_page)
         page = min(page, total_pages - 1)
@@ -1634,7 +1648,7 @@ class InventoryView(discord.ui.View):
             for row in self.snapshot.enchantments
             if int(row.get("quantity") or 0) > 0 and int(row.get("power") or 0) > 0
         ]
-        per_page = 5
+        per_page = INVENTORY_ENCHANTMENTS_PAGE_SIZE
         page = self.page_index.get("enchantments", 0)
         total_pages = max(1, (len(rows) + per_page - 1) // per_page)
         page = min(page, total_pages - 1)
@@ -1671,7 +1685,7 @@ class InventoryView(discord.ui.View):
 
     def _build_pets(self) -> discord.Embed:
         rows = list(self.snapshot.pets)
-        per_page = 4
+        per_page = INVENTORY_PETS_PAGE_SIZE
         page = self.page_index.get("pets", 0)
         total_pages = max(1, (len(rows) + per_page - 1) // per_page)
         page = min(page, total_pages - 1)
@@ -1788,6 +1802,7 @@ class Economy(commands.Cog):
             WeakValueDictionary()
         )
         self._message_reward_lock_guard = asyncio.Lock()
+        self._inventory_cache = TTLCache[InventorySnapshot](CACHE_TTL_INVENTORY)
         # FIX: Manage Mastermind cooldown manually to support grade-based bypass.
         self._mastermind_cooldown = commands.CooldownMapping.from_cooldown(
             1, MASTERMIND_CONFIG.cooldown, commands.BucketType.user
@@ -1830,6 +1845,14 @@ class Economy(commands.Cog):
                 await self._raffle_task
         if self.koth_reward_loop.is_running():
             self.koth_reward_loop.cancel()
+
+    async def _ack_heavy_command(self, ctx: commands.Context) -> None:
+        interaction = getattr(ctx, "interaction", None)
+        if interaction is not None and not interaction.response.is_done():
+            await interaction.response.defer()
+            return
+        with contextlib.suppress(discord.HTTPException):
+            await ctx.trigger_typing()
 
     async def _cleanup_loop(self) -> None:
         while True:
@@ -2368,16 +2391,24 @@ class Economy(commands.Cog):
 
     @commands.command(name="inventory", aliases=("inv", "sac"))
     async def inventory(self, ctx: commands.Context) -> None:
-        try:
-            snapshot = await InventorySnapshot.build(self.database, ctx.author.id)
-        except Exception:
-            logger.exception("Impossible de construire l'inventaire")
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Inventaire inaccessible pour le moment. Réessaie dans quelques instants."
+        await self._ack_heavy_command(ctx)
+        cached = self._inventory_cache.get(ctx.author.id)
+        if cached is not None:
+            snapshot = cached
+        else:
+            try:
+                snapshot = await InventorySnapshot.build(self.database, ctx.author.id)
+            except Exception:
+                logger.exception("Impossible de construire l'inventaire")
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Inventaire inaccessible pour le moment. Réessaie dans quelques instants."
+                    )
                 )
-            )
-            return
+                return
+            self._inventory_cache.set(ctx.author.id, snapshot)
+            if DEBUG_CACHE:
+                logger.debug("Cache inventaire mis à jour", extra={"user_id": ctx.author.id})
         view = InventoryView(ctx, snapshot)
         await view.start()
 
@@ -2435,27 +2466,67 @@ class Economy(commands.Cog):
     @commands.command(name="daily")
     async def daily(self, ctx: commands.Context) -> None:
         await self.database.ensure_user(ctx.author.id)
-        last_daily = await self.database.get_last_daily(ctx.author.id)
         now = datetime.now(timezone.utc)
+        last_daily, current_streak = await self.database.get_daily_state(ctx.author.id)
+        if last_daily:
+            elapsed = (now - last_daily).total_seconds()
+            if elapsed < DAILY_COOLDOWN:
+                remaining = DAILY_COOLDOWN - elapsed
+                embed = embeds.cooldown_embed(f"{PREFIX}daily", remaining)
+                await ctx.send(embed=embed)
+                return
 
-        if last_daily and (now - last_daily).total_seconds() < DAILY_COOLDOWN:
-            remaining = DAILY_COOLDOWN - (now - last_daily).total_seconds()
+        base_reward = random.randint(*DAILY_REWARD)
+        streak_value = current_streak + 1
+        if last_daily:
+            elapsed = (now - last_daily).total_seconds()
+            if elapsed > DAILY_COOLDOWN + DAILY_STREAK_TOLERANCE:
+                streak_value = 1
+        streak_bonus = compute_daily_streak_bonus(streak_value)
+        reward_pb = int(round(base_reward * (1 + streak_bonus)))
+
+        bonus_gems = 0
+        if DAILY_GEMS_BONUS_CHANCE > 0 and random.random() < DAILY_GEMS_BONUS_CHANCE:
+            bonus_gems = random.randint(DAILY_GEMS_BONUS_MIN, DAILY_GEMS_BONUS_MAX)
+        reward_gems = DAILY_GEMS_BASE + bonus_gems
+        if DAILY_GEMS_CAP > 0:
+            reward_gems = min(DAILY_GEMS_CAP, reward_gems)
+        else:
+            reward_gems = 0
+
+        result = await self.database.claim_daily_reward(
+            ctx.author.id,
+            reward_pb=reward_pb,
+            reward_gems=reward_gems,
+            now=now,
+            cooldown_seconds=DAILY_COOLDOWN,
+            streak_window_seconds=DAILY_COOLDOWN + DAILY_STREAK_TOLERANCE,
+        )
+        if result.get("status") == "cooldown":
+            remaining = float(result.get("remaining") or 0.0)
             embed = embeds.cooldown_embed(f"{PREFIX}daily", remaining)
             await ctx.send(embed=embed)
             return
 
-        reward = random.randint(*DAILY_REWARD)
-        before, after = await self.database.increment_balance(
-            ctx.author.id,
-            reward,
-            transaction_type="daily",
-            description="Récompense quotidienne",
-        )
-        await self.database.set_last_daily(ctx.author.id, now)
+        streak = int(result.get("streak") or streak_value)
+        actual_pb = int(result.get("reward_pb") or 0)
+        actual_gems = int(result.get("reward_gems") or 0)
         logger.debug(
-            "Daily claim", extra={"user_id": ctx.author.id, "reward": reward, "before": before, "after": after}
+            "Daily claim",
+            extra={
+                "user_id": ctx.author.id,
+                "reward": actual_pb,
+                "gems": actual_gems,
+                "streak": streak,
+            },
         )
-        embed = embeds.daily_embed(ctx.author, amount=reward)
+        embed = embeds.daily_embed(
+            ctx.author,
+            amount=actual_pb,
+            gems=actual_gems,
+            streak=streak,
+            streak_bonus=streak_bonus,
+        )
         await ctx.send(embed=embed)
 
     @commands.command(
@@ -2688,15 +2759,19 @@ class Economy(commands.Cog):
         await self.database.ensure_user(member.id)
 
         grade_level = await self.database.get_grade_level(ctx.author.id)
-        steal_bonus = min(max(grade_level, 0) * 0.05, 0.5)
-        success_chance = min(1.0, 0.5 + steal_bonus)
-
-        if any(role.id == STEAL_PROTECTED_ROLE_ID for role in getattr(member, "roles", [])):
-            success_chance = max(0.0, success_chance / 10)
-
-        attacker_balance = await self.database.fetch_balance(ctx.author.id)
-
-        victim_balance = await self.database.fetch_balance(member.id)
+        attacker_balance, victim_balance = await asyncio.gather(
+            self.database.fetch_balance(ctx.author.id),
+            self.database.fetch_balance(member.id),
+        )
+        has_protection = any(
+            role.id == STEAL_PROTECTED_ROLE_ID for role in getattr(member, "roles", [])
+        )
+        success_chance = compute_steal_success_chance(
+            attacker_balance=attacker_balance,
+            victim_balance=victim_balance,
+            grade_level=grade_level,
+            has_protection=has_protection,
+        )
         if victim_balance <= 0:
             await ctx.send(
                 embed=embeds.error_embed("Ta cible est fauchée, rien à dérober."),

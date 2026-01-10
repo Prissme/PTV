@@ -613,6 +613,7 @@ class Database:
                     balance BIGINT NOT NULL DEFAULT 0 CHECK (balance >= 0),
                     gems BIGINT NOT NULL DEFAULT 0 CHECK (gems >= 0),
                     last_daily TIMESTAMPTZ,
+                    daily_streak INTEGER NOT NULL DEFAULT 0 CHECK (daily_streak >= 0),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     pet_last_claim TIMESTAMPTZ
                 )
@@ -624,6 +625,10 @@ class Database:
             )
             await connection.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS pet_last_claim TIMESTAMPTZ"
+            )
+            await connection.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_streak INTEGER NOT NULL DEFAULT 0"
+                " CHECK (daily_streak >= 0)"
             )
             await connection.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS help_dm_sent_at TIMESTAMPTZ"
@@ -2366,6 +2371,128 @@ class Database:
             user_id,
         )
 
+    async def get_daily_state(self, user_id: int) -> tuple[datetime | None, int]:
+        await self.ensure_user(user_id)
+        row = await self.pool.fetchrow(
+            "SELECT last_daily, daily_streak FROM users WHERE user_id = $1",
+            user_id,
+        )
+        if row is None:
+            return None, 0
+        last_daily = row.get("last_daily")
+        if last_daily is not None and not isinstance(last_daily, datetime):
+            raise DatabaseError("Valeur de cooldown daily invalide")
+        return last_daily, int(row.get("daily_streak") or 0)
+
+    async def claim_daily_reward(
+        self,
+        user_id: int,
+        *,
+        reward_pb: int,
+        reward_gems: int,
+        now: datetime,
+        cooldown_seconds: float,
+        streak_window_seconds: float,
+    ) -> dict[str, object]:
+        await self.ensure_user(user_id)
+        cooldown_seconds = max(0.0, float(cooldown_seconds))
+        streak_window_seconds = max(cooldown_seconds, float(streak_window_seconds))
+
+        async with self.transaction() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT balance, gems, last_daily, daily_streak, rebirth_count
+                FROM users
+                WHERE user_id = $1
+                FOR UPDATE
+                """,
+                user_id,
+            )
+            if row is None:
+                raise DatabaseError("Utilisateur introuvable lors du daily")
+
+            last_daily = row.get("last_daily")
+            if last_daily is not None and not isinstance(last_daily, datetime):
+                raise DatabaseError("Valeur de cooldown daily invalide")
+
+            if last_daily is not None:
+                elapsed = (now - last_daily).total_seconds()
+                if elapsed < cooldown_seconds:
+                    return {
+                        "status": "cooldown",
+                        "remaining": max(0.0, cooldown_seconds - elapsed),
+                    }
+            else:
+                elapsed = None
+
+            current_streak = int(row.get("daily_streak") or 0)
+            if elapsed is None:
+                new_streak = 1
+            elif elapsed <= streak_window_seconds:
+                new_streak = max(1, current_streak + 1)
+            else:
+                new_streak = 1
+
+            before_balance = int(row["balance"])
+            before_gems = int(row["gems"])
+            rebirth_count = int(row.get("rebirth_count") or 0)
+            effective_pb, _ = self._apply_rebirth_multiplier(reward_pb, rebirth_count)
+            effective_pb = max(0, int(effective_pb))
+            effective_gems = max(0, int(reward_gems))
+
+            after_balance = before_balance + effective_pb
+            after_gems = before_gems + effective_gems
+
+            await connection.execute(
+                """
+                UPDATE users
+                SET balance = $1,
+                    gems = $2,
+                    last_daily = $3,
+                    daily_streak = $4
+                WHERE user_id = $5
+                """,
+                after_balance,
+                after_gems,
+                now,
+                new_streak,
+                user_id,
+            )
+
+            if effective_pb:
+                await self.record_transaction(
+                    connection=connection,
+                    user_id=user_id,
+                    transaction_type="daily",
+                    currency="pb",
+                    amount=effective_pb,
+                    balance_before=before_balance,
+                    balance_after=after_balance,
+                    description="Récompense quotidienne",
+                )
+            if effective_gems:
+                await self.record_transaction(
+                    connection=connection,
+                    user_id=user_id,
+                    transaction_type="daily_gems",
+                    currency="gem",
+                    amount=effective_gems,
+                    balance_before=before_gems,
+                    balance_after=after_gems,
+                    description="Récompense quotidienne (gemmes)",
+                )
+
+        return {
+            "status": "claimed",
+            "streak": new_streak,
+            "before_balance": before_balance,
+            "after_balance": after_balance,
+            "before_gems": before_gems,
+            "after_gems": after_gems,
+            "reward_pb": effective_pb,
+            "reward_gems": effective_gems,
+        }
+
     async def increment_balance(
         self,
         user_id: int,
@@ -4089,6 +4216,7 @@ class Database:
         make_shiny: bool = False,
         allow_huge: bool = False,
         result_is_huge: bool | None = None,
+        cost: int = 0,
     ) -> asyncpg.Record:
         await self.ensure_user(user_id)
         normalized_ids = self._coerce_positive_ids(
@@ -4112,6 +4240,33 @@ class Database:
             if resolved_is_huge and not allow_huge:
                 raise DatabaseError(
                     "La fusion ne permet pas de créer ce pet titanesque pour le moment."
+                )
+
+            if cost > 0:
+                balance_row = await connection.fetchrow(
+                    "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                    user_id,
+                )
+                if balance_row is None:
+                    raise DatabaseError("Utilisateur introuvable lors de la fusion.")
+                before_balance = int(balance_row["balance"])
+                if before_balance < cost:
+                    raise InsufficientBalanceError("Solde insuffisant pour la fusion.")
+                after_balance = before_balance - cost
+                await connection.execute(
+                    "UPDATE users SET balance = $1 WHERE user_id = $2",
+                    after_balance,
+                    user_id,
+                )
+                await self.record_transaction(
+                    connection=connection,
+                    user_id=user_id,
+                    transaction_type="pet_fuse",
+                    currency="pb",
+                    amount=-cost,
+                    balance_before=before_balance,
+                    balance_after=after_balance,
+                    description="Coût de fusion",
                 )
 
             rows = await connection.fetch(

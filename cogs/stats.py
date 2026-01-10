@@ -13,6 +13,7 @@ from config import (
     STATS_ACTIVE_WINDOW_DAYS,
     STATS_TOP_LIMIT,
     STEAL_PROTECTED_ROLE_ID,
+    compute_steal_success_chance,
     is_egg_frenzy_active,
 )
 from cogs.economy import MILLIONAIRE_RACE_STAGES
@@ -81,11 +82,21 @@ class ActivityStats(commands.Cog):
         await self.database.ensure_user(member.id)
 
         grade_level = await self.database.get_grade_level(member.id)
-        base_steal_success = min(1.0, 0.5 + max(0, grade_level) * 0.05)
         has_protection = any(
             role.id == STEAL_PROTECTED_ROLE_ID for role in getattr(member, "roles", [])
         )
-        steal_risk = base_steal_success / 10 if has_protection else base_steal_success
+        base_steal_success = compute_steal_success_chance(
+            attacker_balance=1,
+            victim_balance=1,
+            grade_level=grade_level,
+            has_protection=False,
+        )
+        steal_risk = compute_steal_success_chance(
+            attacker_balance=1,
+            victim_balance=1,
+            grade_level=grade_level,
+            has_protection=has_protection,
+        )
 
         mastery = await self.database.get_mastery_progress(member.id, EGG_MASTERY.slug)
         mastery_level = int(mastery.get("level", 1) or 1)

@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from dataclasses import dataclass, replace
 from datetime import datetime, time, timedelta, timezone
-from typing import Dict, Final, Tuple
+from typing import Dict, Final, Mapping, Tuple
 
 try:  # Python 3.9+ fournit zoneinfo, mais nous gardons un repli.
     from zoneinfo import ZoneInfo
@@ -72,6 +72,32 @@ def _get_balance_float(
     return parsed
 
 
+def _get_balance_bool(key: str, default: bool) -> bool:
+    value = _BALANCE_CONFIG.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y"}:
+            return True
+        if lowered in {"0", "false", "no", "n"}:
+            return False
+    return bool(value) if isinstance(value, (int, float)) else default
+
+
+def _get_balance_mapping(key: str, default: Mapping[str, float]) -> Mapping[str, float]:
+    value = _BALANCE_CONFIG.get(key, default)
+    if isinstance(value, dict):
+        parsed: dict[str, float] = {}
+        for entry_key, entry_value in value.items():
+            try:
+                parsed[str(entry_key)] = float(entry_value)
+            except (TypeError, ValueError):
+                continue
+        return parsed or default
+    return default
+
+
 def _get_float_env(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None:
@@ -126,6 +152,26 @@ _daily_min = _get_balance_int("daily_reward_min", 10_000, minimum=0)
 _daily_max = _get_balance_int("daily_reward_max", 20_000, minimum=_daily_min)
 DAILY_REWARD = (_daily_min, _daily_max)
 DAILY_COOLDOWN = 86_400  # 24 heures
+DAILY_STREAK_TOLERANCE = _get_balance_int("daily_streak_tolerance_seconds", 7_200, minimum=0)
+DAILY_STREAK_BONUS_BASE = _get_balance_float("daily_streak_bonus_base", 0.02, minimum=0.0)
+DAILY_STREAK_BONUS_EXPONENT = _get_balance_float(
+    "daily_streak_bonus_exponent", 1.05, minimum=0.1
+)
+DAILY_STREAK_BONUS_CAP = _get_balance_float("daily_streak_bonus_cap", 0.6, minimum=0.0)
+DAILY_STREAK_DIMINISH_ENABLED = _get_balance_bool("daily_streak_diminish_enabled", True)
+DAILY_STREAK_DIMINISH_START = _get_balance_int("daily_streak_diminish_start", 25, minimum=1)
+DAILY_STREAK_DIMINISH_EXPONENT = _get_balance_float(
+    "daily_streak_diminish_exponent", 0.75, minimum=0.1, maximum=1.0
+)
+DAILY_GEMS_BASE = _get_balance_int("daily_gems_base", 5, minimum=0)
+DAILY_GEMS_BONUS_CHANCE = _get_balance_float(
+    "daily_gems_bonus_chance", 0.15, minimum=0.0, maximum=1.0
+)
+DAILY_GEMS_BONUS_MIN = _get_balance_int("daily_gems_bonus_min", 1, minimum=0)
+DAILY_GEMS_BONUS_MAX = _get_balance_int(
+    "daily_gems_bonus_max", 5, minimum=DAILY_GEMS_BONUS_MIN
+)
+DAILY_GEMS_CAP = _get_balance_int("daily_gems_cap", 12, minimum=0)
 MESSAGE_REWARD = _get_balance_int("message_reward", 1, minimum=0)
 MESSAGE_COOLDOWN = 60
 LEADERBOARD_LIMIT = 10
@@ -157,6 +203,55 @@ PET_FARM_ENCHANT_PER_PET = _get_balance_float("pet_farm_enchant_per_pet", 0.0025
 PET_FARM_ENCHANT_MAX_CHANCE = _get_balance_float(
     "pet_farm_enchant_max_chance", 0.05, minimum=0.0, maximum=1.0
 )
+FUSION_COST_BASE = _get_balance_int("fusion_cost_base", 5_000, minimum=0)
+FUSION_COST_POWER_SCALE = _get_balance_float("fusion_cost_power_scale", 0.35, minimum=0.0)
+FUSION_COST_POWER_LOG_BASE = _get_balance_float(
+    "fusion_cost_power_log_base", 10.0, minimum=2.0
+)
+FUSION_COST_COUNT_EXPONENT = _get_balance_float(
+    "fusion_cost_count_exponent", 1.1, minimum=1.0
+)
+FUSION_COST_OUTPUT_MULTIPLIER = _get_balance_float(
+    "fusion_cost_output_multiplier", 0.6, minimum=0.0
+)
+FUSION_COST_MIN = _get_balance_int("fusion_cost_min", 1_000, minimum=0)
+FUSION_COST_MAX = _get_balance_int("fusion_cost_max", 5_000_000, minimum=FUSION_COST_MIN)
+FUSION_COST_RARITY_MULTIPLIERS = _get_balance_mapping(
+    "fusion_cost_rarity_multipliers",
+    {
+        "Commun": 1.0,
+        "Atypique": 1.4,
+        "Rare": 2.0,
+        "Épique": 3.0,
+        "Légendaire": 4.5,
+        "Mythique": 6.5,
+        "Secret": 9.0,
+        "Huge": 16.0,
+    },
+)
+STEAL_BASE_CHANCE = _get_balance_float("steal_base_chance", 0.5, minimum=0.0, maximum=1.0)
+STEAL_GRADE_BONUS_PER_LEVEL = _get_balance_float(
+    "steal_grade_bonus_per_level", 0.05, minimum=0.0
+)
+STEAL_GRADE_BONUS_CAP = _get_balance_float(
+    "steal_grade_bonus_cap", 0.5, minimum=0.0
+)
+STEAL_LOG_BASE = _get_balance_float("steal_log_base", 10.0, minimum=2.0)
+STEAL_LOG_SCALE = _get_balance_float("steal_log_scale", 1.2, minimum=0.0)
+STEAL_MIN_CHANCE = _get_balance_float("steal_min_chance", 0.05, minimum=0.0, maximum=1.0)
+STEAL_MAX_CHANCE = _get_balance_float("steal_max_chance", 0.9, minimum=0.0, maximum=1.0)
+CACHE_TTL_INVENTORY = _get_balance_int("cache_ttl_inventory_seconds", 20, minimum=0)
+CACHE_TTL_PETS = _get_balance_int("cache_ttl_pets_seconds", 20, minimum=0)
+CACHE_TTL_PROFILE = _get_balance_int("cache_ttl_profile_seconds", 15, minimum=0)
+PETS_PAGE_SIZE = _get_balance_int("pets_page_size", 8, minimum=1, maximum=25)
+INVENTORY_POTIONS_PAGE_SIZE = _get_balance_int("inventory_potions_page_size", 6, minimum=1, maximum=25)
+INVENTORY_ENCHANTMENTS_PAGE_SIZE = _get_balance_int(
+    "inventory_enchantments_page_size", 5, minimum=1, maximum=25
+)
+INVENTORY_PETS_PAGE_SIZE = _get_balance_int("inventory_pets_page_size", 4, minimum=1, maximum=25)
+QUEST_WEEKLY_RESET_WEEKDAY = _get_balance_int("quest_weekly_reset_weekday", 0, minimum=0, maximum=6)
+QUEST_WEEKLY_RESET_HOUR = _get_balance_int("quest_weekly_reset_hour", 0, minimum=0, maximum=23)
+DEBUG_CACHE = _get_balance_bool("debug_cache", False)
 
 # ---------------------------------------------------------------------------
 # Paramètres Clans
@@ -197,6 +292,54 @@ CLAN_SHINY_LUCK_INCREMENT: Final[float] = 0.002
 
 STATS_ACTIVE_WINDOW_DAYS = _get_int_env("STATS_ACTIVE_WINDOW_DAYS", 7, minimum=1)
 STATS_TOP_LIMIT = _get_int_env("STATS_TOP_LIMIT", 10, minimum=1)
+
+
+def compute_daily_streak_bonus(streak: int) -> float:
+    """Retourne le bonus multiplicatif pour le daily."""
+
+    safe_streak = max(0, int(streak))
+    if DAILY_STREAK_DIMINISH_ENABLED and safe_streak > DAILY_STREAK_DIMINISH_START:
+        excess = safe_streak - DAILY_STREAK_DIMINISH_START
+        safe_streak = int(
+            round(
+                DAILY_STREAK_DIMINISH_START
+                + (excess ** DAILY_STREAK_DIMINISH_EXPONENT)
+            )
+        )
+    bonus = DAILY_STREAK_BONUS_BASE * (safe_streak ** DAILY_STREAK_BONUS_EXPONENT)
+    return max(0.0, min(DAILY_STREAK_BONUS_CAP, bonus))
+
+
+def compute_steal_success_chance(
+    *,
+    attacker_balance: int,
+    victim_balance: int,
+    grade_level: int = 0,
+    has_protection: bool = False,
+) -> float:
+    """Calcule la chance de vol en fonction du ratio et des bonus."""
+
+    base = STEAL_BASE_CHANCE + min(
+        max(0, int(grade_level)) * STEAL_GRADE_BONUS_PER_LEVEL,
+        STEAL_GRADE_BONUS_CAP,
+    )
+    attacker_safe = max(1.0, float(attacker_balance))
+    victim_safe = max(0.0, float(victim_balance))
+    ratio = max(1.0, victim_safe / attacker_safe)
+    log_base = max(2.0, STEAL_LOG_BASE)
+    try:
+        log_factor = math.log(ratio, log_base) if ratio > 1 else 0.0
+    except ValueError:
+        log_factor = 0.0
+    scale = max(0.0, STEAL_LOG_SCALE)
+    ratio_multiplier = 1.0 / (1.0 + scale * log_factor) if scale > 0 else 1.0
+    chance = base * ratio_multiplier
+    if has_protection:
+        chance /= 10
+    if not math.isfinite(chance):
+        chance = STEAL_MIN_CHANCE
+    chance = min(max(chance, STEAL_MIN_CHANCE), STEAL_MAX_CHANCE)
+    return max(0.0, min(1.0, chance))
 
 # ---------------------------------------------------------------------------
 # Paramètres Grades
