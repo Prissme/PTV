@@ -10,12 +10,12 @@ from discord.ext import commands
 from config import (
     EGG_FRENZY_LUCK_BONUS,
     EGG_LUCK_ROLE_ID,
-    MILLIONAIRE_RACE_STAGES,
     STATS_ACTIVE_WINDOW_DAYS,
     STATS_TOP_LIMIT,
     STEAL_PROTECTED_ROLE_ID,
     is_egg_frenzy_active,
 )
+from cogs.economy import MILLIONAIRE_RACE_STAGES
 from utils import embeds
 from utils.enchantments import compute_egg_luck_bonus
 from utils.mastery import EGG_MASTERY

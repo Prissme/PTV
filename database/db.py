@@ -5428,7 +5428,7 @@ class Database:
         prices_by_key: Dict[Tuple[int, str], list[int]] = defaultdict(list)
         base_income_by_pet: Dict[int, int] = {}
         name_by_pet: Dict[int, str] = {}
-        async with self.pool.acquire() as connection:
+        async with self.transaction() as connection:
             async for row in connection.cursor(query):
                 pet_id = int(row["pet_id"])
                 price = int(row["price"])
