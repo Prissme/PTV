@@ -72,24 +72,24 @@ _MARKET_HISTORY_SAMPLE = 20
 _MARKET_BASE_MULTIPLIER = 120
 _MARKET_MIN_MULTIPLIER = 0.6
 _MARKET_MAX_MULTIPLIER = 2.5
-_MARKET_MAX_VALUE = 5_000_000_000
+_MARKET_MAX_VALUE = 100_000_000
 _MARKET_RARITY_BASE = {
-    "Commun": 18,
-    "Atypique": 25,
-    "Rare": 40,
-    "Épique": 80,
-    "Légendaire": 250,
-    "Mythique": 600,
-    "Secret": 1_000,
+    "Commun": 3,
+    "Atypique": 5,
+    "Rare": 8,
+    "Épique": 15,
+    "Légendaire": 40,
+    "Mythique": 80,
+    "Secret": 150,
 }
 _MARKET_ZONE_MULTIPLIERS = {
-    "starter": 1.0,
-    "foret": 4.0,
-    "manoir_hante": 50.0,
-    "robotique": 150.0,
-    "animalerie": 10_000.0,
-    "mexico": 25_000.0,
-    "celeste": 60_000.0,
+    "starter": 0.02,
+    "foret": 0.05,
+    "manoir_hante": 0.2,
+    "robotique": 0.6,
+    "animalerie": 2.5,
+    "mexico": 6.0,
+    "celeste": 15.0,
     "exclusif": 1.0,
 }
 _MARKET_VARIANTS: tuple[tuple[str, float], ...] = (
@@ -5596,12 +5596,12 @@ class Database:
             for code, multiplier in _MARKET_VARIANTS:
                 variant_count = variant_counts.get((pet_id, code), 0)
                 if variant_count > 0:
-                    variant_rarity_factor = 50_000 / max(1, variant_count)
+                    variant_rarity_factor = 5_000 / max(1, variant_count)
                 else:
                     if normal_count > 0:
-                        variant_rarity_factor = (50_000 / normal_count) * multiplier * 10
+                        variant_rarity_factor = (5_000 / normal_count) * multiplier * 10
                     else:
-                        variant_rarity_factor = 100_000_000
+                        variant_rarity_factor = 10_000
 
                 value = base_value * variant_rarity_factor * multiplier
                 value = min(float(value), float(_MARKET_MAX_VALUE))
