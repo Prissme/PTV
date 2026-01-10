@@ -34,6 +34,8 @@ from config import (
     HUGE_GRIFF_NAME,
     HUGE_PET_NAMES,
     HUGE_BO_NAME,
+    PET_DEFINITIONS,
+    PET_EGG_DEFINITIONS,
     RAINBOW_PET_COMBINE_REQUIRED,
     RAINBOW_PET_MULTIPLIER,
     SHINY_PET_MULTIPLIER,
@@ -43,6 +45,7 @@ from config import (
     clamp_income_value,
     compute_huge_income,
     get_huge_level_multiplier,
+    get_huge_multiplier,
     safe_multiply_income,
     huge_level_required_xp,
 )
@@ -69,6 +72,35 @@ _MARKET_HISTORY_SAMPLE = 20
 _MARKET_BASE_MULTIPLIER = 120
 _MARKET_MIN_MULTIPLIER = 0.6
 _MARKET_MAX_MULTIPLIER = 2.5
+_MARKET_MAX_VALUE = 5_000_000_000
+_MARKET_RARITY_BASE = {
+    "Commun": 18,
+    "Atypique": 25,
+    "Rare": 40,
+    "Épique": 80,
+    "Légendaire": 250,
+    "Mythique": 600,
+    "Secret": 1_000,
+}
+_MARKET_ZONE_MULTIPLIERS = {
+    "starter": 1.0,
+    "foret": 4.0,
+    "manoir_hante": 50.0,
+    "robotique": 150.0,
+    "animalerie": 10_000.0,
+    "mexico": 500.0,
+    "exclusif": 1.0,
+}
+_MARKET_VARIANTS: tuple[tuple[str, float], ...] = (
+    ("normal", 1.0),
+    ("gold", 3.0),
+    ("rainbow", 10.0),
+    ("galaxy", 25.0),
+    ("normal+shiny", 5.0),
+    ("gold+shiny", 15.0),
+    ("rainbow+shiny", 50.0),
+    ("galaxy+shiny", 125.0),
+)
 
 
 @dataclass(frozen=True)
@@ -821,6 +853,29 @@ class Database:
             )
             await connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_pet_trade_history_pet ON pet_trade_history(pet_id)"
+            )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pet_market_values (
+                    pet_id INTEGER NOT NULL REFERENCES pets(pet_id) ON DELETE CASCADE,
+                    variant_code TEXT NOT NULL,
+                    value_in_gems BIGINT NOT NULL CHECK (value_in_gems >= 0),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (pet_id, variant_code)
+                )
+                """
+            )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS config_flags (
+                    flag_name TEXT PRIMARY KEY,
+                    value BOOLEAN NOT NULL DEFAULT FALSE,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_config_flags_name ON config_flags(flag_name)"
             )
 
             await connection.execute(
@@ -5350,9 +5405,7 @@ class Database:
         async with self.transaction() as txn_connection:
             await txn_connection.execute(query, *params)
 
-    async def get_pet_market_values(self) -> Dict[Tuple[int, str], int]:
-        """Retourne la dernière valeur marché enregistrée pour chaque variante."""
-
+    async def _get_trade_history_market_values(self) -> Dict[Tuple[int, str], int]:
         rows = await self.pool.fetch(
             """
             SELECT
@@ -5417,6 +5470,226 @@ class Database:
             market_values[(pet_id, code)] = max(0, int(value))
 
         return market_values
+
+    async def get_pet_market_values(self) -> Dict[Tuple[int, str], int]:
+        """Retourne la dernière valeur marché enregistrée pour chaque variante."""
+
+        rows = await self.pool.fetch(
+            """
+            SELECT pet_id, variant_code, value_in_gems
+            FROM pet_market_values
+            """
+        )
+        if rows:
+            return {
+                (int(row["pet_id"]), str(row["variant_code"])): max(
+                    0, int(row["value_in_gems"])
+                )
+                for row in rows
+            }
+
+        return await self._get_trade_history_market_values()
+
+    @staticmethod
+    def _round_market_value(value: float) -> int:
+        if value < 100:
+            return max(1, int(round(value)))
+        return max(1, int(round(value / 10) * 10))
+
+    @classmethod
+    def _compute_pet_base_market_value(
+        cls,
+        *,
+        name: str,
+        rarity: str,
+        instances_count: int,
+        zone_slug: str,
+        is_huge: bool,
+    ) -> float:
+        if instances_count <= 1:
+            return float(_MARKET_MAX_VALUE)
+
+        zone_multiplier = _MARKET_ZONE_MULTIPLIERS.get(zone_slug, 1.0)
+        if zone_slug == "exclusif":
+            zone_multiplier *= 5.0
+
+        if is_huge:
+            huge_multiplier = get_huge_multiplier(name)
+            huge_rarity_bonus = (1000 / max(1, instances_count)) ** 1.5
+            value = 1_000_000 * huge_multiplier * huge_rarity_bonus
+            value *= zone_multiplier**0.5
+        else:
+            base_value = _MARKET_RARITY_BASE.get(rarity, 1)
+            rarity_factor = 10 / max(1, instances_count)
+            value = base_value * rarity_factor * zone_multiplier
+
+        value = min(float(value), float(_MARKET_MAX_VALUE))
+        return float(value)
+
+    async def sync_pet_market_values(self) -> int:
+        """Recalcule et stocke les valeurs marché pour chaque pet et variante."""
+
+        pets = await self.pool.fetch(
+            """
+            SELECT
+                p.pet_id,
+                p.name,
+                p.rarity,
+                COUNT(up.id) AS instances_count
+            FROM pets AS p
+            LEFT JOIN user_pets AS up ON up.pet_id = p.pet_id
+            GROUP BY p.pet_id, p.name, p.rarity
+            """
+        )
+        variant_rows = await self.pool.fetch(
+            """
+            SELECT
+                pet_id,
+                is_gold,
+                is_rainbow,
+                is_galaxy,
+                is_shiny,
+                COUNT(*) AS total
+            FROM user_pets
+            GROUP BY pet_id, is_gold, is_rainbow, is_galaxy, is_shiny
+            """
+        )
+        variant_counts: Dict[Tuple[int, str], int] = {}
+        for row in variant_rows:
+            pet_id = int(row["pet_id"])
+            code = self._build_variant_code(
+                bool(row.get("is_gold")),
+                bool(row.get("is_rainbow")),
+                bool(row.get("is_galaxy")),
+                bool(row.get("is_shiny")),
+            )
+            variant_counts[(pet_id, code)] = int(row.get("total") or 0)
+
+        is_huge_lookup = {pet.name.lower(): pet.is_huge for pet in PET_DEFINITIONS}
+        zone_by_pet = {
+            pet.name.lower(): egg.zone_slug
+            for egg in PET_EGG_DEFINITIONS
+            for pet in egg.pets
+        }
+
+        values_to_store: list[tuple[int, str, int]] = []
+        for row in pets:
+            pet_id = int(row["pet_id"])
+            name = str(row["name"])
+            rarity = str(row["rarity"])
+            instances_count = int(row.get("instances_count") or 0)
+            is_huge = bool(is_huge_lookup.get(name.lower(), False))
+            zone_slug = zone_by_pet.get(name.lower(), "exclusif")
+            base_value = self._compute_pet_base_market_value(
+                name=name,
+                rarity=rarity,
+                instances_count=instances_count,
+                zone_slug=zone_slug,
+                is_huge=is_huge,
+            )
+
+            normal_count = variant_counts.get((pet_id, "normal"), 0)
+            for code, multiplier in _MARKET_VARIANTS:
+                variant_count = variant_counts.get((pet_id, code), 0)
+                if variant_count > 0:
+                    variant_rarity_factor = 50_000 / max(1, variant_count)
+                else:
+                    if normal_count > 0:
+                        variant_rarity_factor = (50_000 / normal_count) * multiplier * 10
+                    else:
+                        variant_rarity_factor = 100_000_000
+
+                value = base_value * variant_rarity_factor * multiplier
+                value = min(float(value), float(_MARKET_MAX_VALUE))
+                value = self._round_market_value(value)
+                values_to_store.append((pet_id, code, value))
+
+        if not values_to_store:
+            return 0
+
+        await self.pool.executemany(
+            """
+            INSERT INTO pet_market_values (pet_id, variant_code, value_in_gems)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (pet_id, variant_code)
+            DO UPDATE SET value_in_gems = $3, updated_at = CURRENT_TIMESTAMP
+            """,
+            values_to_store,
+        )
+        return len(values_to_store)
+
+    async def reset_rich_users_gems(
+        self,
+        *,
+        threshold: int = 1_000_000,
+        new_amount: int = 100_000,
+    ) -> Dict[str, Any]:
+        """Reset les gemmes des utilisateurs riches à un montant fixe."""
+
+        query_select = """
+            SELECT user_id, gems
+            FROM users
+            WHERE gems >= $1
+            ORDER BY gems DESC
+        """
+        query_update = """
+            UPDATE users
+            SET gems = $1
+            WHERE gems >= $2
+            RETURNING user_id
+        """
+
+        async with self.pool.acquire() as conn:
+            rows_before = await conn.fetch(query_select, threshold)
+
+            if not rows_before:
+                return {
+                    "affected_count": 0,
+                    "total_gems_removed": 0,
+                    "users": [],
+                }
+
+            total_removed = sum(row["gems"] - new_amount for row in rows_before)
+            await conn.execute(query_update, new_amount, threshold)
+
+        users_details = [
+            {
+                "user_id": row["user_id"],
+                "old_gems": row["gems"],
+                "new_gems": new_amount,
+                "removed": row["gems"] - new_amount,
+            }
+            for row in rows_before
+        ]
+
+        return {
+            "affected_count": len(rows_before),
+            "total_gems_removed": total_removed,
+            "users": users_details,
+        }
+
+    async def get_config_flag(self, flag_name: str) -> bool:
+        """Récupère un flag de configuration booléen."""
+
+        row = await self.pool.fetchrow(
+            "SELECT value FROM config_flags WHERE flag_name = $1",
+            flag_name,
+        )
+        return bool(row["value"]) if row else False
+
+    async def set_config_flag(self, flag_name: str, value: bool) -> None:
+        """Définit un flag de configuration."""
+
+        await self.pool.execute(
+            """
+            INSERT INTO config_flags (flag_name, value, updated_at)
+            VALUES ($1, $2, CURRENT_TIMESTAMP)
+            ON CONFLICT (flag_name)
+            DO UPDATE SET value = $2, updated_at = CURRENT_TIMESTAMP
+            """,
+            flag_name,
+            value,
+        )
 
     # ------------------------------------------------------------------
     # King of the Hill

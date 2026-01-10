@@ -1,9 +1,13 @@
 """Commandes administrateur pour la gestion d'EcoBot."""
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import re
-from typing import Iterable
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable
 
 import discord
 from discord.ext import commands
@@ -428,6 +432,121 @@ class Admin(commands.Cog):
             )
         )
         logger.info("Admin reset_user", extra={"admin_id": ctx.author.id, "target_id": user.id})
+
+    @commands.command(name="adminresetriches")
+    @commands.is_owner()
+    async def admin_reset_riches(self, ctx: commands.Context) -> None:
+        """Reset les gemmes des utilisateurs très riches (commande one-shot)."""
+
+        already_run = await self.database.get_config_flag("rich_reset_executed")
+        if already_run:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    "Cette commande a déjà été exécutée et ne peut l'être qu'une fois."
+                )
+            )
+            return
+
+        confirm_text = (
+            "⚠️ **CONFIRMATION REQUISE**\n\n"
+            "Cette action va :\n"
+            "• Récupérer tous les utilisateurs avec ≥1M gemmes\n"
+            "• Reset leurs gemmes à 100K\n"
+            "• Logger l'opération\n"
+            "• Marquer comme exécuté (irréversible)\n\n"
+            "Réagis avec ✅ pour confirmer (30s)"
+        )
+        confirm_msg = await ctx.send(confirm_text)
+        await confirm_msg.add_reaction("✅")
+
+        def check(reaction: discord.Reaction, user: discord.User) -> bool:
+            return (
+                user.id == ctx.author.id
+                and reaction.message.id == confirm_msg.id
+                and str(reaction.emoji) == "✅"
+            )
+
+        try:
+            await self.bot.wait_for("reaction_add", check=check, timeout=30.0)
+        except asyncio.TimeoutError:
+            await ctx.send(embed=embeds.warning_embed("⏱️ Opération annulée (timeout)."))
+            return
+
+        status_msg = await ctx.send(embed=embeds.info_embed("⏳ Traitement en cours..."))
+
+        try:
+            result = await self.database.reset_rich_users_gems(
+                threshold=1_000_000,
+                new_amount=100_000,
+            )
+
+            affected_count = int(result["affected_count"])
+            total_removed = int(result["total_gems_removed"])
+            users_details = list(result["users"])
+
+            log_entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "executor": str(ctx.author),
+                "executor_id": ctx.author.id,
+                "affected_users": affected_count,
+                "total_gems_removed": total_removed,
+                "details": users_details,
+            }
+
+            await self._log_reset_operation(log_entry)
+            await self.database.set_config_flag("rich_reset_executed", True)
+
+            embed = discord.Embed(
+                title="✅ Reset des Gemmes Effectué",
+                color=0x57F287,
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.add_field(
+                name="Statistiques",
+                value=(
+                    f"**Utilisateurs affectés** : {affected_count}\n"
+                    f"**Gemmes retirées** : {total_removed:,}\n"
+                    f"**Nouvelle limite** : 100,000 gemmes"
+                ),
+                inline=False,
+            )
+
+            if users_details:
+                top_5 = users_details[:5]
+                details_text = "\n".join(
+                    f"<@{user['user_id']}> : {user['old_gems']:,} → 100K (-{user['removed']:,})"
+                    for user in top_5
+                )
+                embed.add_field(
+                    name="Top 5 Affectés",
+                    value=details_text,
+                    inline=False,
+                )
+
+            embed.set_footer(text="Opération irréversible - Logged dans admin_logs/")
+
+            await status_msg.edit(content=None, embed=embed)
+        except Exception as exc:
+            logger.exception("Erreur lors du reset des gemmes riches")
+            await status_msg.edit(
+                embed=embeds.error_embed(
+                    f"❌ Erreur : {exc}\n\nVoir les logs pour détails."
+                )
+            )
+
+    async def _log_reset_operation(self, log_entry: dict[str, Any]) -> None:
+        """Sauvegarde l'opération dans un fichier JSON."""
+
+        log_dir = Path("admin_logs")
+        log_dir.mkdir(exist_ok=True)
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        log_file = log_dir / f"rich_reset_{timestamp}.json"
+        log_file.write_text(
+            json.dumps(log_entry, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        logger.info("Reset operation logged to %s", log_file)
 
     @commands.command(name="dbstats")
     @commands.is_owner()
