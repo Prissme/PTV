@@ -3264,36 +3264,37 @@ class Database:
 
         rap_totals: defaultdict[int, int] = defaultdict(int)
         async with self.pool.acquire() as connection:
-            async for row in connection.cursor(query):
-                user_id = int(row["user_id"])
-                pet_id = int(row["pet_id"])
-                base_income = int(row["base_income_per_hour"])
-                name = str(row.get("name", ""))
-                value = self._resolve_market_price(
-                    pet_id,
-                    is_gold=bool(row.get("is_gold")),
-                    is_rainbow=bool(row.get("is_rainbow")),
-                    is_galaxy=bool(row.get("is_galaxy")),
-                    is_shiny=bool(row.get("is_shiny")),
-                    market_values=market_values,
-                )
-                if value <= 0:
-                    value = max(base_income * 120, 1_000)
-                if bool(row.get("is_galaxy")):
-                    value = int(value * GALAXY_PET_MULTIPLIER)
-                elif bool(row.get("is_rainbow")):
-                    value = int(value * RAINBOW_PET_MULTIPLIER)
-                elif bool(row.get("is_gold")):
-                    value = int(value * GOLD_PET_MULTIPLIER)
-                if bool(row.get("is_shiny")):
-                    value = int(value * SHINY_PET_MULTIPLIER)
-                if bool(row["is_huge"]):
-                    level = int(row.get("huge_level") or 1)
-                    multiplier = get_huge_level_multiplier(name, level)
-                    bonus_floor = safe_multiply_income(base_income, multiplier * 150)
-                    value = max(value, bonus_floor)
-                    value = clamp_income_value(value, minimum=HUGE_PET_MIN_INCOME)
-                rap_totals[user_id] += max(0, int(value))
+            async with connection.transaction():
+                async for row in connection.cursor(query):
+                    user_id = int(row["user_id"])
+                    pet_id = int(row["pet_id"])
+                    base_income = int(row["base_income_per_hour"])
+                    name = str(row.get("name", ""))
+                    value = self._resolve_market_price(
+                        pet_id,
+                        is_gold=bool(row.get("is_gold")),
+                        is_rainbow=bool(row.get("is_rainbow")),
+                        is_galaxy=bool(row.get("is_galaxy")),
+                        is_shiny=bool(row.get("is_shiny")),
+                        market_values=market_values,
+                    )
+                    if value <= 0:
+                        value = max(base_income * 120, 1_000)
+                    if bool(row.get("is_galaxy")):
+                        value = int(value * GALAXY_PET_MULTIPLIER)
+                    elif bool(row.get("is_rainbow")):
+                        value = int(value * RAINBOW_PET_MULTIPLIER)
+                    elif bool(row.get("is_gold")):
+                        value = int(value * GOLD_PET_MULTIPLIER)
+                    if bool(row.get("is_shiny")):
+                        value = int(value * SHINY_PET_MULTIPLIER)
+                    if bool(row["is_huge"]):
+                        level = int(row.get("huge_level") or 1)
+                        multiplier = get_huge_level_multiplier(name, level)
+                        bonus_floor = safe_multiply_income(base_income, multiplier * 150)
+                        value = max(value, bonus_floor)
+                        value = clamp_income_value(value, minimum=HUGE_PET_MIN_INCOME)
+                    rap_totals[user_id] += max(0, int(value))
 
         return rap_totals
 
