@@ -23,7 +23,9 @@ def _format_compact(amount: int) -> str:
         decimals = 1
     else:
         decimals = 2
-    text = f"{value:.{decimals}f}".rstrip("0").rstrip(".")
+    text = f"{value:.{decimals}f}"
+    if decimals:
+        text = text.rstrip("0").rstrip(".")
     return f"{text}{_SUFFIXES[index]}"
 
 

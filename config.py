@@ -404,6 +404,7 @@ ROBOT_ZONE_SLUG: Final[str] = "robotique"
 ANIMALERIE_ZONE_SLUG: Final[str] = "animalerie"
 MEXICO_ZONE_SLUG: Final[str] = "mexico"
 ROCKET_ZONE_SLUG: Final[str] = "fusee"
+CELESTE_ZONE_SLUG: Final[str] = "celeste"
 GOLD_PET_MULTIPLIER: Final[int] = 3
 GOLD_PET_CHANCE: Final[float] = _get_float_env("PET_GOLD_CHANCE", 0.0)
 GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
@@ -1001,6 +1002,53 @@ _MEXICO_EGG_PETS: Tuple[PetDefinition, ...] = (
     ),
 )
 
+_CELESTE_EGG_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="Stella",
+        rarity="Rare",
+        image_url="https://cdn.discordapp.com/emojis/1437826234095636490.png",
+        base_income_per_hour=25_000_000,
+        drop_rate=0.55,
+    ),
+    PetDefinition(
+        name="Nova",
+        rarity="Épique",
+        image_url="https://cdn.discordapp.com/emojis/1437826273673089238.png",
+        base_income_per_hour=60_000_000,
+        drop_rate=0.30,
+    ),
+    PetDefinition(
+        name="Orion",
+        rarity="Légendaire",
+        image_url="https://cdn.discordapp.com/emojis/1433376959127228436.png",
+        base_income_per_hour=120_000_000,
+        drop_rate=0.12,
+    ),
+    PetDefinition(
+        name="Lyra",
+        rarity="Mythique",
+        image_url="https://cdn.discordapp.com/emojis/1433377774122303582.png",
+        base_income_per_hour=250_000_000,
+        drop_rate=0.029,
+    ),
+    PetDefinition(
+        name="Huge Astralis",
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1433379423133892608.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.000009,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name="Titanic Zenith",
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1433380006557646878.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.000001,
+        is_huge=True,
+    ),
+)
+
 PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
     PetEggDefinition(
         name="Œuf basique",
@@ -1059,10 +1107,18 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
     PetEggDefinition(
         name="Œuf Huevo",
         slug="huevo",
-        price=77_777_777_777,
+        price=500_000_000_000,
         pets=_MEXICO_EGG_PETS,
         zone_slug=MEXICO_ZONE_SLUG,
         aliases=("oeuf huevo", "huevo", "oeuf mexico", "mexico"),
+    ),
+    PetEggDefinition(
+        name="Œuf Céleste",
+        slug="celeste",
+        price=2_500_000_000_000,
+        pets=_CELESTE_EGG_PETS,
+        zone_slug=CELESTE_ZONE_SLUG,
+        aliases=("oeuf celeste", "celeste", "celestial"),
     ),
 )
 
@@ -1109,7 +1165,7 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         name="Animalerie",
         slug=ANIMALERIE_ZONE_SLUG,
         grade_required=12,
-        entry_cost=500_000_000,
+        entry_cost=2_500_000_000,
         eggs=_eggs_for_zone(ANIMALERIE_ZONE_SLUG),
         rebirth_required=1,
     ),
@@ -1117,8 +1173,18 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         name="Mexico",
         slug=MEXICO_ZONE_SLUG,
         grade_required=15,
-        entry_cost=500_000_000_000,
+        entry_cost=5_000_000_000_000,
         eggs=_eggs_for_zone(MEXICO_ZONE_SLUG),
+        rebirth_required=2,
+    ),
+    PetZoneDefinition(
+        name="Citadelle Céleste",
+        slug=CELESTE_ZONE_SLUG,
+        grade_required=18,
+        entry_cost=25_000_000_000_000,
+        eggs=_eggs_for_zone(CELESTE_ZONE_SLUG),
+        egg_mastery_required=15,
+        pet_mastery_required=15,
         rebirth_required=2,
     ),
     PetZoneDefinition(

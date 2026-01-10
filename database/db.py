@@ -88,7 +88,8 @@ _MARKET_ZONE_MULTIPLIERS = {
     "manoir_hante": 50.0,
     "robotique": 150.0,
     "animalerie": 10_000.0,
-    "mexico": 500.0,
+    "mexico": 25_000.0,
+    "celeste": 60_000.0,
     "exclusif": 1.0,
 }
 _MARKET_VARIANTS: tuple[tuple[str, float], ...] = (

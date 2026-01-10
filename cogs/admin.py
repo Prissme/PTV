@@ -433,7 +433,7 @@ class Admin(commands.Cog):
         )
         logger.info("Admin reset_user", extra={"admin_id": ctx.author.id, "target_id": user.id})
 
-    @commands.command(name="adminresetriches")
+    @commands.command(name="nerfmoney", aliases=("adminresetriches",))
     @commands.is_owner()
     async def admin_reset_riches(self, ctx: commands.Context) -> None:
         """Reset les gemmes des utilisateurs très riches (commande one-shot)."""
