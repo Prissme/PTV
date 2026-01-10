@@ -3243,10 +3243,9 @@ class Database:
         """
         return await self.pool.fetch(query, limit)
 
-    async def _compute_pet_rap_totals(self) -> list[tuple[int, int]]:
+    async def _compute_pet_rap_totals_map(self) -> defaultdict[int, int]:
         market_values = await self.get_pet_market_values()
-        rows = await self.pool.fetch(
-            """
+        query = """
             SELECT
                 up.user_id,
                 up.pet_id,
@@ -3260,41 +3259,45 @@ class Database:
                 p.name
             FROM user_pets AS up
             JOIN pets AS p ON p.pet_id = up.pet_id
-            """
-        )
+        """
 
         rap_totals: defaultdict[int, int] = defaultdict(int)
-        for row in rows:
-            user_id = int(row["user_id"])
-            pet_id = int(row["pet_id"])
-            base_income = int(row["base_income_per_hour"])
-            name = str(row.get("name", ""))
-            value = self._resolve_market_price(
-                pet_id,
-                is_gold=bool(row.get("is_gold")),
-                is_rainbow=bool(row.get("is_rainbow")),
-                is_galaxy=bool(row.get("is_galaxy")),
-                is_shiny=bool(row.get("is_shiny")),
-                market_values=market_values,
-            )
-            if value <= 0:
-                value = max(base_income * 120, 1_000)
-            if bool(row.get("is_galaxy")):
-                value = int(value * GALAXY_PET_MULTIPLIER)
-            elif bool(row.get("is_rainbow")):
-                value = int(value * RAINBOW_PET_MULTIPLIER)
-            elif bool(row.get("is_gold")):
-                value = int(value * GOLD_PET_MULTIPLIER)
-            if bool(row.get("is_shiny")):
-                value = int(value * SHINY_PET_MULTIPLIER)
-            if bool(row["is_huge"]):
-                level = int(row.get("huge_level") or 1)
-                multiplier = get_huge_level_multiplier(name, level)
-                bonus_floor = safe_multiply_income(base_income, multiplier * 150)
-                value = max(value, bonus_floor)
-                value = clamp_income_value(value, minimum=HUGE_PET_MIN_INCOME)
-            rap_totals[user_id] += max(0, int(value))
+        async with self.pool.acquire() as connection:
+            async for row in connection.cursor(query):
+                user_id = int(row["user_id"])
+                pet_id = int(row["pet_id"])
+                base_income = int(row["base_income_per_hour"])
+                name = str(row.get("name", ""))
+                value = self._resolve_market_price(
+                    pet_id,
+                    is_gold=bool(row.get("is_gold")),
+                    is_rainbow=bool(row.get("is_rainbow")),
+                    is_galaxy=bool(row.get("is_galaxy")),
+                    is_shiny=bool(row.get("is_shiny")),
+                    market_values=market_values,
+                )
+                if value <= 0:
+                    value = max(base_income * 120, 1_000)
+                if bool(row.get("is_galaxy")):
+                    value = int(value * GALAXY_PET_MULTIPLIER)
+                elif bool(row.get("is_rainbow")):
+                    value = int(value * RAINBOW_PET_MULTIPLIER)
+                elif bool(row.get("is_gold")):
+                    value = int(value * GOLD_PET_MULTIPLIER)
+                if bool(row.get("is_shiny")):
+                    value = int(value * SHINY_PET_MULTIPLIER)
+                if bool(row["is_huge"]):
+                    level = int(row.get("huge_level") or 1)
+                    multiplier = get_huge_level_multiplier(name, level)
+                    bonus_floor = safe_multiply_income(base_income, multiplier * 150)
+                    value = max(value, bonus_floor)
+                    value = clamp_income_value(value, minimum=HUGE_PET_MIN_INCOME)
+                rap_totals[user_id] += max(0, int(value))
 
+        return rap_totals
+
+    async def _compute_pet_rap_totals(self) -> list[tuple[int, int]]:
+        rap_totals = await self._compute_pet_rap_totals_map()
         return sorted(rap_totals.items(), key=lambda item: item[1], reverse=True)
 
     async def get_pet_rap_leaderboard(self, limit: int) -> list[tuple[int, int]]:
@@ -5406,8 +5409,7 @@ class Database:
             await txn_connection.execute(query, *params)
 
     async def _get_trade_history_market_values(self) -> Dict[Tuple[int, str], int]:
-        rows = await self.pool.fetch(
-            """
+        query = """
             SELECT
                 h.pet_id,
                 h.is_gold,
@@ -5420,32 +5422,32 @@ class Database:
             FROM pet_trade_history AS h
             JOIN pets AS p ON p.pet_id = h.pet_id
             ORDER BY h.recorded_at DESC, h.id DESC
-            """
-        )
+        """
 
         prices_by_key: Dict[Tuple[int, str], list[int]] = defaultdict(list)
         base_income_by_pet: Dict[int, int] = {}
         name_by_pet: Dict[int, str] = {}
-        for row in rows:
-            pet_id = int(row["pet_id"])
-            price = int(row["price"])
-            if price <= 0:
-                continue
-            code = self._build_variant_code(
-                bool(row.get("is_gold")),
-                bool(row.get("is_rainbow")),
-                bool(row.get("is_galaxy")),
-                bool(row.get("is_shiny")),
-            )
-            key = (pet_id, code)
-            prices = prices_by_key[key]
-            if len(prices) >= _MARKET_HISTORY_SAMPLE:
-                continue
-            prices.append(price)
-            if pet_id not in base_income_by_pet:
-                base_income_by_pet[pet_id] = int(row.get("base_income_per_hour") or 0)
-            if pet_id not in name_by_pet:
-                name_by_pet[pet_id] = str(row.get("name", ""))
+        async with self.pool.acquire() as connection:
+            async for row in connection.cursor(query):
+                pet_id = int(row["pet_id"])
+                price = int(row["price"])
+                if price <= 0:
+                    continue
+                code = self._build_variant_code(
+                    bool(row.get("is_gold")),
+                    bool(row.get("is_rainbow")),
+                    bool(row.get("is_galaxy")),
+                    bool(row.get("is_shiny")),
+                )
+                key = (pet_id, code)
+                prices = prices_by_key[key]
+                if len(prices) >= _MARKET_HISTORY_SAMPLE:
+                    continue
+                prices.append(price)
+                if pet_id not in base_income_by_pet:
+                    base_income_by_pet[pet_id] = int(row.get("base_income_per_hour") or 0)
+                if pet_id not in name_by_pet:
+                    name_by_pet[pet_id] = str(row.get("name", ""))
 
         market_values: Dict[Tuple[int, str], int] = {}
         for (pet_id, code), prices in prices_by_key.items():
@@ -7071,30 +7073,35 @@ class Database:
         }
 
     async def get_total_pet_rap(self) -> int:
-        sorted_totals = await self._compute_pet_rap_totals()
-        return sum(int(value) for _, value in sorted_totals)
+        totals = await self._compute_pet_rap_totals_map()
+        return sum(int(value) for value in totals.values())
 
     async def get_pet_value_overview(self) -> Sequence[Mapping[str, int | str]]:
-        pets = await self.get_all_pets()
-        market_values = await self.get_pet_market_values()
+        rows = await self.pool.fetch(
+            """
+            SELECT
+                p.pet_id,
+                p.name,
+                p.base_income_per_hour,
+                COALESCE(m.value_in_gems, 0) AS market_value
+            FROM pets AS p
+            LEFT JOIN pet_market_values AS m
+                ON m.pet_id = p.pet_id
+                AND m.variant_code = 'normal'
+            ORDER BY p.pet_id
+            """
+        )
         results: list[dict[str, int | str]] = []
-        for pet in pets:
-            pet_id = int(pet["pet_id"])
-            base_income = int(pet["base_income_per_hour"])
-            value = self._resolve_market_price(
-                pet_id,
-                is_gold=False,
-                is_rainbow=False,
-                is_galaxy=False,
-                is_shiny=False,
-                market_values=market_values,
-            )
+        for row in rows:
+            pet_id = int(row["pet_id"])
+            base_income = int(row["base_income_per_hour"])
+            value = int(row["market_value"] or 0)
             if value <= 0:
                 value = max(base_income * 120, 1_000)
             results.append(
                 {
                     "pet_id": pet_id,
-                    "name": str(pet["name"]),
+                    "name": str(row["name"]),
                     "value": int(value),
                 }
             )
