@@ -1,0 +1,23 @@
+{
+  "daily_reward_min": 8000,
+  "daily_reward_max": 15000,
+  "message_reward": 1,
+  "slots_min_bet": 50,
+  "slots_max_bet": 1000000000000000,
+  "casino_huge_max_chance": 0.03,
+  "casino_titanic_max_chance": 0.003,
+  "pet_farm_time_factor_min": 0.25,
+  "pet_farm_time_factor_max": 2.0,
+  "pet_farm_gem_per_pet_hour": 2.0,
+  "pet_farm_gem_max": 500,
+  "pet_farm_gem_variance_per_pet": 0.5,
+  "pet_farm_ticket_base": 0.03,
+  "pet_farm_ticket_per_pet": 0.004,
+  "pet_farm_ticket_max_chance": 0.2,
+  "pet_farm_potion_base": 0.03,
+  "pet_farm_potion_per_pet": 0.006,
+  "pet_farm_potion_max_chance": 0.18,
+  "pet_farm_enchant_base": 0.01,
+  "pet_farm_enchant_per_pet": 0.0025,
+  "pet_farm_enchant_max_chance": 0.05
+}

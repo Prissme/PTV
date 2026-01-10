@@ -18,6 +18,10 @@ from discord.ext import commands, tasks
 
 from config import (
     Colors,
+    CASINO_HUGE_CHANCE_PER_PB,
+    CASINO_HUGE_MAX_CHANCE,
+    CASINO_TITANIC_CHANCE_PER_PB,
+    CASINO_TITANIC_MAX_CHANCE,
     DAILY_COOLDOWN,
     DAILY_REWARD,
     GRADE_DEFINITIONS,
@@ -38,6 +42,8 @@ from config import (
     POTION_DEFINITION_MAP,
     POTION_DEFINITIONS,
     PREFIX,
+    SLOT_MAX_BET,
+    SLOT_MIN_BET,
     SELLABLE_ROLE_IDS,
     STEAL_PROTECTED_ROLE_ID,
     TITANIC_GRIFF_NAME,
@@ -91,13 +97,6 @@ SLOT_PAIR_REWARDS: dict[str, tuple[int, str]] = {
 SLOT_SPECIAL_COMBOS: dict[tuple[str, ...], tuple[int, str]] = {
     tuple(sorted(("⭐", "💎", "7️⃣"))): (10, "Combo premium ⭐ 💎 7️⃣ !"),
 }
-SLOT_MIN_BET = 50
-SLOT_MAX_BET = 1_000_000_000_000_000
-CASINO_HUGE_MAX_CHANCE = 0.10
-CASINO_HUGE_CHANCE_PER_PB = CASINO_HUGE_MAX_CHANCE / SLOT_MAX_BET
-CASINO_TITANIC_MAX_CHANCE = 0.01
-CASINO_TITANIC_CHANCE_PER_PB = CASINO_TITANIC_MAX_CHANCE / SLOT_MAX_BET
-
 MASTERMIND_HUGE_MIN_CHANCE = 0.0055
 MASTERMIND_HUGE_MAX_CHANCE = 0.022
 # FIX: Allow high-grade players to bypass Mastermind cooldown restrictions.

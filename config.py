@@ -1,8 +1,10 @@
 """Configuration centralisée et minimaliste pour EcoBot."""
 from __future__ import annotations
 
+import json
 import math
 import os
+from pathlib import Path
 from dataclasses import dataclass, replace
 from datetime import datetime, time, timedelta, timezone
 from typing import Dict, Final, Tuple
@@ -15,6 +17,59 @@ except ImportError:  # pragma: no cover - environnement minimaliste
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _load_balance_config(path: str) -> dict[str, object]:
+    config_path = Path(path)
+    if not config_path.is_absolute():
+        config_path = Path(__file__).resolve().parent / config_path
+    if not config_path.exists():
+        return {}
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+_BALANCE_CONFIG = _load_balance_config(os.getenv("BALANCE_CONFIG_PATH", "balance_config.json"))
+
+
+def _get_balance_int(
+    key: str,
+    default: int,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    value = _BALANCE_CONFIG.get(key, default)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
+def _get_balance_float(
+    key: str,
+    default: float,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    value = _BALANCE_CONFIG.get(key, default)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
 
 
 def _get_float_env(name: str, default: float) -> float:
@@ -67,11 +122,41 @@ if not DATABASE_URL:
 # ---------------------------------------------------------------------------
 # Paramètres économie
 # ---------------------------------------------------------------------------
-DAILY_REWARD = (10_000, 20_000)
+_daily_min = _get_balance_int("daily_reward_min", 10_000, minimum=0)
+_daily_max = _get_balance_int("daily_reward_max", 20_000, minimum=_daily_min)
+DAILY_REWARD = (_daily_min, _daily_max)
 DAILY_COOLDOWN = 86_400  # 24 heures
-MESSAGE_REWARD = 1
+MESSAGE_REWARD = _get_balance_int("message_reward", 1, minimum=0)
 MESSAGE_COOLDOWN = 60
 LEADERBOARD_LIMIT = 10
+SLOT_MIN_BET = _get_balance_int("slots_min_bet", 50, minimum=1)
+SLOT_MAX_BET = _get_balance_int("slots_max_bet", 1_000_000_000_000_000, minimum=SLOT_MIN_BET)
+CASINO_HUGE_MAX_CHANCE = _get_balance_float("casino_huge_max_chance", 0.10, minimum=0.0, maximum=1.0)
+CASINO_TITANIC_MAX_CHANCE = _get_balance_float(
+    "casino_titanic_max_chance", 0.01, minimum=0.0, maximum=1.0
+)
+CASINO_HUGE_CHANCE_PER_PB = CASINO_HUGE_MAX_CHANCE / SLOT_MAX_BET
+CASINO_TITANIC_CHANCE_PER_PB = CASINO_TITANIC_MAX_CHANCE / SLOT_MAX_BET
+PET_FARM_TIME_FACTOR_MIN = _get_balance_float("pet_farm_time_factor_min", 0.25, minimum=0.0)
+PET_FARM_TIME_FACTOR_MAX = _get_balance_float("pet_farm_time_factor_max", 2.0, minimum=0.1)
+PET_FARM_GEM_PER_PET_HOUR = _get_balance_float("pet_farm_gem_per_pet_hour", 2.0, minimum=0.0)
+PET_FARM_GEM_MAX = _get_balance_int("pet_farm_gem_max", 500, minimum=0)
+PET_FARM_GEM_VARIANCE_PER_PET = _get_balance_float("pet_farm_gem_variance_per_pet", 0.5, minimum=0.0)
+PET_FARM_TICKET_BASE = _get_balance_float("pet_farm_ticket_base", 0.03, minimum=0.0)
+PET_FARM_TICKET_PER_PET = _get_balance_float("pet_farm_ticket_per_pet", 0.004, minimum=0.0)
+PET_FARM_TICKET_MAX_CHANCE = _get_balance_float(
+    "pet_farm_ticket_max_chance", 0.20, minimum=0.0, maximum=1.0
+)
+PET_FARM_POTION_BASE = _get_balance_float("pet_farm_potion_base", 0.03, minimum=0.0)
+PET_FARM_POTION_PER_PET = _get_balance_float("pet_farm_potion_per_pet", 0.006, minimum=0.0)
+PET_FARM_POTION_MAX_CHANCE = _get_balance_float(
+    "pet_farm_potion_max_chance", 0.18, minimum=0.0, maximum=1.0
+)
+PET_FARM_ENCHANT_BASE = _get_balance_float("pet_farm_enchant_base", 0.01, minimum=0.0)
+PET_FARM_ENCHANT_PER_PET = _get_balance_float("pet_farm_enchant_per_pet", 0.0025, minimum=0.0)
+PET_FARM_ENCHANT_MAX_CHANCE = _get_balance_float(
+    "pet_farm_enchant_max_chance", 0.05, minimum=0.0, maximum=1.0
+)
 
 # ---------------------------------------------------------------------------
 # Paramètres Clans

@@ -36,6 +36,20 @@ from config import (
     HUGE_BO_NAME,
     PET_DEFINITIONS,
     PET_EGG_DEFINITIONS,
+    PET_FARM_ENCHANT_BASE,
+    PET_FARM_ENCHANT_MAX_CHANCE,
+    PET_FARM_ENCHANT_PER_PET,
+    PET_FARM_GEM_MAX,
+    PET_FARM_GEM_PER_PET_HOUR,
+    PET_FARM_GEM_VARIANCE_PER_PET,
+    PET_FARM_POTION_BASE,
+    PET_FARM_POTION_MAX_CHANCE,
+    PET_FARM_POTION_PER_PET,
+    PET_FARM_TICKET_BASE,
+    PET_FARM_TICKET_MAX_CHANCE,
+    PET_FARM_TICKET_PER_PET,
+    PET_FARM_TIME_FACTOR_MAX,
+    PET_FARM_TIME_FACTOR_MIN,
     RAINBOW_PET_COMBINE_REQUIRED,
     RAINBOW_PET_MULTIPLIER,
     SHINY_PET_MULTIPLIER,
@@ -4859,7 +4873,7 @@ class Database:
                 LEFT JOIN clans AS c ON c.clan_id = cm.clan_id
                 WHERE up.user_id = $1 AND up.is_active
                 ORDER BY up.id
-                FOR UPDATE OF up
+                FOR UPDATE OF up, u
                 """,
                 user_id,
             )
@@ -5006,11 +5020,15 @@ class Database:
                 "enchantments": [],
             }
             pet_count = len(rows)
-            time_factor = max(0.25, min(3.0, elapsed_hours))
+            time_factor = max(
+                PET_FARM_TIME_FACTOR_MIN, min(PET_FARM_TIME_FACTOR_MAX, elapsed_hours)
+            )
 
-            gem_reward = int(round(pet_count * time_factor * 3))
+            gem_reward = int(round(pet_count * time_factor * PET_FARM_GEM_PER_PET_HOUR))
+            if PET_FARM_GEM_MAX > 0:
+                gem_reward = min(gem_reward, PET_FARM_GEM_MAX)
             if gem_reward > 0:
-                variance = max(1, pet_count)
+                variance = max(1, int(round(pet_count * PET_FARM_GEM_VARIANCE_PER_PET)))
                 gem_reward = random.randint(max(0, gem_reward - variance), gem_reward + variance)
                 gems_after = gems_before + gem_reward
                 await connection.execute(
@@ -5031,12 +5049,20 @@ class Database:
                 gems_before = gems_after
                 farm_rewards["gems"] = gem_reward
 
-            ticket_chance = min(0.45, (0.08 + 0.02 * pet_count) * min(1.5, elapsed_hours or 1.0))
+            ticket_chance = min(
+                PET_FARM_TICKET_MAX_CHANCE,
+                (PET_FARM_TICKET_BASE + PET_FARM_TICKET_PER_PET * pet_count)
+                * min(PET_FARM_TIME_FACTOR_MAX, elapsed_hours or 1.0),
+            )
             if random.random() < ticket_chance:
                 await self.add_raffle_tickets(user_id, amount=1, connection=connection)
                 farm_rewards["tickets"] = 1
 
-            potion_chance = min(0.30, (0.05 + 0.01 * pet_count) * min(1.5, elapsed_hours or 1.0))
+            potion_chance = min(
+                PET_FARM_POTION_MAX_CHANCE,
+                (PET_FARM_POTION_BASE + PET_FARM_POTION_PER_PET * pet_count)
+                * min(PET_FARM_TIME_FACTOR_MAX, elapsed_hours or 1.0),
+            )
             if random.random() < potion_chance:
                 available_potions = list(POTION_DEFINITION_MAP.values())
                 if available_potions:
@@ -5049,7 +5075,10 @@ class Database:
                     )
                     farm_rewards["potions"] = {potion.slug: 1}
 
-            enchant_chance = min(0.08, 0.02 + 0.005 * pet_count)
+            enchant_chance = min(
+                PET_FARM_ENCHANT_MAX_CHANCE,
+                PET_FARM_ENCHANT_BASE + PET_FARM_ENCHANT_PER_PET * pet_count,
+            )
             if random.random() < enchant_chance:
                 definition = pick_random_enchantment()
                 power = roll_enchantment_power()
