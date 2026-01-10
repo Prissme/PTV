@@ -69,7 +69,7 @@ logger = logging.getLogger(__name__)
 
 _HUGE_PET_NAME_LOOKUP = {name.lower() for name in HUGE_PET_NAMES}
 _MARKET_HISTORY_SAMPLE = 20
-_MARKET_BASE_MULTIPLIER = 120
+_MARKET_BASE_MULTIPLIER = 80
 _MARKET_MIN_MULTIPLIER = 0.6
 _MARKET_MAX_MULTIPLIER = 2.5
 _MARKET_MAX_VALUE = 100_000_000
@@ -3279,7 +3279,7 @@ class Database:
                         market_values=market_values,
                     )
                     if value <= 0:
-                        value = max(base_income * 120, 1_000)
+                        value = max(base_income * _MARKET_BASE_MULTIPLIER, 1_000)
                     if bool(row.get("is_galaxy")):
                         value = int(value * GALAXY_PET_MULTIPLIER)
                     elif bool(row.get("is_rainbow")):
@@ -3378,7 +3378,7 @@ class Database:
                 market_values=market_values,
             )
             if value <= 0:
-                value = max(base_income * 120, 1_000)
+                value = max(base_income * _MARKET_BASE_MULTIPLIER, 1_000)
             if bool(row.get("is_galaxy")):
                 value = int(value * GALAXY_PET_MULTIPLIER)
             elif bool(row.get("is_rainbow")):
@@ -3436,7 +3436,7 @@ class Database:
                 market_values=market_values,
             )
             if value <= 0:
-                value = max(base_income * 120, 1_000)
+                value = max(base_income * _MARKET_BASE_MULTIPLIER, 1_000)
             if bool(row.get("is_galaxy")):
                 value = int(value * GALAXY_PET_MULTIPLIER)
             elif bool(row.get("is_rainbow")):
@@ -7099,7 +7099,7 @@ class Database:
             base_income = int(row["base_income_per_hour"])
             value = int(row["market_value"] or 0)
             if value <= 0:
-                value = max(base_income * 120, 1_000)
+                value = max(base_income * _MARKET_BASE_MULTIPLIER, 1_000)
             results.append(
                 {
                     "pet_id": pet_id,

@@ -56,6 +56,7 @@ from config import (
     HUGE_GRIFF_NAME,
     HUGE_KENJI_ONI_NAME,
     HUGE_MORTIS_NAME,
+    HUGE_WISHED_NAME,
     EGG_LUCK_ROLE_ID,
     STEAL_PROTECTED_ROLE_ID,
     VOICE_XP_ROLE_ID,
@@ -79,6 +80,7 @@ from cogs.economy import (
     CASINO_TITANIC_MAX_CHANCE,
     MASTERMIND_HUGE_MAX_CHANCE,
     MASTERMIND_HUGE_MIN_CHANCE,
+    HUGE_WISHED_STEAL_CHANCE,
 )
 from utils.mastery import (
     EGG_MASTERY,
@@ -5616,6 +5618,10 @@ class Pets(commands.Cog):
         )
         special_lines.append(
             f"{_format_emoji(HUGE_GRIFF_NAME)} **{HUGE_GRIFF_NAME}** — distribué lors d'événements spéciaux du staff."
+        )
+        special_lines.append(
+            f"{_format_emoji(HUGE_WISHED_NAME)} **{HUGE_WISHED_NAME}** — "
+            f"{HUGE_WISHED_STEAL_CHANCE * 100:.3f}% de chance lors d'un vol réussi."
         )
 
         # Titanic Griff odds via casino (bets ≤ 1 000 PB).
