@@ -9,10 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+import asyncpg
 import discord
 from discord.ext import commands
 
-from config import PET_DEFINITIONS, PET_EMOJIS, scale_pet_value
+from config import PET_DEFINITIONS, PET_EMOJIS, QUERY_TIMEOUT_SECONDS, scale_pet_value
 from database.db import DatabaseError
 from utils import embeds
 
@@ -575,11 +576,22 @@ class Admin(commands.Cog):
     async def analytics(self, ctx: commands.Context) -> None:
         """Admin: Résumé système et analytics avancées."""
 
+        status_msg = await ctx.send("⏳ Génération des analytics…")
         try:
-            totals = await self.database.get_server_economy_totals()
-            pet_values = await self.database.get_pet_value_overview()
+            totals, pet_values = await asyncio.wait_for(
+                self.database.get_analytics_snapshot(),
+                timeout=QUERY_TIMEOUT_SECONDS,
+            )
+        except (asyncio.TimeoutError, asyncpg.exceptions.QueryCanceledError):
+            await status_msg.edit(
+                content=None,
+                embed=embeds.warning_embed(
+                    "La requête est trop lourde pour être traitée rapidement."
+                ),
+            )
+            return
         except DatabaseError as exc:
-            await ctx.send(embed=embeds.error_embed(str(exc)))
+            await status_msg.edit(embed=embeds.error_embed(str(exc)), content=None)
             return
 
         summary_lines = [
@@ -598,7 +610,7 @@ class Admin(commands.Cog):
             f"📈 RAP total : **{embeds.format_gems(totals['total_rap'])}**",
         ]
         embed.add_field(name="Totaux serveur", value="\n".join(totals_lines), inline=False)
-        await ctx.send(embed=embed)
+        await status_msg.edit(content=None, embed=embed)
 
         if not pet_values:
             await ctx.send(embed=embeds.warning_embed("Aucun pet trouvé pour calculer les valeurs."))

@@ -1,13 +1,16 @@
 """Commandes de classement économique."""
 from __future__ import annotations
 
+import asyncio
 import logging
 
+import asyncpg
 import discord
 from discord.ext import commands, tasks
 
 from config import (
     LEADERBOARD_LIMIT,
+    QUERY_TIMEOUT_SECONDS,
     TOP_PB_ROLE_ID,
     TOP_PB_ROLE_LIMIT,
     TOP_PB_ROLE_REFRESH_MINUTES,
@@ -223,8 +226,18 @@ class Leaderboard(commands.Cog):
     @commands.command(name="leaderboard", aliases=("lb",))
     async def leaderboard(self, ctx: commands.Context) -> None:
         view = LeaderboardView(ctx, self, initial_type="rap")
-        embed = await view.build_embed()
-        message = await ctx.send(embed=embed, view=view)
+        status_msg = await ctx.send("⏳ Génération du classement…")
+        try:
+            embed = await asyncio.wait_for(view.build_embed(), timeout=QUERY_TIMEOUT_SECONDS)
+        except (asyncio.TimeoutError, asyncpg.exceptions.QueryCanceledError):
+            await status_msg.edit(
+                content=None,
+                embed=embeds.warning_embed(
+                    "Le classement est trop lourd à générer pour le moment."
+                ),
+            )
+            return
+        message = await status_msg.edit(content=None, embed=embed, view=view)
         view.message = message
 
     @commands.command(name="gemlb", aliases=("gemleaderboard",))
