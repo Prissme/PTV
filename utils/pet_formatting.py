@@ -11,6 +11,7 @@ from config import (
     PET_EMOJIS,
     RAINBOW_PET_MULTIPLIER,
     SHINY_PET_MULTIPLIER,
+    scale_pet_value,
 )
 
 from .formatting import format_currency, format_gems
@@ -55,6 +56,13 @@ class PetDisplay:
     forced: bool = False
     image_url: str | None = None
     acquired_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "income_per_hour",
+            scale_pet_value(self.income_per_hour),
+        )
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, object]) -> "PetDisplay":

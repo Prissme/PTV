@@ -78,6 +78,7 @@ from config import (
     get_huge_level_multiplier,
     get_huge_level_progress,
     huge_level_required_xp,
+    scale_pet_value,
     PetDefinition,
     PetEggDefinition,
     PetZoneDefinition,
@@ -1241,7 +1242,7 @@ class PetSelectionView(discord.ui.View):
         is_rainbow = bool(data.get("is_rainbow"))
         is_gold = bool(data.get("is_gold"))
         is_active = bool(data.get("is_active"))
-        income = int(data.get("base_income_per_hour", 0))
+        income = scale_pet_value(int(data.get("base_income_per_hour", 0)))
         identifier = record.get("id")
         if is_galaxy:
             marker = " 🌌"
@@ -1450,8 +1451,12 @@ class Pets(commands.Cog):
         if interaction is not None and not interaction.response.is_done():
             await interaction.response.defer()
             return
+        with contextlib.suppress(discord.HTTPException, AttributeError):
+            async with ctx.typing():
+                return
         with contextlib.suppress(discord.HTTPException):
-            await ctx.trigger_typing()
+            async with ctx.channel.typing():
+                return
 
     @staticmethod
     def _generate_alias_variants(token: str | None) -> Set[str]:
@@ -2355,7 +2360,7 @@ class Pets(commands.Cog):
             is_active = bool(data.get("is_active"))
             is_gold = bool(data.get("is_gold"))
             is_rainbow = bool(data.get("is_rainbow"))
-            income = int(data.get("base_income_per_hour", 0))
+            income = scale_pet_value(int(data.get("base_income_per_hour", 0)))
             acquired_at = record.get("acquired_at")
             identifier = int(record.get("id") or 0)
             acquired_text = ""
@@ -3864,6 +3869,9 @@ class Pets(commands.Cog):
     @commands.command(name="pets", aliases=("collection",))
     async def pets_command(self, ctx: commands.Context) -> None:
         await self._ack_heavy_command(ctx)
+        loading_message: discord.Message | None = None
+        with contextlib.suppress(discord.HTTPException):
+            loading_message = await ctx.send("Chargement…")
         cached = self._pets_cache.get(ctx.author.id)
         if cached is not None:
             records, market_values = cached
@@ -3890,7 +3898,10 @@ class Pets(commands.Cog):
                 page_count=1,
                 huge_descriptions=HUGE_PET_SOURCES,
             )
-            await ctx.send(embed=embed)
+            if loading_message is not None:
+                await loading_message.edit(content=None, embed=embed)
+            else:
+                await ctx.send(embed=embed)
         else:
             view = PetInventoryView(
                 ctx=ctx,
@@ -3900,8 +3911,12 @@ class Pets(commands.Cog):
                 huge_descriptions=HUGE_PET_SOURCES,
             )
             embed = view.build_embed()
-            message = await ctx.send(embed=embed, view=view)
-            view.message = message
+            if loading_message is not None:
+                await loading_message.edit(content=None, embed=embed, view=view)
+                view.message = loading_message
+            else:
+                message = await ctx.send(embed=embed, view=view)
+                view.message = message
 
     @commands.command(name="sellpet", aliases=("sellpets", "vendrepet", "vendrepets"))
     async def sell_pet(self, ctx: commands.Context, user_pet_id: int | None = None) -> None:
@@ -4093,7 +4108,7 @@ class Pets(commands.Cog):
             if user_pet_id <= 0:
                 continue
             data = self._convert_record(row, best_non_huge_income=best_non_huge_income)
-            income = int(data.get("base_income_per_hour", 0))
+            income = scale_pet_value(int(data.get("base_income_per_hour", 0)))
             rarity = str(data.get("rarity", ""))
             rarity_rank = PET_RARITY_ORDER.get(rarity, -1)
             acquired_at = row.get("acquired_at")
@@ -4181,7 +4196,7 @@ class Pets(commands.Cog):
         active_entries: List[Dict[str, Any]] = []
         for row, data in zip(active_rows, pets_data):
             user_pet_id = int(row.get("id") or 0)
-            income = int(data.get("base_income_per_hour", 0))
+            income = scale_pet_value(int(data.get("base_income_per_hour", 0)))
             rarity = str(data.get("rarity", ""))
             active_entries.append(
                 {
@@ -5144,6 +5159,7 @@ class Pets(commands.Cog):
             int(getattr(definition, "base_income_per_hour", 0) or 0)
             for definition in selected_defs
         )
+        power_value = scale_pet_value(power_value)
         fusion_cost = self._compute_fusion_cost(
             rarity=rarity_label,
             power_value=power_value,
@@ -5191,7 +5207,7 @@ class Pets(commands.Cog):
         lines = []
         for entry in results:
             name = str(entry.get("name", "Pet"))
-            income = int(entry.get("base_income_per_hour", 0))
+            income = scale_pet_value(int(entry.get("base_income_per_hour", 0)))
             tags: List[str] = []
             if entry.get("is_galaxy"):
                 tags.append("Galaxy")
@@ -5373,6 +5389,7 @@ class Pets(commands.Cog):
         pet_data = self._convert_record(record, best_non_huge_income=None)
         base_income = definition.base_income_per_hour
         rainbow_income = base_income * RAINBOW_PET_MULTIPLIER
+        display_rainbow_income = scale_pet_value(rainbow_income)
 
         embed = embeds.pet_reveal_embed(
             name=definition.name,
@@ -5390,7 +5407,7 @@ class Pets(commands.Cog):
             name="🌈 Fusion Rainbow",
             value=(
                 f"🎉 {consumed} pets GOLD fusionnés en 1 RAINBOW !\n"
-                f"Puissance : **{rainbow_income:,} PB/h** ({RAINBOW_PET_MULTIPLIER}x le pet de base)\n"
+                f"Puissance : **{display_rainbow_income:,} PB/h** ({RAINBOW_PET_MULTIPLIER}x le pet de base)\n"
                 "Les pets utilisés ont été retirés de ton inventaire."
             ).replace(",", " "),
             inline=False,
@@ -5457,6 +5474,7 @@ class Pets(commands.Cog):
         pet_data = self._convert_record(record, best_non_huge_income=None)
         base_income = definition.base_income_per_hour
         galaxy_income = base_income * GALAXY_PET_MULTIPLIER
+        display_galaxy_income = scale_pet_value(galaxy_income)
 
         embed = embeds.pet_reveal_embed(
             name=definition.name,
@@ -5474,7 +5492,7 @@ class Pets(commands.Cog):
             name="🌌 Fusion Galaxy",
             value=(
                 f"🎉 {consumed} pets RAINBOW fusionnés en 1 GALAXY !\n"
-                f"Puissance : **{galaxy_income:,} PB/h** ({GALAXY_PET_MULTIPLIER}x le pet de base)\n"
+                f"Puissance : **{display_galaxy_income:,} PB/h** ({GALAXY_PET_MULTIPLIER}x le pet de base)\n"
                 "Les pets utilisés ont été retirés de ton inventaire."
             ).replace(",", " "),
             inline=False,

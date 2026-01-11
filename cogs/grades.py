@@ -90,8 +90,12 @@ class GradeSystem(commands.Cog):
         if interaction is not None and not interaction.response.is_done():
             await interaction.response.defer()
             return
+        with contextlib.suppress(discord.HTTPException, AttributeError):
+            async with ctx.typing():
+                return
         with contextlib.suppress(discord.HTTPException):
-            await ctx.trigger_typing()
+            async with ctx.channel.typing():
+                return
 
     async def _get_profile_snapshot(self, user_id: int) -> dict[str, object]:
         cached = self._profile_cache.get(user_id)
