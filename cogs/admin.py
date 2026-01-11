@@ -12,7 +12,7 @@ from typing import Any, Iterable
 import discord
 from discord.ext import commands
 
-from config import PET_DEFINITIONS, PET_EMOJIS
+from config import PET_DEFINITIONS, PET_EMOJIS, scale_pet_value
 from database.db import DatabaseError
 from utils import embeds
 
@@ -380,7 +380,8 @@ class Admin(commands.Cog):
             f"Cible : {target.mention} (`{target.id}`)",
             f"Pet transféré : {pet_description}",
             f"ID inventaire : #{transfer_result['id']}",
-            f"Revenu de base : {embeds.format_currency(int(transfer_result['base_income_per_hour']))} PB/h",
+            "Revenu de base : "
+            f"{embeds.format_currency(scale_pet_value(int(transfer_result['base_income_per_hour'])))} PB/h",
         ]
 
         await ctx.send(embed=embeds.success_embed("\n".join(lines), title="Pet transféré"))

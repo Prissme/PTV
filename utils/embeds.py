@@ -17,6 +17,7 @@ from config import (
     PetDefinition,
     PetEggDefinition,
     POTION_DEFINITION_MAP,
+    scale_pet_value,
 )
 
 from utils.formatting import format_currency, format_gems
@@ -729,7 +730,7 @@ def pet_collection_embed(
     header = [
         f"Total : {total_count}",
         f"Actifs : {active_count}",
-        f"Revenu actif : {format_currency(total_income_per_hour)}/h",
+        f"Revenu actif : {format_currency(scale_pet_value(total_income_per_hour))}/h",
     ]
 
     description_lines = []

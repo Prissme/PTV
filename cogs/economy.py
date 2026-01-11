@@ -1851,8 +1851,12 @@ class Economy(commands.Cog):
         if interaction is not None and not interaction.response.is_done():
             await interaction.response.defer()
             return
+        with contextlib.suppress(discord.HTTPException, AttributeError):
+            async with ctx.typing():
+                return
         with contextlib.suppress(discord.HTTPException):
-            await ctx.trigger_typing()
+            async with ctx.channel.typing():
+                return
 
     async def _cleanup_loop(self) -> None:
         while True:

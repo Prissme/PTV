@@ -60,6 +60,7 @@ from config import (
     compute_huge_income,
     get_huge_level_multiplier,
     get_huge_multiplier,
+    scale_pet_value,
     safe_multiply_income,
     huge_level_required_xp,
 )
@@ -279,7 +280,8 @@ class Database:
             reference_income = (
                 best_non_huge_income if best_non_huge_income > 0 else base_income
             )
-            return float(compute_huge_income(reference_income, multiplier))
+            raw_income = compute_huge_income(reference_income, multiplier)
+            return float(scale_pet_value(raw_income))
 
         income_value = base_income
         if bool(row.get("is_galaxy")):
@@ -290,7 +292,7 @@ class Database:
             income_value *= GOLD_PET_MULTIPLIER
         if bool(row.get("is_shiny")):
             income_value *= SHINY_PET_MULTIPLIER
-        return float(income_value)
+        return float(scale_pet_value(income_value))
 
     @staticmethod
     def _calculate_income_shares(
@@ -3435,7 +3437,7 @@ class Database:
                         bonus_floor = safe_multiply_income(base_income, multiplier * 150)
                         value = max(value, bonus_floor)
                         value = clamp_income_value(value, minimum=HUGE_PET_MIN_INCOME)
-                    rap_totals[user_id] += max(0, int(value))
+                    rap_totals[user_id] += max(0, scale_pet_value(value))
 
         return rap_totals
 
@@ -3534,7 +3536,7 @@ class Database:
                 bonus_floor = safe_multiply_income(base_income, multiplier * 150)
                 value = max(value, bonus_floor)
                 value = clamp_income_value(value, minimum=HUGE_PET_MIN_INCOME)
-            rap_total += max(0, int(value))
+            rap_total += max(0, scale_pet_value(value))
         return rap_total
 
     async def get_user_best_pet_value(
@@ -3592,7 +3594,7 @@ class Database:
                 bonus_floor = safe_multiply_income(base_income, multiplier * 150)
                 value = max(value, bonus_floor)
                 value = clamp_income_value(value, minimum=HUGE_PET_MIN_INCOME)
-            value = max(0, int(value))
+            value = max(0, scale_pet_value(value))
             if value > best_value:
                 best_value = value
                 best_name = name
@@ -3665,7 +3667,7 @@ class Database:
                     income_value = base_income
                 if bool(row.get("is_shiny")):
                     income_value *= SHINY_PET_MULTIPLIER
-            income_totals[user_id] += income_value
+            income_totals[user_id] += scale_pet_value(income_value)
 
         sorted_totals = sorted(
             ((user_id, income) for user_id, income in income_totals.items() if income > 0),

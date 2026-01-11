@@ -363,7 +363,25 @@ PET_SLOT_SHOP_BASE_COST: Final[int] = 5_000
 PET_SLOT_SHOP_COST_GROWTH: Final[float] = 1.6
 PET_SLOT_SHOP_CURRENCY: Final[str] = "gem"
 MEXICO_DISTRIBUTOR_COOLDOWN: Final[timedelta] = timedelta(minutes=10)
-RAP_GOAL_UNIT: Final[int] = 50_000
+PET_VALUE_SCALE: Final[int] = 1_000
+
+
+def scale_pet_value(raw_value: float | int, *, minimum: int = 0) -> int:
+    """Rebase a pet-related value according to ``PET_VALUE_SCALE``."""
+
+    try:
+        numeric = float(raw_value)
+    except (TypeError, ValueError):
+        return max(0, int(minimum))
+    if numeric <= 0 or math.isnan(numeric):
+        return max(0, int(minimum))
+    scaled = int(numeric / PET_VALUE_SCALE)
+    if scaled <= 0:
+        scaled = 1
+    return max(int(minimum), scaled)
+
+
+RAP_GOAL_UNIT: Final[int] = scale_pet_value(50_000, minimum=1)
 CASINO_LOSS_GOAL_UNIT: Final[int] = 5_000
 
 _GRADE_BLUEPRINTS: Tuple[tuple[str, int, int, int, int, int], ...] = (
