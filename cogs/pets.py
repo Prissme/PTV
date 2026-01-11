@@ -934,7 +934,7 @@ class PetIndexView(discord.ui.View):
         async def callback(self, interaction: discord.Interaction) -> None:
             self._index_view.current_category = self.values[0]
             self._index_view.current_page = 0
-            await self._index_view._refresh(interaction)
+            await self._index_view._refresh_view(interaction)
 
     class PreviousButton(discord.ui.Button):
         def __init__(self, view: "PetIndexView") -> None:
@@ -944,7 +944,7 @@ class PetIndexView(discord.ui.View):
         async def callback(self, interaction: discord.Interaction) -> None:
             if self._index_view.current_page > 0:
                 self._index_view.current_page -= 1
-            await self._index_view._refresh(interaction)
+            await self._index_view._refresh_view(interaction)
 
     class NextButton(discord.ui.Button):
         def __init__(self, view: "PetIndexView") -> None:
@@ -955,7 +955,7 @@ class PetIndexView(discord.ui.View):
             max_page = max(0, self._index_view._page_count(self._index_view.current_category) - 1)
             if self._index_view.current_page < max_page:
                 self._index_view.current_page += 1
-            await self._index_view._refresh(interaction)
+            await self._index_view._refresh_view(interaction)
 
     def _build_options(self) -> List[discord.SelectOption]:
         options: List[discord.SelectOption] = []
@@ -1054,6 +1054,43 @@ class PetIndexView(discord.ui.View):
             lines.append(line)
         return lines
 
+    def _split_field_values(
+        self,
+        lines: List[str],
+        *,
+        limit: int = 1024,
+        max_fields: int = 25,
+    ) -> List[str]:
+        if not lines:
+            return []
+        fields: List[str] = []
+        current = ""
+
+        def push_current() -> None:
+            nonlocal current
+            if current:
+                fields.append(current)
+                current = ""
+
+        for line in lines:
+            segments = [line[i : i + limit] for i in range(0, len(line), limit)] or [""]
+            for segment in segments:
+                if len(fields) >= max_fields:
+                    return fields
+                if not current:
+                    current = segment
+                    continue
+                if len(current) + 1 + len(segment) <= limit:
+                    current = f"{current}\n{segment}"
+                else:
+                    push_current()
+                    if len(fields) >= max_fields:
+                        return fields
+                    current = segment
+        if current and len(fields) < max_fields:
+            fields.append(current)
+        return fields
+
     def build_embed(self) -> discord.Embed:
         category = self._category_map.get(self.current_category) or self.CATEGORIES[0]
         total_pages = self._page_count(category.slug)
@@ -1079,7 +1116,12 @@ class PetIndexView(discord.ui.View):
         )
         lines = self._lines_for_page(category)
         if lines:
-            embed.add_field(name="Catalogue", value="\n".join(lines), inline=False)
+            field_values = self._split_field_values(lines)
+            for index, value in enumerate(field_values):
+                if index >= 25:
+                    break
+                name = "Catalogue" if index == 0 else "Catalogue (suite)"
+                embed.add_field(name=name, value=value, inline=False)
         else:
             embed.add_field(
                 name="Catalogue",
@@ -1089,7 +1131,7 @@ class PetIndexView(discord.ui.View):
         embed.set_footer(text=f"Page {self.current_page + 1}/{total_pages}")
         return embed
 
-    async def _refresh(self, interaction: discord.Interaction | None = None) -> None:
+    async def _refresh_view(self, interaction: discord.Interaction | None = None) -> None:
         self._refresh_select_options()
         self._update_navigation_state()
         embed = self.build_embed()
