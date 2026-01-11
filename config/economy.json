@@ -1,0 +1,45 @@
+{
+  "GEMS_REBASE_FACTOR": 10000,
+  "market_value": {
+    "rarity_base": {
+      "Commun": 20,
+      "Atypique": 60,
+      "Rare": 120,
+      "Épique": 400,
+      "Légendaire": 1200,
+      "Mythique": 4000,
+      "Secret": 12000,
+      "Huge": 150000,
+      "Titanic": 1500000
+    },
+    "rarity_cap": {
+      "Commun": 200,
+      "Atypique": 500,
+      "Rare": 800,
+      "Épique": 3000,
+      "Légendaire": 10000,
+      "Mythique": 50000,
+      "Secret": 250000,
+      "Huge": 2000000,
+      "Titanic": 20000000
+    },
+    "power_exponent": 0.8,
+    "power_baseline_by_zone": {
+      "starter": 50,
+      "foret": 250,
+      "manoir_hante": 3000,
+      "robotique": 50000,
+      "animalerie": 1000000,
+      "mexico": 10000000,
+      "celeste": 100000000,
+      "exclusif": 1000000
+    },
+    "huge_multiplier": 10.0,
+    "titanic_multiplier": 50.0,
+    "min_value": 1
+  },
+  "display": {
+    "compact": true
+  },
+  "debug": false
+}
