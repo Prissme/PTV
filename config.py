@@ -34,6 +34,96 @@ def _load_balance_config(path: str) -> dict[str, object]:
 _BALANCE_CONFIG = _load_balance_config(os.getenv("BALANCE_CONFIG_PATH", "balance_config.json"))
 
 
+def _load_economy_config(path: str) -> dict[str, object]:
+    config_path = Path(path)
+    if not config_path.is_absolute():
+        config_path = Path(__file__).resolve().parent / config_path
+    if not config_path.exists():
+        return {}
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+_ECONOMY_CONFIG = _load_economy_config(os.getenv("ECONOMY_CONFIG_PATH", "config/economy.json"))
+
+
+def _get_economy_value(path: str, default: object) -> object:
+    current: object = _ECONOMY_CONFIG
+    for key in path.split("."):
+        if not isinstance(current, dict):
+            return default
+        current = current.get(key, default)
+    return current
+
+
+def _get_economy_int(
+    path: str,
+    default: int,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    value = _get_economy_value(path, default)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
+def _get_economy_float(
+    path: str,
+    default: float,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    value = _get_economy_value(path, default)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
+def _get_economy_bool(path: str, default: bool) -> bool:
+    value = _get_economy_value(path, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y"}:
+            return True
+        if lowered in {"0", "false", "no", "n"}:
+            return False
+    return bool(value) if isinstance(value, (int, float)) else default
+
+
+def _get_economy_mapping(
+    path: str, default: Mapping[str, float]
+) -> Mapping[str, float]:
+    value = _get_economy_value(path, default)
+    if isinstance(value, dict):
+        parsed: dict[str, float] = {}
+        for entry_key, entry_value in value.items():
+            try:
+                parsed[str(entry_key)] = float(entry_value)
+            except (TypeError, ValueError):
+                continue
+        return parsed or default
+    return default
+
+
 def _get_balance_int(
     key: str,
     default: int,
@@ -148,6 +238,76 @@ if not DATABASE_URL:
 # ---------------------------------------------------------------------------
 # Paramètres économie
 # ---------------------------------------------------------------------------
+GEMS_REBASE_FACTOR = _get_economy_int("GEMS_REBASE_FACTOR", 10_000, minimum=1)
+ECONOMY_DEBUG = _get_economy_bool("debug", False)
+
+MARKET_VALUE_RARITY_BASE = _get_economy_mapping(
+    "market_value.rarity_base",
+    {
+        "Commun": 20,
+        "Atypique": 60,
+        "Rare": 120,
+        "Épique": 400,
+        "Légendaire": 1_200,
+        "Mythique": 4_000,
+        "Secret": 12_000,
+        "Huge": 150_000,
+        "Titanic": 1_500_000,
+    },
+)
+MARKET_VALUE_RARITY_CAP = _get_economy_mapping(
+    "market_value.rarity_cap",
+    {
+        "Commun": 200,
+        "Atypique": 500,
+        "Rare": 800,
+        "Épique": 3_000,
+        "Légendaire": 10_000,
+        "Mythique": 50_000,
+        "Secret": 250_000,
+        "Huge": 2_000_000,
+        "Titanic": 20_000_000,
+    },
+)
+MARKET_VALUE_POWER_EXPONENT = _get_economy_float(
+    "market_value.power_exponent", 0.8, minimum=0.1, maximum=2.0
+)
+MARKET_VALUE_POWER_BASELINE_GLOBAL = _get_economy_int(
+    "market_value.power_baseline_global", 1_000, minimum=1
+)
+MARKET_VALUE_POWER_BASELINE_BY_ZONE = _get_economy_mapping(
+    "market_value.power_baseline_by_zone",
+    {
+        "starter": 50,
+        "foret": 250,
+        "manoir_hante": 3_000,
+        "robotique": 50_000,
+        "animalerie": 1_000_000,
+        "mexico": 10_000_000,
+        "celeste": 100_000_000,
+        "exclusif": 1_000_000,
+    },
+)
+MARKET_VALUE_HUGE_MULTIPLIER = _get_economy_float(
+    "market_value.huge_multiplier", 10.0, minimum=0.1
+)
+MARKET_VALUE_TITANIC_MULTIPLIER = _get_economy_float(
+    "market_value.titanic_multiplier", 50.0, minimum=0.1
+)
+MARKET_VALUE_MIN = _get_economy_int("market_value.min_value", 1, minimum=1)
+DISPLAY_GEMS_COMPACT = _get_economy_bool("display.compact", True)
+
+MARKET_VALUE_CONFIG: Final[Mapping[str, object]] = {
+    "rarity_base": MARKET_VALUE_RARITY_BASE,
+    "rarity_cap": MARKET_VALUE_RARITY_CAP,
+    "power_exponent": MARKET_VALUE_POWER_EXPONENT,
+    "power_baseline_global": MARKET_VALUE_POWER_BASELINE_GLOBAL,
+    "power_baseline_by_zone": MARKET_VALUE_POWER_BASELINE_BY_ZONE,
+    "huge_multiplier": MARKET_VALUE_HUGE_MULTIPLIER,
+    "titanic_multiplier": MARKET_VALUE_TITANIC_MULTIPLIER,
+    "min_value": MARKET_VALUE_MIN,
+    "debug": ECONOMY_DEBUG,
+}
 _daily_min = _get_balance_int("daily_reward_min", 10_000, minimum=0)
 _daily_max = _get_balance_int("daily_reward_max", 20_000, minimum=_daily_min)
 DAILY_REWARD = (_daily_min, _daily_max)
@@ -357,13 +517,43 @@ class GradeDefinition:
     reward_gems: int
 
 
+def rebase_gems_amount(value: float | int, *, minimum: int = 0) -> int:
+    """Convert a gem value from the legacy scale to the rebased scale."""
+
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return max(0, int(minimum))
+    if numeric <= 0 or math.isnan(numeric):
+        return max(0, int(minimum))
+    if GEMS_REBASE_FACTOR <= 1:
+        return max(int(minimum), int(numeric))
+    scaled = int(math.floor(numeric / GEMS_REBASE_FACTOR))
+    if scaled < minimum:
+        scaled = int(minimum)
+    return max(0, scaled)
+
+
+def rebase_gems_price(value: float | int) -> int:
+    """Return a safe rebased gem price (never free when input is positive)."""
+
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if numeric <= 0 or math.isnan(numeric):
+        return 0
+    scaled = rebase_gems_amount(numeric, minimum=0)
+    return max(1, int(scaled))
+
+
 BASE_PET_SLOTS: Final[int] = 4
 PET_SLOT_MAX_CAPACITY: Final[int] = 40
-PET_SLOT_SHOP_BASE_COST: Final[int] = 5_000
+PET_SLOT_SHOP_BASE_COST: Final[int] = rebase_gems_price(5_000)
 PET_SLOT_SHOP_COST_GROWTH: Final[float] = 1.6
 PET_SLOT_SHOP_CURRENCY: Final[str] = "gem"
 MEXICO_DISTRIBUTOR_COOLDOWN: Final[timedelta] = timedelta(minutes=10)
-PET_VALUE_SCALE: Final[int] = 1_000
+PET_VALUE_SCALE: Final[int] = _get_economy_int("pet_value_scale", 1, minimum=1)
 
 
 def scale_pet_value(raw_value: float | int, *, minimum: int = 0) -> int:
@@ -375,7 +565,9 @@ def scale_pet_value(raw_value: float | int, *, minimum: int = 0) -> int:
         return max(0, int(minimum))
     if numeric <= 0 or math.isnan(numeric):
         return max(0, int(minimum))
-    scaled = int(numeric / PET_VALUE_SCALE)
+    if PET_VALUE_SCALE <= 1:
+        return max(int(minimum), int(numeric))
+    scaled = int(math.floor(numeric / PET_VALUE_SCALE))
     if scaled <= 0:
         scaled = 1
     return max(int(minimum), scaled)
@@ -1437,7 +1629,7 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         name="Fusée Orbitale",
         slug=ROCKET_ZONE_SLUG,
         grade_required=15,
-        entry_cost=1_000_000,
+        entry_cost=rebase_gems_price(1_000_000),
         eggs=(),
         rebirth_required=2,
         currency="gem",

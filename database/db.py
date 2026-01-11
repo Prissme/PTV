@@ -32,8 +32,10 @@ from config import (
     HUGE_PET_LEVEL_CAP,
     HUGE_PET_MIN_INCOME,
     HUGE_GRIFF_NAME,
+    GEMS_REBASE_FACTOR,
     HUGE_PET_NAMES,
     HUGE_BO_NAME,
+    MARKET_VALUE_CONFIG,
     PET_DEFINITIONS,
     PET_EGG_DEFINITIONS,
     PET_FARM_ENCHANT_BASE,
@@ -56,12 +58,9 @@ from config import (
     TITANIC_GRIFF_NAME,
     POTION_DEFINITION_MAP,
     PotionDefinition,
-    clamp_income_value,
     compute_huge_income,
     get_huge_level_multiplier,
-    get_huge_multiplier,
     scale_pet_value,
-    safe_multiply_income,
     huge_level_required_xp,
 )
 from utils.mastery import get_mastery_definition
@@ -117,6 +116,12 @@ _MARKET_VARIANTS: tuple[tuple[str, float], ...] = (
     ("rainbow+shiny", 50.0),
     ("galaxy+shiny", 125.0),
 )
+_MARKET_VARIANT_MULTIPLIERS = {code: multiplier for code, multiplier in _MARKET_VARIANTS}
+_PET_ZONE_BY_NAME = {
+    pet.name.lower(): egg.zone_slug
+    for egg in PET_EGG_DEFINITIONS
+    for pet in egg.pets
+}
 
 
 @dataclass(frozen=True)
@@ -605,6 +610,129 @@ class Database:
         await executor.execute(
             "CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(created_at)"
         )
+
+    async def _get_config_flag_in_connection(
+        self, connection: asyncpg.Connection, flag_name: str
+    ) -> bool:
+        row = await connection.fetchrow(
+            "SELECT value FROM config_flags WHERE flag_name = $1",
+            flag_name,
+        )
+        return bool(row["value"]) if row else False
+
+    async def _set_config_flag_in_connection(
+        self, connection: asyncpg.Connection, flag_name: str, value: bool
+    ) -> None:
+        await connection.execute(
+            """
+            INSERT INTO config_flags (flag_name, value, updated_at)
+            VALUES ($1, $2, CURRENT_TIMESTAMP)
+            ON CONFLICT (flag_name)
+            DO UPDATE SET value = $2, updated_at = CURRENT_TIMESTAMP
+            """,
+            flag_name,
+            value,
+        )
+
+    async def _apply_power_unnerf_migration(
+        self, connection: asyncpg.Connection
+    ) -> None:
+        flag_name = "economy_power_unnerf_v1"
+        if await self._get_config_flag_in_connection(connection, flag_name):
+            return
+        row = await connection.fetchrow(
+            "SELECT COUNT(*) AS total, MAX(base_income_per_hour) AS max_income FROM pets"
+        )
+        if row is None:
+            return
+        total = int(row["total"] or 0)
+        if total <= 0:
+            return
+        max_income = int(row["max_income"] or 0)
+        if max_income <= 0:
+            return
+        max_config_income = max(
+            pet.base_income_per_hour for pet in PET_DEFINITIONS
+        )
+        ratio = max_config_income / max_income if max_income > 0 else 0
+        if ratio >= 100:
+            await connection.execute(
+                """
+                UPDATE pets
+                SET base_income_per_hour = base_income_per_hour * 1000
+                WHERE base_income_per_hour > 0
+                """
+            )
+        await self._set_config_flag_in_connection(connection, flag_name, True)
+
+    async def _apply_gems_rebase_migration(
+        self, connection: asyncpg.Connection
+    ) -> None:
+        if GEMS_REBASE_FACTOR <= 1:
+            return
+        flag_name = f"economy_gems_rebase_v1_{GEMS_REBASE_FACTOR}"
+        if await self._get_config_flag_in_connection(connection, flag_name):
+            return
+        factor = int(GEMS_REBASE_FACTOR)
+        await connection.execute(
+            f"""
+            UPDATE users
+            SET gems = GREATEST(0, CAST(FLOOR(gems::numeric / {factor}) AS BIGINT))
+            """
+        )
+        await connection.execute(
+            f"""
+            UPDATE pet_market_values
+            SET value_in_gems = GREATEST(0, CAST(FLOOR(value_in_gems::numeric / {factor}) AS BIGINT))
+            """
+        )
+        await connection.execute(
+            f"""
+            UPDATE pet_trade_history
+            SET price = GREATEST(0, CAST(FLOOR(price::numeric / {factor}) AS BIGINT))
+            """
+        )
+        await connection.execute(
+            f"""
+            UPDATE market_listings
+            SET price = GREATEST(0, CAST(FLOOR(price::numeric / {factor}) AS BIGINT))
+            """
+        )
+        await connection.execute(
+            f"""
+            UPDATE plaza_consumable_listings
+            SET price = GREATEST(0, CAST(FLOOR(price::numeric / {factor}) AS BIGINT))
+            """
+        )
+        await connection.execute(
+            f"""
+            UPDATE plaza_auctions
+            SET starting_bid = GREATEST(0, CAST(FLOOR(starting_bid::numeric / {factor}) AS BIGINT)),
+                min_increment = GREATEST(0, CAST(FLOOR(min_increment::numeric / {factor}) AS BIGINT)),
+                current_bid = GREATEST(0, CAST(FLOOR(current_bid::numeric / {factor}) AS BIGINT)),
+                buyout_price = CASE
+                    WHEN buyout_price IS NULL THEN NULL
+                    ELSE GREATEST(0, CAST(FLOOR(buyout_price::numeric / {factor}) AS BIGINT))
+                END
+            """
+        )
+        await connection.execute(
+            f"""
+            UPDATE transactions
+            SET amount = CASE
+                    WHEN amount < 0 THEN -CAST(FLOOR(ABS(amount)::numeric / {factor}) AS BIGINT)
+                    ELSE CAST(FLOOR(amount::numeric / {factor}) AS BIGINT)
+                END,
+                balance_before = GREATEST(0, CAST(FLOOR(balance_before::numeric / {factor}) AS BIGINT)),
+                balance_after = GREATEST(0, CAST(FLOOR(balance_after::numeric / {factor}) AS BIGINT))
+            WHERE currency = 'gem'
+            """
+        )
+        await self._set_config_flag_in_connection(connection, flag_name, True)
+
+    async def _apply_economy_migrations(self, connection: asyncpg.Connection) -> None:
+        await self._apply_power_unnerf_migration(connection)
+        await self._apply_gems_rebase_migration(connection)
 
     async def _initialise_schema(self) -> None:
         async with self.pool.acquire() as connection:
@@ -1141,6 +1269,8 @@ class Database:
             await connection.execute(
                 "ALTER TABLE raffle_entries ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
             )
+
+            await self._apply_economy_migrations(connection)
 
     # ------------------------------------------------------------------
     # Utilitaires généraux
@@ -3400,7 +3530,8 @@ class Database:
                 up.is_shiny,
                 up.huge_level,
                 p.base_income_per_hour,
-                p.name
+                p.name,
+                p.rarity
             FROM user_pets AS up
             JOIN pets AS p ON p.pet_id = up.pet_id
         """
@@ -3413,6 +3544,7 @@ class Database:
                     pet_id = int(row["pet_id"])
                     base_income = int(row["base_income_per_hour"])
                     name = str(row.get("name", ""))
+                    rarity = str(row.get("rarity", ""))
                     value = self._resolve_market_price(
                         pet_id,
                         is_gold=bool(row.get("is_gold")),
@@ -3422,21 +3554,18 @@ class Database:
                         market_values=market_values,
                     )
                     if value <= 0:
-                        value = max(base_income * _MARKET_BASE_MULTIPLIER, 1_000)
-                    if bool(row.get("is_galaxy")):
-                        value = int(value * GALAXY_PET_MULTIPLIER)
-                    elif bool(row.get("is_rainbow")):
-                        value = int(value * RAINBOW_PET_MULTIPLIER)
-                    elif bool(row.get("is_gold")):
-                        value = int(value * GOLD_PET_MULTIPLIER)
-                    if bool(row.get("is_shiny")):
-                        value = int(value * SHINY_PET_MULTIPLIER)
-                    if bool(row["is_huge"]):
-                        level = int(row.get("huge_level") or 1)
-                        multiplier = get_huge_level_multiplier(name, level)
-                        bonus_floor = safe_multiply_income(base_income, multiplier * 150)
-                        value = max(value, bonus_floor)
-                        value = clamp_income_value(value, minimum=HUGE_PET_MIN_INCOME)
+                        zone_slug = _PET_ZONE_BY_NAME.get(name.lower(), "exclusif")
+                        value = self._fallback_market_value(
+                            name=name,
+                            rarity=rarity,
+                            base_income_per_hour=base_income,
+                            is_huge=bool(row.get("is_huge")),
+                            zone_slug=zone_slug,
+                            is_gold=bool(row.get("is_gold")),
+                            is_rainbow=bool(row.get("is_rainbow")),
+                            is_galaxy=bool(row.get("is_galaxy")),
+                            is_shiny=bool(row.get("is_shiny")),
+                        )
                     rap_totals[user_id] += max(0, scale_pet_value(value))
 
         return rap_totals
@@ -3499,7 +3628,8 @@ class Database:
                 up.is_shiny,
                 up.huge_level,
                 p.base_income_per_hour,
-                p.name
+                p.name,
+                p.rarity
             FROM user_pets AS up
             JOIN pets AS p ON p.pet_id = up.pet_id
             WHERE up.user_id = $1
@@ -3512,6 +3642,7 @@ class Database:
             pet_id = int(row["pet_id"])
             base_income = int(row["base_income_per_hour"])
             name = str(row.get("name", ""))
+            rarity = str(row.get("rarity", ""))
             value = self._resolve_market_price(
                 pet_id,
                 is_gold=bool(row.get("is_gold")),
@@ -3521,21 +3652,18 @@ class Database:
                 market_values=market_values,
             )
             if value <= 0:
-                value = max(base_income * _MARKET_BASE_MULTIPLIER, 1_000)
-            if bool(row.get("is_galaxy")):
-                value = int(value * GALAXY_PET_MULTIPLIER)
-            elif bool(row.get("is_rainbow")):
-                value = int(value * RAINBOW_PET_MULTIPLIER)
-            elif bool(row.get("is_gold")):
-                value = int(value * GOLD_PET_MULTIPLIER)
-            if bool(row.get("is_shiny")):
-                value = int(value * SHINY_PET_MULTIPLIER)
-            if bool(row.get("is_huge")):
-                level = int(row.get("huge_level") or 1)
-                multiplier = get_huge_level_multiplier(name, level)
-                bonus_floor = safe_multiply_income(base_income, multiplier * 150)
-                value = max(value, bonus_floor)
-                value = clamp_income_value(value, minimum=HUGE_PET_MIN_INCOME)
+                zone_slug = _PET_ZONE_BY_NAME.get(name.lower(), "exclusif")
+                value = self._fallback_market_value(
+                    name=name,
+                    rarity=rarity,
+                    base_income_per_hour=base_income,
+                    is_huge=bool(row.get("is_huge")),
+                    zone_slug=zone_slug,
+                    is_gold=bool(row.get("is_gold")),
+                    is_rainbow=bool(row.get("is_rainbow")),
+                    is_galaxy=bool(row.get("is_galaxy")),
+                    is_shiny=bool(row.get("is_shiny")),
+                )
             rap_total += max(0, scale_pet_value(value))
         return rap_total
 
@@ -3556,7 +3684,8 @@ class Database:
                 up.is_shiny,
                 up.huge_level,
                 p.base_income_per_hour,
-                p.name
+                p.name,
+                p.rarity
             FROM user_pets AS up
             JOIN pets AS p ON p.pet_id = up.pet_id
             WHERE up.user_id = $1
@@ -3570,6 +3699,7 @@ class Database:
             pet_id = int(row["pet_id"])
             base_income = int(row["base_income_per_hour"])
             name = str(row.get("name", ""))
+            rarity = str(row.get("rarity", ""))
             value = self._resolve_market_price(
                 pet_id,
                 is_gold=bool(row.get("is_gold")),
@@ -3579,21 +3709,18 @@ class Database:
                 market_values=market_values,
             )
             if value <= 0:
-                value = max(base_income * _MARKET_BASE_MULTIPLIER, 1_000)
-            if bool(row.get("is_galaxy")):
-                value = int(value * GALAXY_PET_MULTIPLIER)
-            elif bool(row.get("is_rainbow")):
-                value = int(value * RAINBOW_PET_MULTIPLIER)
-            elif bool(row.get("is_gold")):
-                value = int(value * GOLD_PET_MULTIPLIER)
-            if bool(row.get("is_shiny")):
-                value = int(value * SHINY_PET_MULTIPLIER)
-            if bool(row.get("is_huge")):
-                level = int(row.get("huge_level") or 1)
-                multiplier = get_huge_level_multiplier(name, level)
-                bonus_floor = safe_multiply_income(base_income, multiplier * 150)
-                value = max(value, bonus_floor)
-                value = clamp_income_value(value, minimum=HUGE_PET_MIN_INCOME)
+                zone_slug = _PET_ZONE_BY_NAME.get(name.lower(), "exclusif")
+                value = self._fallback_market_value(
+                    name=name,
+                    rarity=rarity,
+                    base_income_per_hour=base_income,
+                    is_huge=bool(row.get("is_huge")),
+                    zone_slug=zone_slug,
+                    is_gold=bool(row.get("is_gold")),
+                    is_rainbow=bool(row.get("is_rainbow")),
+                    is_galaxy=bool(row.get("is_galaxy")),
+                    is_shiny=bool(row.get("is_shiny")),
+                )
             value = max(0, scale_pet_value(value))
             if value > best_value:
                 best_value = value
@@ -5606,7 +5733,8 @@ class Database:
                 h.is_shiny,
                 h.price,
                 p.base_income_per_hour,
-                p.name
+                p.name,
+                p.rarity
             FROM pet_trade_history AS h
             JOIN pets AS p ON p.pet_id = h.pet_id
             ORDER BY h.recorded_at DESC, h.id DESC
@@ -5615,6 +5743,7 @@ class Database:
         prices_by_key: Dict[Tuple[int, str], list[int]] = defaultdict(list)
         base_income_by_pet: Dict[int, int] = {}
         name_by_pet: Dict[int, str] = {}
+        rarity_by_pet: Dict[int, str] = {}
         async with self.transaction() as connection:
             async for row in connection.cursor(query):
                 pet_id = int(row["pet_id"])
@@ -5636,6 +5765,8 @@ class Database:
                     base_income_by_pet[pet_id] = int(row.get("base_income_per_hour") or 0)
                 if pet_id not in name_by_pet:
                     name_by_pet[pet_id] = str(row.get("name", ""))
+                if pet_id not in rarity_by_pet:
+                    rarity_by_pet[pet_id] = str(row.get("rarity", ""))
 
         market_values: Dict[Tuple[int, str], int] = {}
         for (pet_id, code), prices in prices_by_key.items():
@@ -5644,19 +5775,41 @@ class Database:
             median_price = statistics.median(prices)
             value = int(round(median_price))
             base_income = base_income_by_pet.get(pet_id, 0)
-            base_value = max(base_income * _MARKET_BASE_MULTIPLIER, 1_000)
             pet_name = name_by_pet.get(pet_id, "")
-            if pet_name.lower() in _HUGE_PET_NAME_LOOKUP:
-                multiplier = get_huge_level_multiplier(pet_name, 1)
-                bonus_floor = safe_multiply_income(base_income, multiplier * 150)
-                base_value = max(base_value, bonus_floor)
-                base_value = clamp_income_value(base_value, minimum=HUGE_PET_MIN_INCOME)
+            rarity = rarity_by_pet.get(pet_id, "")
+            is_huge = pet_name.lower() in _HUGE_PET_NAME_LOOKUP
+            zone_slug = _PET_ZONE_BY_NAME.get(pet_name.lower(), "exclusif")
+            variant_multiplier = float(_MARKET_VARIANT_MULTIPLIERS.get(code, 1.0))
+            base_value = self.compute_market_value_gems(
+                {
+                    "name": pet_name,
+                    "rarity": rarity,
+                    "base_income_per_hour": base_income,
+                    "is_huge": is_huge,
+                },
+                config=MARKET_VALUE_CONFIG,
+                zone_slug=zone_slug,
+                variant_multiplier=variant_multiplier,
+            )
             min_value = max(1, int(base_value * _MARKET_MIN_MULTIPLIER))
             max_value = max(min_value, int(base_value * _MARKET_MAX_MULTIPLIER))
             if value < min_value:
                 value = min_value
             elif value > max_value:
                 value = max_value
+            rarity_key = self._market_rarity_key(
+                name=pet_name, rarity=rarity, is_huge=is_huge
+            )
+            cap_value = MARKET_VALUE_CONFIG.get("rarity_cap", {}).get(
+                rarity_key, MARKET_VALUE_CONFIG.get("rarity_cap", {}).get(rarity)
+            )
+            if cap_value is not None:
+                try:
+                    cap_int = int(cap_value)
+                except (TypeError, ValueError):
+                    cap_int = 0
+                if cap_int > 0:
+                    value = min(value, cap_int)
             market_values[(pet_id, code)] = max(0, int(value))
 
         return market_values
@@ -5681,6 +5834,115 @@ class Database:
         return await self._get_trade_history_market_values()
 
     @staticmethod
+    def _market_rarity_key(*, name: str, rarity: str, is_huge: bool) -> str:
+        lowered = name.lower()
+        if "titanic" in lowered:
+            return "Titanic"
+        if is_huge:
+            return "Huge"
+        return rarity
+
+    @classmethod
+    def _market_variant_multiplier(
+        cls,
+        *,
+        is_gold: bool,
+        is_rainbow: bool,
+        is_galaxy: bool,
+        is_shiny: bool,
+    ) -> float:
+        code = cls._build_variant_code(is_gold, is_rainbow, is_galaxy, is_shiny)
+        return float(_MARKET_VARIANT_MULTIPLIERS.get(code, 1.0))
+
+    @classmethod
+    def compute_market_value_gems(
+        cls,
+        pet: Mapping[str, object],
+        *,
+        config: Mapping[str, object],
+        zone_slug: str | None = None,
+        variant_multiplier: float = 1.0,
+    ) -> int:
+        name = str(pet.get("name") or "")
+        rarity = str(pet.get("rarity") or "")
+        is_huge = bool(pet.get("is_huge"))
+        rarity_key = cls._market_rarity_key(name=name, rarity=rarity, is_huge=is_huge)
+
+        rarity_base = config.get("rarity_base", {})
+        rarity_cap = config.get("rarity_cap", {})
+        base_value = float(rarity_base.get(rarity_key, rarity_base.get(rarity, 1.0)))
+        power_value = float(pet.get("base_income_per_hour") or pet.get("power") or 0)
+
+        baseline_by_zone = config.get("power_baseline_by_zone", {})
+        baseline = 0.0
+        if zone_slug and isinstance(baseline_by_zone, Mapping):
+            baseline = float(baseline_by_zone.get(zone_slug, 0.0) or 0.0)
+        if baseline <= 0:
+            baseline = float(config.get("power_baseline_global", 0.0) or 0.0)
+
+        exponent = float(config.get("power_exponent", 1.0) or 1.0)
+        if baseline > 0 and power_value > 0:
+            ratio = power_value / baseline
+            power_factor = ratio ** exponent if ratio > 0 else 0.0
+        else:
+            power_factor = 1.0
+
+        size_multiplier = 1.0
+        lowered = name.lower()
+        if "titanic" in lowered:
+            size_multiplier = float(config.get("titanic_multiplier", 1.0) or 1.0)
+        elif is_huge:
+            size_multiplier = float(config.get("huge_multiplier", 1.0) or 1.0)
+
+        value = base_value * power_factor * size_multiplier * max(0.0, float(variant_multiplier))
+        min_value = int(config.get("min_value", 1) or 1)
+        if value < min_value:
+            value = float(min_value)
+        value_int = max(0, int(round(value)))
+        if isinstance(rarity_cap, Mapping):
+            cap_value = rarity_cap.get(rarity_key, rarity_cap.get(rarity))
+            if cap_value is not None:
+                try:
+                    cap_int = int(cap_value)
+                except (TypeError, ValueError):
+                    cap_int = 0
+                if cap_int > 0:
+                    value_int = min(value_int, cap_int)
+        return max(min_value, value_int)
+
+    @classmethod
+    def _fallback_market_value(
+        cls,
+        *,
+        name: str,
+        rarity: str,
+        base_income_per_hour: int,
+        is_huge: bool,
+        zone_slug: str,
+        is_gold: bool,
+        is_rainbow: bool,
+        is_galaxy: bool,
+        is_shiny: bool,
+    ) -> int:
+        variant_multiplier = cls._market_variant_multiplier(
+            is_gold=is_gold,
+            is_rainbow=is_rainbow,
+            is_galaxy=is_galaxy,
+            is_shiny=is_shiny,
+        )
+        return cls.compute_market_value_gems(
+            {
+                "name": name,
+                "rarity": rarity,
+                "base_income_per_hour": base_income_per_hour,
+                "is_huge": is_huge,
+            },
+            config=MARKET_VALUE_CONFIG,
+            zone_slug=zone_slug,
+            variant_multiplier=variant_multiplier,
+        )
+
+    @staticmethod
     def _round_market_value(value: float) -> int:
         if value < 100:
             return max(1, int(round(value)))
@@ -5692,29 +5954,22 @@ class Database:
         *,
         name: str,
         rarity: str,
-        instances_count: int,
+        base_income_per_hour: int,
         zone_slug: str,
         is_huge: bool,
     ) -> float:
-        if instances_count <= 1:
-            return float(_MARKET_MAX_VALUE)
-
-        zone_multiplier = _MARKET_ZONE_MULTIPLIERS.get(zone_slug, 1.0)
-        if zone_slug == "exclusif":
-            zone_multiplier *= 5.0
-
-        if is_huge:
-            huge_multiplier = get_huge_multiplier(name)
-            huge_rarity_bonus = (1000 / max(1, instances_count)) ** 1.5
-            value = 1_000_000 * huge_multiplier * huge_rarity_bonus
-            value *= zone_multiplier**0.5
-        else:
-            base_value = _MARKET_RARITY_BASE.get(rarity, 1)
-            rarity_factor = 10 / max(1, instances_count)
-            value = base_value * rarity_factor * zone_multiplier
-
-        value = min(float(value), float(_MARKET_MAX_VALUE))
-        return float(value)
+        return float(
+            cls.compute_market_value_gems(
+                {
+                    "name": name,
+                    "rarity": rarity,
+                    "base_income_per_hour": base_income_per_hour,
+                    "is_huge": is_huge,
+                },
+                config=MARKET_VALUE_CONFIG,
+                zone_slug=zone_slug,
+            )
+        )
 
     async def sync_pet_market_values(self) -> int:
         """Recalcule et stocke les valeurs marché pour chaque pet et variante."""
@@ -5725,35 +5980,10 @@ class Database:
                 p.pet_id,
                 p.name,
                 p.rarity,
-                COUNT(up.id) AS instances_count
+                p.base_income_per_hour
             FROM pets AS p
-            LEFT JOIN user_pets AS up ON up.pet_id = p.pet_id
-            GROUP BY p.pet_id, p.name, p.rarity
             """
         )
-        variant_rows = await self.pool.fetch(
-            """
-            SELECT
-                pet_id,
-                is_gold,
-                is_rainbow,
-                is_galaxy,
-                is_shiny,
-                COUNT(*) AS total
-            FROM user_pets
-            GROUP BY pet_id, is_gold, is_rainbow, is_galaxy, is_shiny
-            """
-        )
-        variant_counts: Dict[Tuple[int, str], int] = {}
-        for row in variant_rows:
-            pet_id = int(row["pet_id"])
-            code = self._build_variant_code(
-                bool(row.get("is_gold")),
-                bool(row.get("is_rainbow")),
-                bool(row.get("is_galaxy")),
-                bool(row.get("is_shiny")),
-            )
-            variant_counts[(pet_id, code)] = int(row.get("total") or 0)
 
         is_huge_lookup = {pet.name.lower(): pet.is_huge for pet in PET_DEFINITIONS}
         zone_by_pet = {
@@ -5767,32 +5997,35 @@ class Database:
             pet_id = int(row["pet_id"])
             name = str(row["name"])
             rarity = str(row["rarity"])
-            instances_count = int(row.get("instances_count") or 0)
+            base_income = int(row.get("base_income_per_hour") or 0)
             is_huge = bool(is_huge_lookup.get(name.lower(), False))
             zone_slug = zone_by_pet.get(name.lower(), "exclusif")
             base_value = self._compute_pet_base_market_value(
                 name=name,
                 rarity=rarity,
-                instances_count=instances_count,
+                base_income_per_hour=base_income,
                 zone_slug=zone_slug,
                 is_huge=is_huge,
             )
+            rarity_key = self._market_rarity_key(
+                name=name, rarity=rarity, is_huge=is_huge
+            )
+            cap_value = MARKET_VALUE_CONFIG.get("rarity_cap", {}).get(
+                rarity_key, MARKET_VALUE_CONFIG.get("rarity_cap", {}).get(rarity)
+            )
+            cap_int = 0
+            if cap_value is not None:
+                try:
+                    cap_int = int(cap_value)
+                except (TypeError, ValueError):
+                    cap_int = 0
 
-            normal_count = variant_counts.get((pet_id, "normal"), 0)
             for code, multiplier in _MARKET_VARIANTS:
-                variant_count = variant_counts.get((pet_id, code), 0)
-                if variant_count > 0:
-                    variant_rarity_factor = 5_000 / max(1, variant_count)
-                else:
-                    if normal_count > 0:
-                        variant_rarity_factor = (5_000 / normal_count) * multiplier * 10
-                    else:
-                        variant_rarity_factor = 10_000
-
-                value = base_value * variant_rarity_factor * multiplier
-                value = min(float(value), float(_MARKET_MAX_VALUE))
+                value = base_value * multiplier
                 value = self._round_market_value(value)
-                values_to_store.append((pet_id, code, value))
+                if cap_int > 0:
+                    value = min(value, cap_int)
+                values_to_store.append((pet_id, code, int(value)))
 
         if not values_to_store:
             return 0
@@ -7270,6 +7503,7 @@ class Database:
             SELECT
                 p.pet_id,
                 p.name,
+                p.rarity,
                 p.base_income_per_hour,
                 COALESCE(m.value_in_gems, 0) AS market_value
             FROM pets AS p
@@ -7285,7 +7519,20 @@ class Database:
             base_income = int(row["base_income_per_hour"])
             value = int(row["market_value"] or 0)
             if value <= 0:
-                value = max(base_income * _MARKET_BASE_MULTIPLIER, 1_000)
+                name = str(row.get("name", ""))
+                rarity = str(row.get("rarity", ""))
+                zone_slug = _PET_ZONE_BY_NAME.get(name.lower(), "exclusif")
+                value = self._fallback_market_value(
+                    name=name,
+                    rarity=rarity,
+                    base_income_per_hour=base_income,
+                    is_huge=name.lower() in _HUGE_PET_NAME_LOOKUP,
+                    zone_slug=zone_slug,
+                    is_gold=False,
+                    is_rainbow=False,
+                    is_galaxy=False,
+                    is_shiny=False,
+                )
             results.append(
                 {
                     "pet_id": pet_id,
