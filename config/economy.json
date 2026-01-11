@@ -1,5 +1,10 @@
 {
   "GEMS_REBASE_FACTOR": 10000,
+  "leaderboard_limit": 10,
+  "cache_ttl_seconds": 60,
+  "cache_max_entries": 128,
+  "query_timeout_seconds": 3,
+  "debug_sql_timing": false,
   "market_value": {
     "rarity_base": {
       "Commun": 20,

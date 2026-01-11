@@ -334,7 +334,11 @@ DAILY_GEMS_BONUS_MAX = _get_balance_int(
 DAILY_GEMS_CAP = _get_balance_int("daily_gems_cap", 12, minimum=0)
 MESSAGE_REWARD = _get_balance_int("message_reward", 1, minimum=0)
 MESSAGE_COOLDOWN = 60
-LEADERBOARD_LIMIT = 10
+LEADERBOARD_LIMIT = _get_economy_int("leaderboard_limit", 10, minimum=1)
+CACHE_TTL_SECONDS = _get_economy_int("cache_ttl_seconds", 60, minimum=0)
+CACHE_MAX_ENTRIES = _get_economy_int("cache_max_entries", 128, minimum=1)
+QUERY_TIMEOUT_SECONDS = _get_economy_int("query_timeout_seconds", 3, minimum=1)
+DEBUG_SQL_TIMING = _get_economy_bool("debug_sql_timing", False)
 SLOT_MIN_BET = _get_balance_int("slots_min_bet", 50, minimum=1)
 SLOT_MAX_BET = _get_balance_int("slots_max_bet", 1_000_000_000_000_000, minimum=SLOT_MIN_BET)
 CASINO_HUGE_MAX_CHANCE = _get_balance_float("casino_huge_max_chance", 0.10, minimum=0.0, maximum=1.0)
@@ -890,7 +894,7 @@ HUGE_ROSA_NAME: Final[str] = "Huge Rosa"
 HUGE_ROSA_MULTIPLIER: Final[float] = 15
 HUGE_CLANCY_NAME: Final[str] = "Huge Clancy"
 HUGE_CLANCY_MULTIPLIER: Final[float] = 10
-HUGE_WISHED_NAME: Final[str] = "Huge Wished"
+HUGE_WISHED_NAME: Final[str] = "Titanic Wished"
 HUGE_WISHED_MULTIPLIER: Final[float] = 20
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
@@ -1678,7 +1682,11 @@ PET_EMOJIS: Final[dict[str, str]] = {
     TITANIC_MEEPLE_NAME: os.getenv("PET_EMOJI_TITANIC_MEEPLE", "<:TITANICMEEPLE:1433380006557646878>"),
     TITANIC_COLT_NAME: os.getenv("PET_EMOJI_TITANIC_COLT", "<:TitanicColt:1442530708810760326>"),
     HUGE_BULL_NAME: os.getenv("PET_EMOJI_HUGE_BULL", "<:HugeBull:1433617222357487748>"),
-    HUGE_WISHED_NAME: os.getenv("PET_EMOJI_HUGE_WISHED") or "<:HugeWished:1439605727575539752>",
+    HUGE_WISHED_NAME: (
+        os.getenv("PET_EMOJI_TITANIC_WISHED")
+        or os.getenv("PET_EMOJI_HUGE_WISHED")
+        or "<:TITANICWISHED:1439605727575539752>"
+    ),
     HUGE_BO_NAME: os.getenv("PET_EMOJI_HUGE_BO", "<:HugeBo:1435335892712685628>"),
     HUGE_RED_KING_FRANK_NAME: os.getenv(
         "PET_EMOJI_HUGE_RED_KING_FRANK", "<:HugeRedKingFrank:1442532497979084890>"

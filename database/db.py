@@ -8,6 +8,7 @@ import os
 import random
 import sys
 import statistics
+import time
 from collections import defaultdict
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -38,6 +39,9 @@ from config import (
     MARKET_VALUE_CONFIG,
     PET_DEFINITIONS,
     PET_EGG_DEFINITIONS,
+    CACHE_MAX_ENTRIES,
+    CACHE_TTL_SECONDS,
+    DEBUG_SQL_TIMING,
     PET_FARM_ENCHANT_BASE,
     PET_FARM_ENCHANT_MAX_CHANCE,
     PET_FARM_ENCHANT_PER_PET,
@@ -52,6 +56,7 @@ from config import (
     PET_FARM_TICKET_PER_PET,
     PET_FARM_TIME_FACTOR_MAX,
     PET_FARM_TIME_FACTOR_MIN,
+    PET_VALUE_SCALE,
     RAINBOW_PET_COMBINE_REQUIRED,
     RAINBOW_PET_MULTIPLIER,
     SHINY_PET_MULTIPLIER,
@@ -62,6 +67,7 @@ from config import (
     get_huge_level_multiplier,
     scale_pet_value,
     huge_level_required_xp,
+    QUERY_TIMEOUT_SECONDS,
 )
 from utils.mastery import get_mastery_definition
 from utils.localization import DEFAULT_LANGUAGE, normalize_language
@@ -70,6 +76,7 @@ from utils.enchantments import (
     pick_random_enchantment,
     roll_enchantment_power,
 )
+from utils.cache import LruTTLCache
 
 __all__ = [
     "Database",
@@ -220,6 +227,48 @@ class Database:
         self._min_size = min_size
         self._max_size = max_size
         self._lock_connection: asyncpg.Connection | None = None
+        self._leaderboard_cache: LruTTLCache[object] = LruTTLCache(
+            CACHE_TTL_SECONDS, CACHE_MAX_ENTRIES
+        )
+        self._analytics_cache: LruTTLCache[object] = LruTTLCache(
+            CACHE_TTL_SECONDS, CACHE_MAX_ENTRIES
+        )
+        self._market_values_ready = False
+
+    async def _fetch(
+        self, query: str, *args: object, timeout: float | None = QUERY_TIMEOUT_SECONDS
+    ) -> Sequence[asyncpg.Record]:
+        start = time.monotonic()
+        rows = await self.pool.fetch(query, *args, timeout=timeout)
+        if DEBUG_SQL_TIMING:
+            logger.info("SQL fetch in %.3fs", time.monotonic() - start)
+        return rows
+
+    async def _fetchrow(
+        self, query: str, *args: object, timeout: float | None = QUERY_TIMEOUT_SECONDS
+    ) -> asyncpg.Record | None:
+        start = time.monotonic()
+        row = await self.pool.fetchrow(query, *args, timeout=timeout)
+        if DEBUG_SQL_TIMING:
+            logger.info("SQL fetchrow in %.3fs", time.monotonic() - start)
+        return row
+
+    async def _fetchval(
+        self, query: str, *args: object, timeout: float | None = QUERY_TIMEOUT_SECONDS
+    ) -> object:
+        start = time.monotonic()
+        value = await self.pool.fetchval(query, *args, timeout=timeout)
+        if DEBUG_SQL_TIMING:
+            logger.info("SQL fetchval in %.3fs", time.monotonic() - start)
+        return value
+
+    async def _ensure_market_values_ready(self) -> None:
+        if self._market_values_ready:
+            return
+        count = await self._fetchval("SELECT COUNT(*) FROM pet_market_values")
+        if int(count or 0) <= 0:
+            await self.sync_pet_market_values()
+        self._market_values_ready = True
 
     @staticmethod
     def _rebirth_multiplier(count: int) -> float:
@@ -675,6 +724,13 @@ class Database:
             return
         factor = int(GEMS_REBASE_FACTOR)
         await connection.execute(
+            """
+            UPDATE plaza_auctions
+            SET min_increment = 1
+            WHERE min_increment IS NULL OR min_increment < 1
+            """
+        )
+        await connection.execute(
             f"""
             UPDATE users
             SET gems = GREATEST(0, CAST(FLOOR(gems::numeric / {factor}) AS BIGINT))
@@ -707,12 +763,24 @@ class Database:
         await connection.execute(
             f"""
             UPDATE plaza_auctions
-            SET starting_bid = GREATEST(0, CAST(FLOOR(starting_bid::numeric / {factor}) AS BIGINT)),
-                min_increment = GREATEST(0, CAST(FLOOR(min_increment::numeric / {factor}) AS BIGINT)),
-                current_bid = GREATEST(0, CAST(FLOOR(current_bid::numeric / {factor}) AS BIGINT)),
+            SET starting_bid = GREATEST(
+                    1,
+                    CAST(FLOOR(COALESCE(starting_bid, 0)::numeric / {factor}) AS BIGINT)
+                ),
+                min_increment = GREATEST(
+                    1,
+                    CAST(FLOOR(COALESCE(min_increment, 0)::numeric / {factor}) AS BIGINT)
+                ),
+                current_bid = GREATEST(
+                    0,
+                    CAST(FLOOR(COALESCE(current_bid, 0)::numeric / {factor}) AS BIGINT)
+                ),
                 buyout_price = CASE
                     WHEN buyout_price IS NULL THEN NULL
-                    ELSE GREATEST(0, CAST(FLOOR(buyout_price::numeric / {factor}) AS BIGINT))
+                    ELSE GREATEST(
+                        0,
+                        CAST(FLOOR(COALESCE(buyout_price, 0)::numeric / {factor}) AS BIGINT)
+                    )
                 END
             """
         )
@@ -748,6 +816,12 @@ class Database:
                     pet_last_claim TIMESTAMPTZ
                 )
                 """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_users_balance_desc ON users(balance DESC)"
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_users_gems_desc ON users(gems DESC)"
             )
             await connection.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS gems BIGINT NOT NULL DEFAULT 0"
@@ -3294,48 +3368,78 @@ class Database:
         )
 
     async def get_balance_leaderboard(self, limit: int) -> Sequence[asyncpg.Record]:
+        clamped_limit = max(0, int(limit))
+        cache_key = ("leaderboard_balance", clamped_limit)
+        cached = self._leaderboard_cache.get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
         query = "SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT $1"
-        return await self.pool.fetch(query, limit)
+        rows = await self._fetch(query, clamped_limit)
+        self._leaderboard_cache.set(cache_key, rows)
+        return rows
 
     async def get_gem_leaderboard(self, limit: int) -> Sequence[asyncpg.Record]:
+        clamped_limit = max(0, int(limit))
+        cache_key = ("leaderboard_gems", clamped_limit)
+        cached = self._leaderboard_cache.get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
         query = "SELECT user_id, gems FROM users ORDER BY gems DESC LIMIT $1"
-        return await self.pool.fetch(query, limit)
+        rows = await self._fetch(query, clamped_limit)
+        self._leaderboard_cache.set(cache_key, rows)
+        return rows
 
     async def get_balance_leaderboard_page(
         self, limit: int, offset: int
     ) -> tuple[Sequence[asyncpg.Record], int]:
         clamped_limit = max(0, int(limit))
         clamped_offset = max(0, int(offset))
-        total_row = await self.pool.fetchrow("SELECT COUNT(*) AS total FROM users")
+        cache_key = ("leaderboard_balance_page", clamped_limit, clamped_offset)
+        cached = self._leaderboard_cache.get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+        total_row = await self._fetchrow("SELECT COUNT(*) AS total FROM users")
         total = int(total_row["total"]) if total_row else 0
         if clamped_limit == 0 or total <= 0:
-            return [], total
+            result = ([], total)
+            self._leaderboard_cache.set(cache_key, result)
+            return result
         query = """
             SELECT user_id, balance
             FROM users
             ORDER BY balance DESC
             LIMIT $1 OFFSET $2
         """
-        rows = await self.pool.fetch(query, clamped_limit, clamped_offset)
-        return rows, total
+        rows = await self._fetch(query, clamped_limit, clamped_offset)
+        result = (rows, total)
+        self._leaderboard_cache.set(cache_key, result)
+        return result
 
     async def get_gem_leaderboard_page(
         self, limit: int, offset: int
     ) -> tuple[Sequence[asyncpg.Record], int]:
         clamped_limit = max(0, int(limit))
         clamped_offset = max(0, int(offset))
-        total_row = await self.pool.fetchrow("SELECT COUNT(*) AS total FROM users")
+        cache_key = ("leaderboard_gems_page", clamped_limit, clamped_offset)
+        cached = self._leaderboard_cache.get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+        total_row = await self._fetchrow("SELECT COUNT(*) AS total FROM users")
         total = int(total_row["total"]) if total_row else 0
         if clamped_limit == 0 or total <= 0:
-            return [], total
+            result = ([], total)
+            self._leaderboard_cache.set(cache_key, result)
+            return result
         query = """
             SELECT user_id, gems
             FROM users
             ORDER BY gems DESC
             LIMIT $1 OFFSET $2
         """
-        rows = await self.pool.fetch(query, clamped_limit, clamped_offset)
-        return rows, total
+        rows = await self._fetch(query, clamped_limit, clamped_offset)
+        result = (rows, total)
+        self._leaderboard_cache.set(cache_key, result)
+        return result
 
     async def get_mastery_leaderboard(
         self, mastery_slug: str, limit: int
@@ -3517,6 +3621,74 @@ class Database:
         """
         return await self.pool.fetch(query, limit)
 
+    @staticmethod
+    def _rap_values_cte() -> str:
+        base_code = """
+            CASE
+                WHEN up.is_galaxy THEN 'galaxy'
+                WHEN up.is_rainbow THEN 'rainbow'
+                WHEN up.is_gold THEN 'gold'
+                ELSE 'normal'
+            END
+        """
+        return f"""
+            WITH pet_values AS (
+                SELECT
+                    up.user_id,
+                    COALESCE(
+                        mv_primary.value_in_gems,
+                        mv_shiny_base.value_in_gems,
+                        mv_demote.value_in_gems,
+                        mv_normal_shiny.value_in_gems,
+                        mv_normal.value_in_gems,
+                        0
+                    ) AS market_value
+                FROM user_pets AS up
+                LEFT JOIN pet_market_values AS mv_primary
+                    ON mv_primary.pet_id = up.pet_id
+                    AND mv_primary.variant_code = (
+                        CASE
+                            WHEN up.is_shiny THEN {base_code} || '+shiny'
+                            ELSE {base_code}
+                        END
+                    )
+                LEFT JOIN pet_market_values AS mv_shiny_base
+                    ON up.is_shiny
+                    AND mv_shiny_base.pet_id = up.pet_id
+                    AND mv_shiny_base.variant_code = {base_code}
+                LEFT JOIN pet_market_values AS mv_demote
+                    ON up.is_galaxy
+                    AND mv_demote.pet_id = up.pet_id
+                    AND mv_demote.variant_code = (
+                        CASE
+                            WHEN up.is_shiny THEN 'rainbow+shiny'
+                            ELSE 'rainbow'
+                        END
+                    )
+                LEFT JOIN pet_market_values AS mv_normal_shiny
+                    ON (up.is_rainbow OR up.is_gold OR up.is_galaxy)
+                    AND up.is_shiny
+                    AND mv_normal_shiny.pet_id = up.pet_id
+                    AND mv_normal_shiny.variant_code = 'normal+shiny'
+                LEFT JOIN pet_market_values AS mv_normal
+                    ON mv_normal.pet_id = up.pet_id
+                    AND mv_normal.variant_code = 'normal'
+            ),
+            rap_values AS (
+                SELECT
+                    user_id,
+                    CASE
+                        WHEN {PET_VALUE_SCALE} <= 1 THEN market_value
+                        WHEN market_value <= 0 THEN 0
+                        ELSE GREATEST(
+                            1,
+                            CAST(FLOOR(market_value::numeric / {PET_VALUE_SCALE}) AS BIGINT)
+                        )
+                    END AS rap_value
+                FROM pet_values
+            )
+        """
+
     async def _compute_pet_rap_totals_map(self) -> defaultdict[int, int]:
         market_values = await self.get_pet_market_values()
         query = """
@@ -3579,19 +3751,67 @@ class Database:
         if clamped_limit == 0:
             return []
 
-        sorted_totals = await self._compute_pet_rap_totals()
-        return sorted_totals[:clamped_limit]
+        cache_key = ("leaderboard_rap", clamped_limit)
+        cached = self._leaderboard_cache.get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+
+        await self._ensure_market_values_ready()
+        query = f"""
+            {self._rap_values_cte()}
+            SELECT user_id, SUM(rap_value) AS rap_total
+            FROM rap_values
+            GROUP BY user_id
+            HAVING SUM(rap_value) > 0
+            ORDER BY rap_total DESC
+            LIMIT $1
+        """
+        rows = await self._fetch(query, clamped_limit)
+        result = [(int(row["user_id"]), int(row["rap_total"])) for row in rows]
+        self._leaderboard_cache.set(cache_key, result)
+        return result
 
     async def get_pet_rap_leaderboard_page(
         self, limit: int, offset: int
     ) -> tuple[list[tuple[int, int]], int]:
         clamped_limit = max(0, int(limit))
         clamped_offset = max(0, int(offset))
-        sorted_totals = await self._compute_pet_rap_totals()
-        total = len(sorted_totals)
+        cache_key = ("leaderboard_rap_page", clamped_limit, clamped_offset)
+        cached = self._leaderboard_cache.get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+
+        await self._ensure_market_values_ready()
+        total_query = f"""
+            {self._rap_values_cte()}
+            SELECT COUNT(*) AS total
+            FROM (
+                SELECT user_id
+                FROM rap_values
+                GROUP BY user_id
+                HAVING SUM(rap_value) > 0
+            ) AS totals
+        """
+        total_row = await self._fetchrow(total_query)
+        total = int(total_row["total"]) if total_row else 0
         if clamped_limit == 0 or total == 0:
-            return [], total
-        return sorted_totals[clamped_offset : clamped_offset + clamped_limit], total
+            result = ([], total)
+            self._leaderboard_cache.set(cache_key, result)
+            return result
+
+        page_query = f"""
+            {self._rap_values_cte()}
+            SELECT user_id, SUM(rap_value) AS rap_total
+            FROM rap_values
+            GROUP BY user_id
+            HAVING SUM(rap_value) > 0
+            ORDER BY rap_total DESC
+            LIMIT $1 OFFSET $2
+        """
+        rows = await self._fetch(page_query, clamped_limit, clamped_offset)
+        result = ([(int(row["user_id"]), int(row["rap_total"])) for row in rows], total)
+        self._leaderboard_cache.set(cache_key, result)
+        return result
 
     async def get_user_pet_rap_rank(self, user_id: int) -> Mapping[str, int]:
         await self.ensure_user(user_id)
@@ -7475,8 +7695,25 @@ class Database:
             raise DatabaseError("Impossible de récupérer les statistiques de la base")
         return row
 
+    async def get_analytics_snapshot(
+        self,
+    ) -> tuple[Mapping[str, int], Sequence[Mapping[str, int | str]]]:
+        cache_key = ("analytics_global",)
+        cached = self._analytics_cache.get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+        totals = await self.get_server_economy_totals()
+        pet_values = await self.get_pet_value_overview()
+        snapshot = (totals, pet_values)
+        self._analytics_cache.set(cache_key, snapshot)
+        return snapshot
+
     async def get_server_economy_totals(self) -> Mapping[str, int]:
-        row = await self.pool.fetchrow(
+        cache_key = ("analytics_totals",)
+        cached = self._analytics_cache.get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+        row = await self._fetchrow(
             """
             SELECT
                 COALESCE(SUM(balance), 0) AS total_pb,
@@ -7487,18 +7724,34 @@ class Database:
         if row is None:
             raise DatabaseError("Impossible de récupérer les statistiques économiques")
         total_rap = await self.get_total_pet_rap()
-        return {
+        result = {
             "total_pb": int(row["total_pb"]),
             "total_gems": int(row["total_gems"]),
             "total_rap": int(total_rap),
         }
+        self._analytics_cache.set(cache_key, result)
+        return result
 
     async def get_total_pet_rap(self) -> int:
-        totals = await self._compute_pet_rap_totals_map()
-        return sum(int(value) for value in totals.values())
+        await self._ensure_market_values_ready()
+        query = f"""
+            {self._rap_values_cte()}
+            SELECT COALESCE(SUM(rap_total), 0) AS total_rap
+            FROM (
+                SELECT user_id, SUM(rap_value) AS rap_total
+                FROM rap_values
+                GROUP BY user_id
+            ) AS totals
+        """
+        value = await self._fetchval(query)
+        return int(value or 0)
 
     async def get_pet_value_overview(self) -> Sequence[Mapping[str, int | str]]:
-        rows = await self.pool.fetch(
+        cache_key = ("analytics_pet_values",)
+        cached = self._analytics_cache.get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+        rows = await self._fetch(
             """
             SELECT
                 p.pet_id,
@@ -7540,4 +7793,5 @@ class Database:
                     "value": int(value),
                 }
             )
+        self._analytics_cache.set(cache_key, results)
         return results
