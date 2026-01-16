@@ -1,7 +1,9 @@
 """Utility helpers for formatting user-facing values."""
 from __future__ import annotations
 
-__all__ = ["format_currency", "format_gems"]
+from config import Emojis
+
+__all__ = ["format_currency", "format_gems", "format_compact"]
 
 _SUFFIXES: tuple[str, ...] = ("", "K", "M", "B", "T", "q", "Q", "s", "S", "O", "N", "D")
 
@@ -29,6 +31,11 @@ def _format_compact(amount: int) -> str:
     return f"{text}{_SUFFIXES[index]}"
 
 
+def format_compact(amount: int) -> str:
+    """Return a compact number string with short-scale suffixes."""
+    return _format_compact(amount)
+
+
 def format_currency(amount: int) -> str:
     """Return a formatted currency string using US short scale suffixes."""
     return f"{_format_compact(amount)} PB 🪙"
@@ -36,4 +43,4 @@ def format_currency(amount: int) -> str:
 
 def format_gems(amount: int) -> str:
     """Return a formatted gem string using US short scale suffixes."""
-    return f"{_format_compact(amount)} Gemmes"
+    return f"{_format_compact(amount)} {Emojis.GEM} Gemmes"

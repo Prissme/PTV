@@ -894,7 +894,7 @@ HUGE_ROSA_NAME: Final[str] = "Huge Rosa"
 HUGE_ROSA_MULTIPLIER: Final[float] = 15
 HUGE_CLANCY_NAME: Final[str] = "Huge Clancy"
 HUGE_CLANCY_MULTIPLIER: Final[float] = 10
-HUGE_WISHED_NAME: Final[str] = "Titanic Wished"
+HUGE_WISHED_NAME: Final[str] = "Huge Wished"
 HUGE_WISHED_MULTIPLIER: Final[float] = 20
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
@@ -1303,7 +1303,7 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name=HUGE_WISHED_NAME,
         rarity="Secret",
-        image_url="https://cdn.discordapp.com/emojis/1439605727575539752.png",
+        image_url="https://cdn.discordapp.com/emojis/1459842344592609414.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0,
         is_huge=True,
@@ -1462,7 +1462,7 @@ _CELESTE_EGG_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name="Orion",
         rarity="Légendaire",
-        image_url="https://cdn.discordapp.com/emojis/1433376959127228436.png",
+        image_url="https://cdn.discordapp.com/attachments/1434252768633290952/1461846749399355443/ChatGPT_Image_16_janv._2026__23_13_25-removebg-preview.png?ex=696c0a60&is=696ab8e0&hm=317866087afa136179c52abc042dc0e27d76a48fe40d798d52dbc5eb8bd96c54",
         base_income_per_hour=120_000_000,
         drop_rate=0.12,
     ),
@@ -1685,7 +1685,7 @@ PET_EMOJIS: Final[dict[str, str]] = {
     HUGE_WISHED_NAME: (
         os.getenv("PET_EMOJI_TITANIC_WISHED")
         or os.getenv("PET_EMOJI_HUGE_WISHED")
-        or "<:TITANICWISHED:1439605727575539752>"
+        or "<:HugeWished:1459842344592609414>"
     ),
     HUGE_BO_NAME: os.getenv("PET_EMOJI_HUGE_BO", "<:HugeBo:1435335892712685628>"),
     HUGE_RED_KING_FRANK_NAME: os.getenv(
