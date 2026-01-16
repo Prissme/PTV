@@ -184,9 +184,9 @@ def info_embed(message: str, *, title: str = "Information") -> discord.Embed:
 def balance_embed(
     member: discord.Member, *, balance: int, gems: int | None = None
 ) -> discord.Embed:
-    lines = [f"{Emojis.MONEY} **Solde :** {format_currency(balance)}"]
+    lines = [f"**Solde :** {format_currency(balance)}"]
     if gems is not None:
-        lines.append(f"**Gemmes :** {format_gems(gems)}")
+        lines.append(f"**Gemmes :** {format_compact(gems)} {Emojis.GEM}")
     description = "\n".join(lines)
     embed = _base_embed("Solde", description, color=Colors.SUCCESS if balance else Colors.NEUTRAL)
     _set_member_author(embed, member)
@@ -359,7 +359,7 @@ def leaderboard_embed(
         elif normalized_symbol == "RAP":
             value_display = f"{format_gems(value)} (RAP)"
         elif normalized_symbol in {"GEM", "GEMS"}:
-            value_display = format_gems(value)
+            value_display = f"{format_compact(value)} {Emojis.GEM}"
         else:
             value_display = f"{value:,} {symbol}".replace(",", " ")
         lines.append(f"**{rank}.** {name} — {value_display}")
@@ -636,6 +636,8 @@ def grade_completed_embed(
         f"Récompense : **{format_gems(reward_gems)}**",
         f"Slots de pets disponibles : **{pet_slots}**",
         f"Gemmes actuelles : {format_gems(gems_after)}",
+        f"Pense à vérifier tes objectifs avec {PREFIX}grade.",
+        "Astuce : plus ton grade est élevé, moins tu as de chances de te faire voler.",
     ]
     embed = _base_embed("🎖️ Grade amélioré !", "\n".join(lines), color=Colors.SUCCESS)
     _set_member_author(embed, member)

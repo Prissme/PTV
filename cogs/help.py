@@ -77,11 +77,10 @@ class HelpCommand:
             alias_text = f" · {formatted_aliases}"
 
         header = f"{self.icon} **{self.command}**{alias_text}"
-        body_lines = [f"> {self.description}"]
+        description = self.description
         if self.note:
-            body_lines.append(f"> {self.note}")
-
-        return "\n".join([header, *body_lines])
+            description = f"{description} ({self.note})"
+        return f"{header} — {description}"
 
     def iter_lookup_keys(self) -> tuple[str, ...]:
         """Retourne les clés normalisées permettant d'identifier la commande."""

@@ -171,6 +171,7 @@ class EcoBot(commands.Bot):
             "economy",
             "grades",
             "leaderboard",
+            "drops",
             "pets",
             "potions",
             "enchantments",
