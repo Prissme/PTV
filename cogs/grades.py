@@ -325,13 +325,14 @@ class GradeSystem(commands.Cog):
             pet_slots=pet_slots,
         )
 
-        destination: QuestChannel = channel
+        destination: QuestChannel = None
+        with contextlib.suppress(discord.HTTPException):
+            destination = await member.create_dm()
         if destination is None:
-            with contextlib.suppress(discord.HTTPException):
-                destination = await member.create_dm()
-            if destination is None and isinstance(member, discord.Member):
-                if member.guild and member.guild.system_channel:
-                    destination = member.guild.system_channel
+            destination = channel
+        if destination is None and isinstance(member, discord.Member):
+            if member.guild and member.guild.system_channel:
+                destination = member.guild.system_channel
 
         if destination is not None:
             with contextlib.suppress(discord.HTTPException):
