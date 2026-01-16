@@ -1479,6 +1479,7 @@ class Pets(commands.Cog):
         if self._default_egg_slug:
             self._egg_lookup.setdefault(self._default_egg_slug, self._default_egg_slug)
         self._egg_open_locks: Dict[int, asyncio.Lock] = {}
+        self._claim_locks: Dict[int, asyncio.Lock] = {}
         self._last_clock_sample = datetime.now(timezone.utc)
         self._auto_hatch_tasks: Dict[int, asyncio.Task] = {}
         self._pets_cache = TTLCache[tuple[Sequence[Mapping[str, object]], Mapping[int, int]]](CACHE_TTL_PETS)
@@ -5122,7 +5123,15 @@ class Pets(commands.Cog):
                     )
                 )
                 return
-            unique_ids = [int(row["id"]) for row in available[:10]]
+            def _fuse_sort_key(row: Mapping[str, Any]) -> tuple[int, int, str, int]:
+                data = self._convert_record(row, best_non_huge_income=None)
+                rarity_rank = PET_RARITY_ORDER.get(str(data.get("rarity", "")), 0)
+                income = int(data.get("base_income_per_hour", 0))
+                name = str(data.get("name", "")).casefold()
+                return (rarity_rank, income, name, int(row.get("id") or 0))
+
+            available_sorted = sorted(available, key=_fuse_sort_key)
+            unique_ids = [int(row["id"]) for row in available_sorted[:10]]
             auto_selected = True
 
         if not unique_ids:
@@ -5793,129 +5802,138 @@ class Pets(commands.Cog):
 
     @commands.command(name="claim")
     async def claim(self, ctx: commands.Context) -> None:
-        (
-            amount,
-            rows,
-            elapsed,
-            booster_info,
-            clan_info,
-            progress_updates,
-            potion_info,
-            enchantment_info,
-            farm_rewards,
-            _rebirth_info,
-        ) = await self.database.claim_active_pet_income(ctx.author.id)
-        if not rows:
-            await ctx.send(embed=embeds.error_embed("Tu dois équiper un pet avant de pouvoir collecter ses revenus."))
-            return
-
-        original_levels: Dict[int, int] = {
-            int(row["id"]): int(row.get("huge_level") or 1)
-            for row in rows
-            if bool(row.get("is_huge"))
-        }
-        pets_data = await self._prepare_pet_data(ctx.author.id, rows)
-
-        if progress_updates:
-            for pet in pets_data:
-                user_pet_id = int(pet.get("id", 0))
-                update = progress_updates.get(user_pet_id)
-                if not update:
-                    continue
-                new_level, new_xp = update
-                self._apply_huge_progress_fields(pet, new_level, new_xp)
-                if pet.get("is_huge"):
-                    reference = int(pet.get("_reference_income", 0))
-                    income_value = self._compute_huge_income(
-                        reference,
-                        pet_name=str(pet.get("name", "")),
-                        level=new_level,
+        lock = self._claim_locks.get(ctx.author.id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._claim_locks[ctx.author.id] = lock
+        async with lock:
+            (
+                amount,
+                rows,
+                elapsed,
+                booster_info,
+                clan_info,
+                progress_updates,
+                potion_info,
+                enchantment_info,
+                farm_rewards,
+                _rebirth_info,
+            ) = await self.database.claim_active_pet_income(ctx.author.id)
+            if not rows:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Tu dois équiper un pet avant de pouvoir collecter ses revenus."
                     )
-                    pet["base_income_per_hour"] = income_value
-                    if "income" in pet:
-                        pet["income"] = income_value
-
-        for pet in pets_data:
-            pet.pop("_reference_income", None)
-
-        level_up_count = 0
-        if original_levels and pets_data:
-            for pet in pets_data:
-                if not pet.get("is_huge"):
-                    continue
-                user_pet_id = int(pet.get("id", 0))
-                old_level = original_levels.get(user_pet_id)
-                new_level = int(pet.get("huge_level", old_level or 1))
-                if old_level is not None and new_level > old_level:
-                    level_up_count += 1
-
-        if clan_info:
-            clan_id = int(clan_info.get("id", 0))
-            if clan_id:
-                top_rows = await self.database.get_clan_contribution_leaderboard(clan_id, limit=3)
-                top_entries: List[Dict[str, object]] = []
-                for row in top_rows:
-                    contributor_id = int(row["user_id"])
-                    contribution = int(row["contribution"])
-                    member_obj = None
-                    if ctx.guild is not None:
-                        member_obj = ctx.guild.get_member(contributor_id)
-                    display = member_obj.display_name if member_obj else f"<@{contributor_id}>"
-                    top_entries.append(
-                        {
-                            "display": display,
-                            "mention": f"<@{contributor_id}>",
-                            "contribution": contribution,
-                        }
-                    )
-                if top_entries:
-                    clan_info["top_contributors"] = top_entries
-
-        embed = embeds.pet_claim_embed(
-            member=ctx.author,
-            pets=pets_data,
-            amount=amount,
-            elapsed_seconds=elapsed,
-            booster=booster_info,
-            clan=clan_info if clan_info else None,
-            potion=potion_info if potion_info else None,
-            enchantment=enchantment_info if enchantment_info else None,
-            farm_rewards=farm_rewards if farm_rewards else None,
-        )
-        level_up_summary: str | None = None
-        if level_up_count:
-            level_up_summary = (
-                f"🎉 **{level_up_count}** nouveaux level ups de tes pets !"
-            )
-            embed.add_field(
-                name="🎉 Nouveaux niveaux",
-                value=level_up_summary,
-                inline=False,
-            )
-
-        try:
-            await ctx.send(embed=embed)
-        except discord.HTTPException:
-            logger.exception(
-                "Impossible d'envoyer l'embed de claim des pets",
-                extra={
-                    "user_id": ctx.author.id,
-                    "pet_count": len(pets_data),
-                    "amount": amount,
-                },
-            )
-            fallback_parts = [embed.title or "Gains des pets"]
-            if embed.description:
-                fallback_parts.append(embed.description)
-            if level_up_summary:
-                fallback_parts.append(level_up_summary)
-            fallback_message = "\n".join(part for part in fallback_parts if part)
-            if not fallback_message:
-                fallback_message = (
-                    "Tu récupères des PB avec tes pets, mais un problème est survenu "
-                    "lors de l'affichage de l'embed."
                 )
-            await ctx.send(fallback_message)
+                return
+
+            original_levels: Dict[int, int] = {
+                int(row["id"]): int(row.get("huge_level") or 1)
+                for row in rows
+                if bool(row.get("is_huge"))
+            }
+            pets_data = await self._prepare_pet_data(ctx.author.id, rows)
+
+            if progress_updates:
+                for pet in pets_data:
+                    user_pet_id = int(pet.get("id", 0))
+                    update = progress_updates.get(user_pet_id)
+                    if not update:
+                        continue
+                    new_level, new_xp = update
+                    self._apply_huge_progress_fields(pet, new_level, new_xp)
+                    if pet.get("is_huge"):
+                        reference = int(pet.get("_reference_income", 0))
+                        income_value = self._compute_huge_income(
+                            reference,
+                            pet_name=str(pet.get("name", "")),
+                            level=new_level,
+                        )
+                        pet["base_income_per_hour"] = income_value
+                        if "income" in pet:
+                            pet["income"] = income_value
+
+            for pet in pets_data:
+                pet.pop("_reference_income", None)
+
+            level_up_count = 0
+            if original_levels and pets_data:
+                for pet in pets_data:
+                    if not pet.get("is_huge"):
+                        continue
+                    user_pet_id = int(pet.get("id", 0))
+                    old_level = original_levels.get(user_pet_id)
+                    new_level = int(pet.get("huge_level", old_level or 1))
+                    if old_level is not None and new_level > old_level:
+                        level_up_count += 1
+
+            if clan_info:
+                clan_id = int(clan_info.get("id", 0))
+                if clan_id:
+                    top_rows = await self.database.get_clan_contribution_leaderboard(clan_id, limit=3)
+                    top_entries: List[Dict[str, object]] = []
+                    for row in top_rows:
+                        contributor_id = int(row["user_id"])
+                        contribution = int(row["contribution"])
+                        member_obj = None
+                        if ctx.guild is not None:
+                            member_obj = ctx.guild.get_member(contributor_id)
+                        display = member_obj.display_name if member_obj else f"<@{contributor_id}>"
+                        top_entries.append(
+                            {
+                                "display": display,
+                                "mention": f"<@{contributor_id}>",
+                                "contribution": contribution,
+                            }
+                        )
+                    if top_entries:
+                        clan_info["top_contributors"] = top_entries
+
+            embed = embeds.pet_claim_embed(
+                member=ctx.author,
+                pets=pets_data,
+                amount=amount,
+                elapsed_seconds=elapsed,
+                booster=booster_info,
+                clan=clan_info if clan_info else None,
+                potion=potion_info if potion_info else None,
+                enchantment=enchantment_info if enchantment_info else None,
+                farm_rewards=farm_rewards if farm_rewards else None,
+            )
+            level_up_summary: str | None = None
+            if level_up_count:
+                level_up_summary = (
+                    f"🎉 **{level_up_count}** nouveaux level ups de tes pets !"
+                )
+                embed.add_field(
+                    name="🎉 Nouveaux niveaux",
+                    value=level_up_summary,
+                    inline=False,
+                )
+
+            try:
+                await ctx.send(embed=embed)
+            except discord.HTTPException:
+                logger.exception(
+                    "Impossible d'envoyer l'embed de claim des pets",
+                    extra={
+                        "user_id": ctx.author.id,
+                        "pet_count": len(pets_data),
+                        "amount": amount,
+                    },
+                )
+                fallback_parts = [embed.title or "Gains des pets"]
+                if embed.description:
+                    fallback_parts.append(embed.description)
+                if level_up_summary:
+                    fallback_parts.append(level_up_summary)
+                fallback_message = "\n".join(part for part in fallback_parts if part)
+                if not fallback_message:
+                    fallback_message = (
+                        "Tu récupères des PB avec tes pets, mais un problème est survenu "
+                        "lors de l'affichage de l'embed."
+                    )
+                await ctx.send(fallback_message)
 
 
 

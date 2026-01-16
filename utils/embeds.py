@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
+import re
 from typing import Callable, Collection, Iterable, Mapping, Optional, Sequence, cast
 
 import discord
@@ -31,6 +32,8 @@ _BRANDING_REPLACEMENTS: dict[str, str] = {
     "FREESCAPE": "PRISSCUP",
 }
 
+_PB_EMOJI_PATTERN = re.compile(r"\bPB\b(?!\s*🪙)")
+
 
 def _apply_branding(text: str | None) -> str | None:
     """Remplace les anciennes références de marque par les nouvelles."""
@@ -43,29 +46,42 @@ def _apply_branding(text: str | None) -> str | None:
     return replaced
 
 
+def _apply_pb_emoji(text: str | None) -> str | None:
+    """Ajoute l'emoji aux mentions de PB si absent."""
+
+    if text is None:
+        return None
+    return _PB_EMOJI_PATTERN.sub("PB 🪙", text)
+
+
 def _finalize_embed(embed: discord.Embed) -> discord.Embed:
     """Applique les règles de branding à l'embed fourni."""
 
     if embed.title:
-        embed.title = _apply_branding(embed.title) or embed.title
+        embed.title = _apply_pb_emoji(_apply_branding(embed.title)) or embed.title
     if embed.description:
-        embed.description = _apply_branding(embed.description) or embed.description
+        embed.description = (
+            _apply_pb_emoji(_apply_branding(embed.description)) or embed.description
+        )
 
     footer = embed.footer
     if footer and footer.text:
-        embed.set_footer(text=_apply_branding(footer.text) or footer.text, icon_url=footer.icon_url)
+        embed.set_footer(
+            text=_apply_pb_emoji(_apply_branding(footer.text)) or footer.text,
+            icon_url=footer.icon_url,
+        )
 
     author = embed.author
     if author and author.name:
         embed.set_author(
-            name=_apply_branding(author.name) or author.name,
+            name=_apply_pb_emoji(_apply_branding(author.name)) or author.name,
             url=author.url,
             icon_url=author.icon_url,
         )
 
     for index, field in enumerate(embed.fields):
-        new_name = _apply_branding(field.name) or field.name
-        new_value = _apply_branding(field.value) or field.value
+        new_name = _apply_pb_emoji(_apply_branding(field.name)) or field.name
+        new_value = _apply_pb_emoji(_apply_branding(field.value)) or field.value
         if new_name != field.name or new_value != field.value:
             embed.set_field_at(index, name=new_name, value=new_value, inline=field.inline)
 
