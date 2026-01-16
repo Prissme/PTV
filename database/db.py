@@ -325,8 +325,8 @@ class Database:
     @staticmethod
     def _compute_pet_income(
         row: asyncpg.Record, best_non_huge_income: int
-    ) -> float:
-        base_income = float(row["base_income_per_hour"])
+    ) -> int:
+        base_income = int(row["base_income_per_hour"])
         if bool(row["is_huge"]):
             name = str(row.get("name", ""))
             level = int(row.get("huge_level") or 1)
@@ -335,7 +335,7 @@ class Database:
                 best_non_huge_income if best_non_huge_income > 0 else base_income
             )
             raw_income = compute_huge_income(reference_income, multiplier)
-            return float(scale_pet_value(raw_income))
+            return scale_pet_value(raw_income)
 
         income_value = base_income
         if bool(row.get("is_galaxy")):
@@ -346,13 +346,13 @@ class Database:
             income_value *= GOLD_PET_MULTIPLIER
         if bool(row.get("is_shiny")):
             income_value *= SHINY_PET_MULTIPLIER
-        return float(scale_pet_value(income_value))
+        return scale_pet_value(income_value)
 
     @staticmethod
     def _calculate_income_shares(
         rows: Sequence[asyncpg.Record],
-        effective_incomes: Sequence[float],
-        hourly_income: float,
+        effective_incomes: Sequence[int],
+        hourly_income: int,
         total_income: int,
     ) -> List[int]:
         if total_income <= 0 or hourly_income <= 0 or not rows:
@@ -375,8 +375,8 @@ class Database:
         self,
         rows: Sequence[asyncpg.Record],
         total_income: int,
-        effective_incomes: Sequence[float],
-        hourly_income: float,
+        effective_incomes: Sequence[int],
+        hourly_income: int,
         elapsed_hours: float,
     ) -> Dict[int, tuple[int, int]]:
         if total_income <= 0 or hourly_income <= 0 or not rows:

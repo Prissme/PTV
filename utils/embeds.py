@@ -21,7 +21,7 @@ from config import (
     scale_pet_value,
 )
 
-from utils.formatting import format_currency, format_gems
+from utils.formatting import format_compact, format_currency, format_gems
 from utils.pet_formatting import PetDisplay, pet_emoji
 from utils.mastery import MasteryDefinition
 from utils.enchantments import ENCHANTMENT_DEFINITION_MAP, format_enchantment
@@ -186,7 +186,7 @@ def balance_embed(
 ) -> discord.Embed:
     lines = [f"{Emojis.MONEY} **Solde :** {format_currency(balance)}"]
     if gems is not None:
-        lines.append(f"{Emojis.GEM} **Gemmes :** {format_gems(gems)}")
+        lines.append(f"**Gemmes :** {format_gems(gems)}")
     description = "\n".join(lines)
     embed = _base_embed("Solde", description, color=Colors.SUCCESS if balance else Colors.NEUTRAL)
     _set_member_author(embed, member)
@@ -354,6 +354,8 @@ def leaderboard_embed(
         name = user.display_name if user else f"Utilisateur {user_id}"
         if normalized_symbol == "PB":
             value_display = format_currency(value)
+        elif normalized_symbol == "PB/H":
+            value_display = f"{format_compact(value)} {symbol}"
         elif normalized_symbol == "RAP":
             value_display = f"{format_gems(value)} (RAP)"
         elif normalized_symbol in {"GEM", "GEMS"}:
