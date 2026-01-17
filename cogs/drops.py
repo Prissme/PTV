@@ -29,7 +29,7 @@ def _pick_good_pet() -> str:
     candidates = [
         pet
         for pet in PET_DEFINITIONS
-        if pet.is_huge or pet.rarity in GOOD_PET_RARITIES
+        if not pet.is_huge and pet.rarity in GOOD_PET_RARITIES
     ]
     if not candidates:
         candidates = list(PET_DEFINITIONS)
@@ -57,13 +57,56 @@ def _pick_good_enchantment() -> str:
 
 
 def _pick_pb_reward() -> str:
-    amount = random.randint(50_000, 500_000)
+    amount = random.randint(5_000, 50_000)
     return f"💰 **{format_currency(amount)}**"
 
 
 def _pick_gem_reward() -> str:
-    amount = random.randint(500, 5_000)
+    amount = random.randint(100, 1_000)
     return f"{format_compact(amount)} {Emojis.GEM}"
+
+
+class DropClaimView(discord.ui.View):
+    def __init__(self, loot: str) -> None:
+        super().__init__(timeout=300)
+        self.loot = loot
+        self.claimed_by: discord.User | None = None
+        self.message: discord.Message | None = None
+
+    def _build_embed(self, *, claimer: discord.abc.User | None = None) -> discord.Embed:
+        embed = embeds.info_embed(
+            f"Un drop vient d'apparaître : {self.loot}",
+            title="🎁 Drop sauvage",
+        )
+        if claimer is not None:
+            embed.add_field(name="Réclamé par", value=claimer.mention, inline=False)
+        return embed
+
+    def _disable_buttons(self) -> None:
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                child.disabled = True
+
+    async def on_timeout(self) -> None:
+        if self.message is None:
+            return
+        self._disable_buttons()
+        await self.message.edit(view=self)
+
+    @discord.ui.button(label="Claim le drop", style=discord.ButtonStyle.success, emoji="🎁")
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if self.claimed_by is not None:
+            await interaction.response.send_message(
+                f"Ce drop a déjà été réclamé par {self.claimed_by.mention}.",
+                ephemeral=True,
+            )
+            return
+
+        self.claimed_by = interaction.user
+        button.disabled = True
+        embed = self._build_embed(claimer=interaction.user)
+        await interaction.response.edit_message(embed=embed, view=self)
+        self.stop()
 
 
 def _roll_drop() -> str:
@@ -118,11 +161,10 @@ class Drops(commands.Cog):
         if channel is None:
             return
         loot = _roll_drop()
-        embed = embeds.info_embed(
-            f"Un drop vient d'apparaître : {loot}",
-            title="🎁 Drop sauvage",
-        )
-        await channel.send(embed=embed)
+        view = DropClaimView(loot)
+        embed = view._build_embed()
+        message = await channel.send(embed=embed, view=view)
+        view.message = message
 
     @_drop_loop.before_loop
     async def _before_drop_loop(self) -> None:
