@@ -352,6 +352,9 @@ PET_FARM_TIME_FACTOR_MAX = _get_balance_float("pet_farm_time_factor_max", 2.0, m
 PET_FARM_GEM_PER_PET_HOUR = _get_balance_float("pet_farm_gem_per_pet_hour", 2.0, minimum=0.0)
 PET_FARM_GEM_MAX = _get_balance_int("pet_farm_gem_max", 500, minimum=0)
 PET_FARM_GEM_VARIANCE_PER_PET = _get_balance_float("pet_farm_gem_variance_per_pet", 0.5, minimum=0.0)
+DAYCARE_MAX_PETS = _get_balance_int("daycare_max_pets", 10, minimum=1)
+DAYCARE_GEM_PER_PET_HOUR = _get_balance_float("daycare_gem_per_pet_hour", 4.0, minimum=0.0)
+DAYCARE_GEM_MAX = _get_balance_int("daycare_gem_max", 1500, minimum=0)
 PET_FARM_TICKET_BASE = _get_balance_float("pet_farm_ticket_base", 0.03, minimum=0.0)
 PET_FARM_TICKET_PER_PET = _get_balance_float("pet_farm_ticket_per_pet", 0.004, minimum=0.0)
 PET_FARM_TICKET_MAX_CHANCE = _get_balance_float(
@@ -938,7 +941,10 @@ def huge_level_required_xp(level: int) -> int:
         return 0
     if level < 1:
         level = 1
-    required = math.ceil(HUGE_PET_LEVEL_BASE_XP * (level**HUGE_PET_LEVEL_EXPONENT))
+    log_factor = 1.0 + math.log1p(level)
+    required = math.ceil(
+        HUGE_PET_LEVEL_BASE_XP * (level**HUGE_PET_LEVEL_EXPONENT) * log_factor
+    )
     return max(0, int(required))
 
 
@@ -1702,6 +1708,9 @@ PET_EMOJIS: Final[dict[str, str]] = {
     HUGE_CLANCY_NAME: os.getenv("PET_EMOJI_HUGE_CLANCY", "<:HugeClancy:1433616256522649712>"),
     "El Primo": os.getenv("PET_EMOJI_EL_PRIMO", "<:ElPrimo:1437826192794321097>"),
     "Amber": os.getenv("PET_EMOJI_AMBER", "<:Amber:1437826234095636490>"),
+    "Stella": os.getenv("PET_EMOJI_STELLA", "<:Stella:1462049982919213169>"),
+    "Lyra": os.getenv("PET_EMOJI_LYRA", "<:Lyra:1462050431198036172>"),
+    "Orion": os.getenv("PET_EMOJI_ORION", "<:Orion:1462047760479031378>"),
     HUGE_ROSA_NAME: os.getenv("PET_EMOJI_HUGE_ROSA", "<:HugeRosa:1437826071503311010>"),
     TITANIC_POCO_NAME: os.getenv("PET_EMOJI_TITANIC_POCO", "<:TITANICPOCO:1437826145486770176>"),
     # FIX: Ensure default emoji falls back when the environment variable is empty.

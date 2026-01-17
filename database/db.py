@@ -48,6 +48,9 @@ from config import (
     PET_FARM_GEM_MAX,
     PET_FARM_GEM_PER_PET_HOUR,
     PET_FARM_GEM_VARIANCE_PER_PET,
+    DAYCARE_GEM_MAX,
+    DAYCARE_GEM_PER_PET_HOUR,
+    DAYCARE_MAX_PETS,
     PET_FARM_POTION_BASE,
     PET_FARM_POTION_MAX_CHANCE,
     PET_FARM_POTION_PER_PET,
@@ -871,6 +874,9 @@ class Database:
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS mexico_dispenser_last_claim TIMESTAMPTZ"
             )
             await connection.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS daycare_last_claim TIMESTAMPTZ"
+            )
+            await connection.execute(
                 """
                 ALTER TABLE users ADD COLUMN IF NOT EXISTS race_best_stage
                 INTEGER NOT NULL DEFAULT 0 CHECK (race_best_stage >= 0)
@@ -945,6 +951,19 @@ class Database:
             )
             await connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_pets_active ON user_pets(user_id) WHERE is_active"
+            )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_daycare (
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    user_pet_id INTEGER NOT NULL REFERENCES user_pets(id) ON DELETE CASCADE,
+                    deposited_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, user_pet_id)
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_daycare_user ON user_daycare(user_id)"
             )
             await connection.execute(
                 "ALTER TABLE user_pets ADD COLUMN IF NOT EXISTS is_gold BOOLEAN NOT NULL DEFAULT FALSE"
@@ -4717,6 +4736,13 @@ class Database:
             user_id,
         )
 
+    async def get_daycare_last_claim(self, user_id: int) -> datetime | None:
+        await self.ensure_user(user_id)
+        return await self.pool.fetchval(
+            "SELECT daycare_last_claim FROM users WHERE user_id = $1",
+            user_id,
+        )
+
     async def get_user_pet(self, user_id: int, user_pet_id: int) -> Optional[asyncpg.Record]:
         return await self.pool.fetchrow(
             """
@@ -4747,6 +4773,209 @@ class Database:
             user_pet_id,
         )
 
+    async def is_pet_in_daycare(self, user_id: int, user_pet_id: int) -> bool:
+        if user_pet_id <= 0:
+            return False
+        row = await self.pool.fetchval(
+            """
+            SELECT 1
+            FROM user_daycare
+            WHERE user_id = $1 AND user_pet_id = $2
+            """,
+            user_id,
+            user_pet_id,
+        )
+        return bool(row)
+
+    async def get_daycare_pets(self, user_id: int) -> Sequence[asyncpg.Record]:
+        await self.ensure_user(user_id)
+        return await self.pool.fetch(
+            """
+            SELECT
+                ud.user_pet_id,
+                ud.deposited_at,
+                up.is_huge,
+                up.is_gold,
+                up.is_rainbow,
+                up.is_galaxy,
+                up.is_shiny,
+                up.huge_level,
+                up.huge_xp,
+                p.pet_id,
+                p.name,
+                p.rarity,
+                p.image_url,
+                p.base_income_per_hour
+            FROM user_daycare AS ud
+            JOIN user_pets AS up ON ud.user_pet_id = up.id
+            JOIN pets AS p ON up.pet_id = p.pet_id
+            WHERE ud.user_id = $1
+            ORDER BY ud.deposited_at ASC, ud.user_pet_id ASC
+            """,
+            user_id,
+        )
+
+    async def get_daycare_pet_count(
+        self, user_id: int, *, connection: asyncpg.Connection | None = None
+    ) -> int:
+        executor = connection or self.pool
+        if executor is None:
+            raise DatabaseError("La connexion à la base de données n'est pas initialisée")
+        count = await executor.fetchval(
+            "SELECT COUNT(*) FROM user_daycare WHERE user_id = $1",
+            user_id,
+        )
+        return int(count or 0)
+
+    async def deposit_daycare_pets(
+        self, user_id: int, user_pet_ids: Sequence[int]
+    ) -> Sequence[asyncpg.Record]:
+        if not user_pet_ids:
+            raise DatabaseError("Tu dois fournir au moins un pet à déposer.")
+
+        await self.ensure_user(user_id)
+        unique_ids = list(dict.fromkeys(int(pet_id) for pet_id in user_pet_ids if pet_id))
+        if not unique_ids:
+            raise DatabaseError("Aucun pet valide à déposer.")
+
+        async with self.transaction() as connection:
+            existing_count = await self.get_daycare_pet_count(user_id, connection=connection)
+            if existing_count >= DAYCARE_MAX_PETS:
+                raise DatabaseError("Ta garderie est déjà pleine.")
+            if existing_count + len(unique_ids) > DAYCARE_MAX_PETS:
+                remaining = max(0, DAYCARE_MAX_PETS - existing_count)
+                raise DatabaseError(
+                    f"Tu ne peux déposer que {remaining} pet{'s' if remaining > 1 else ''} en plus."
+                )
+
+            rows = await connection.fetch(
+                """
+                SELECT id, is_active, is_huge, on_market
+                FROM user_pets
+                WHERE user_id = $1 AND id = ANY($2::INT[])
+                FOR UPDATE
+                """,
+                user_id,
+                unique_ids,
+            )
+            if len(rows) < len(unique_ids):
+                raise DatabaseError("Tu dois sélectionner des pets qui t'appartiennent.")
+
+            daycare_conflicts = await connection.fetch(
+                """
+                SELECT user_pet_id
+                FROM user_daycare
+                WHERE user_id = $1 AND user_pet_id = ANY($2::INT[])
+                """,
+                user_id,
+                unique_ids,
+            )
+            if daycare_conflicts:
+                raise DatabaseError("Un des pets sélectionnés est déjà à la garderie.")
+
+            for row in rows:
+                if bool(row.get("is_huge")):
+                    raise DatabaseError("Les Huge pets ne peuvent pas aller à la garderie.")
+                if bool(row.get("is_active")):
+                    raise DatabaseError("Retire tes pets actifs avant de les déposer.")
+                if bool(row.get("on_market")):
+                    raise DatabaseError("Retire les pets en vente avant de les déposer.")
+
+            await connection.executemany(
+                """
+                INSERT INTO user_daycare (user_id, user_pet_id)
+                VALUES ($1, $2)
+                """,
+                [(user_id, pet_id) for pet_id in unique_ids],
+            )
+            await connection.execute(
+                """
+                UPDATE users
+                SET daycare_last_claim = COALESCE(daycare_last_claim, NOW())
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
+
+        return await self.get_daycare_pets(user_id)
+
+    async def withdraw_daycare_pets(
+        self, user_id: int, user_pet_ids: Sequence[int] | None = None
+    ) -> int:
+        await self.ensure_user(user_id)
+        ids = [int(pet_id) for pet_id in (user_pet_ids or []) if pet_id]
+        async with self.transaction() as connection:
+            if not ids:
+                deleted = await connection.execute(
+                    "DELETE FROM user_daycare WHERE user_id = $1",
+                    user_id,
+                )
+            else:
+                deleted = await connection.execute(
+                    """
+                    DELETE FROM user_daycare
+                    WHERE user_id = $1 AND user_pet_id = ANY($2::INT[])
+                    """,
+                    user_id,
+                    ids,
+                )
+        return int(deleted.split()[-1]) if isinstance(deleted, str) else 0
+
+    async def claim_daycare_gems(
+        self, user_id: int
+    ) -> tuple[int, float, int, int, int]:
+        await self.ensure_user(user_id)
+        now = datetime.now(timezone.utc)
+
+        async with self.transaction() as connection:
+            row = await connection.fetchrow(
+                "SELECT gems, daycare_last_claim FROM users WHERE user_id = $1 FOR UPDATE",
+                user_id,
+            )
+            if row is None:
+                raise DatabaseError("Utilisateur introuvable.")
+            gems_before = int(row.get("gems") or 0)
+            last_claim = row.get("daycare_last_claim")
+            if not isinstance(last_claim, datetime):
+                last_claim = now
+
+            pet_count = await self.get_daycare_pet_count(user_id, connection=connection)
+            elapsed_seconds = max(0.0, (now - last_claim).total_seconds())
+            elapsed_hours = elapsed_seconds / 3600 if elapsed_seconds > 0 else 0.0
+
+            reward = 0
+            if pet_count > 0 and elapsed_hours > 0:
+                reward = int(round(pet_count * elapsed_hours * DAYCARE_GEM_PER_PET_HOUR))
+                if DAYCARE_GEM_MAX > 0:
+                    reward = min(reward, DAYCARE_GEM_MAX)
+
+            gems_after = gems_before
+            if reward > 0:
+                gems_after = gems_before + reward
+                await connection.execute(
+                    "UPDATE users SET gems = $1 WHERE user_id = $2",
+                    gems_after,
+                    user_id,
+                )
+                await self.record_transaction(
+                    connection=connection,
+                    user_id=user_id,
+                    transaction_type="daycare_gems",
+                    currency="gem",
+                    amount=reward,
+                    balance_before=gems_before,
+                    balance_after=gems_after,
+                    description="Gemmes récoltées via la garderie",
+                )
+
+            await connection.execute(
+                "UPDATE users SET daycare_last_claim = $1 WHERE user_id = $2",
+                now,
+                user_id,
+            )
+
+        return reward, elapsed_hours, pet_count, gems_before, gems_after
+
     async def sell_user_pet_for_gems(
         self, user_id: int, user_pet_id: int, price: int
     ) -> tuple[str, int, int, int]:
@@ -4772,6 +5001,13 @@ class Database:
                 return "active", 0, 0, 0
             if bool(pet_row.get("on_market")):
                 return "on_market", 0, 0, 0
+            daycare_conflict = await connection.fetchval(
+                "SELECT 1 FROM user_daycare WHERE user_id = $1 AND user_pet_id = $2",
+                user_id,
+                user_pet_id,
+            )
+            if daycare_conflict:
+                return "daycare", 0, 0, 0
 
             balance_row = await connection.fetchrow(
                 "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
@@ -4853,6 +5089,13 @@ class Database:
 
             if bool(pet_row.get("on_market")):
                 raise DatabaseError("Ce pet est actuellement en vente sur un stand.")
+            daycare_conflict = await connection.fetchval(
+                "SELECT 1 FROM user_daycare WHERE user_id = $1 AND user_pet_id = $2",
+                source_user_id,
+                user_pet_id,
+            )
+            if daycare_conflict:
+                raise DatabaseError("Ce pet est actuellement à la garderie.")
 
             conflict = await connection.fetchval(
                 """
@@ -4924,6 +5167,7 @@ class Database:
         include_active: bool = True,
         include_inactive: bool = True,
         include_on_market: bool = True,
+        include_daycare: bool = True,
     ) -> Sequence[asyncpg.Record]:
         if not include_active and not include_inactive:
             return []
@@ -4950,6 +5194,10 @@ class Database:
             where_clauses.append("up.is_active")
         if not include_on_market:
             where_clauses.append("NOT up.on_market")
+        if not include_daycare:
+            where_clauses.append(
+                "NOT EXISTS (SELECT 1 FROM user_daycare ud WHERE ud.user_pet_id = up.id)"
+            )
 
         where_sql = " AND ".join(where_clauses)
         # FIX: Ensure deterministic ordering when listing user pets.
@@ -5016,14 +5264,17 @@ class Database:
         query = (
             """
             SELECT MAX(
-                p.base_income_per_hour
-                * CASE
-                    WHEN up.is_rainbow THEN $3
-                    WHEN up.is_gold THEN $2
-                    ELSE 1
-                END
-                * CASE WHEN up.is_galaxy THEN $4 ELSE 1 END
-                * CASE WHEN up.is_shiny THEN $5 ELSE 1 END
+                LEAST(
+                    CAST(p.base_income_per_hour AS NUMERIC)
+                    * CASE
+                        WHEN up.is_rainbow THEN $3::NUMERIC
+                        WHEN up.is_gold THEN $2::NUMERIC
+                        ELSE 1
+                    END
+                    * CASE WHEN up.is_galaxy THEN $4::NUMERIC ELSE 1 END
+                    * CASE WHEN up.is_shiny THEN $5::NUMERIC ELSE 1 END,
+                    9223372036854775807
+                )
             ) AS best_income
             FROM user_pets AS up
             JOIN pets AS p ON p.pet_id = up.pet_id
@@ -5077,6 +5328,15 @@ class Database:
             if bool(pet_row.get("on_market")):
                 raise DatabaseError(
                     "Ce pet est actuellement en vente sur ton stand. Retire-le avant de l'équiper."
+                )
+            daycare_conflict = await connection.fetchval(
+                "SELECT 1 FROM user_daycare WHERE user_id = $1 AND user_pet_id = $2",
+                user_id,
+                user_pet_id,
+            )
+            if daycare_conflict:
+                raise DatabaseError(
+                    "Ce pet est actuellement à la garderie. Retire-le avant de l'équiper."
                 )
 
             active_count = int(
@@ -5207,6 +5467,15 @@ class Database:
                 raise DatabaseError(
                     "Le pet que tu veux équiper est actuellement en vente sur ton stand. Retire-le avant de l'équiper."
                 )
+            daycare_conflict = await connection.fetchval(
+                "SELECT 1 FROM user_daycare WHERE user_id = $1 AND user_pet_id = $2",
+                user_id,
+                pet_in_id,
+            )
+            if daycare_conflict:
+                raise DatabaseError(
+                    "Le pet que tu veux équiper est actuellement à la garderie. Retire-le avant de l'équiper."
+                )
 
             active_count = int(
                 await connection.fetchval(
@@ -5284,6 +5553,16 @@ class Database:
                 raise DatabaseError(
                     "Ce pet est actuellement en vente sur ton stand. Retire-le avant de l'équiper."
                 )
+            if not currently_active:
+                daycare_conflict = await connection.fetchval(
+                    "SELECT 1 FROM user_daycare WHERE user_id = $1 AND user_pet_id = $2",
+                    user_id,
+                    user_pet_id,
+                )
+                if daycare_conflict:
+                    raise DatabaseError(
+                        "Ce pet est actuellement à la garderie. Retire-le avant de l'équiper."
+                    )
             active_count = int(
                 await connection.fetchval(
                     "SELECT COUNT(*) FROM user_pets WHERE user_id = $1 AND is_active",
@@ -6443,6 +6722,13 @@ class Database:
                 raise DatabaseError("Ce pet est actuellement équipé.")
             if bool(pet_row["on_market"]):
                 raise DatabaseError("Ce pet est déjà en vente sur ton stand.")
+            daycare_conflict = await connection.fetchval(
+                "SELECT 1 FROM user_daycare WHERE user_id = $1 AND user_pet_id = $2",
+                seller_id,
+                user_pet_id,
+            )
+            if daycare_conflict:
+                raise DatabaseError("Ce pet est actuellement à la garderie.")
 
             await connection.execute(
                 "UPDATE user_pets SET on_market = TRUE WHERE id = $1",
@@ -6501,6 +6787,13 @@ class Database:
                         raise DatabaseError("Un des pets sélectionnés est actuellement équipé.")
                     if bool(row.get("on_market")):
                         raise DatabaseError("Un des pets sélectionnés est listé sur un stand.")
+                    daycare_conflict = await connection.fetchval(
+                        "SELECT 1 FROM user_daycare WHERE user_id = $1 AND user_pet_id = $2",
+                        owner_id,
+                        user_pet_id,
+                    )
+                    if daycare_conflict:
+                        raise DatabaseError("Un des pets sélectionnés est à la garderie.")
                     pets_data.append((row, price))
                 return pets_data
 
@@ -7421,6 +7714,13 @@ class Database:
                 raise DatabaseError("Retire d'abord ce pet de tes actifs avant de lister une enchère.")
             if bool(pet_row.get("on_market")):
                 raise DatabaseError("Ce pet est déjà listé ailleurs.")
+            daycare_conflict = await connection.fetchval(
+                "SELECT 1 FROM user_daycare WHERE user_id = $1 AND user_pet_id = $2",
+                seller_id,
+                user_pet_id,
+            )
+            if daycare_conflict:
+                raise DatabaseError("Ce pet est actuellement à la garderie.")
 
             await connection.execute(
                 "UPDATE user_pets SET on_market = TRUE WHERE id = $1",
