@@ -1462,7 +1462,7 @@ _CELESTE_EGG_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name="Orion",
         rarity="Légendaire",
-        image_url="https://cdn.discordapp.com/attachments/1434252768633290952/1461846749399355443/ChatGPT_Image_16_janv._2026__23_13_25-removebg-preview.png?ex=696c0a60&is=696ab8e0&hm=317866087afa136179c52abc042dc0e27d76a48fe40d798d52dbc5eb8bd96c54",
+        image_url="https://media.discordapp.net/attachments/1434252768633290952/1462041976114516031/ChatGPT_Image_16_janv._2026__23_13_25-removebg-preview.png?ex=696cc032&is=696b6eb2&hm=3e9ea8ca015117f9f436ffbed91b4a47d874f8e8514819a12de746fa936360af&=&format=webp&quality=lossless&width=514&height=514",
         base_income_per_hour=120_000_000,
         drop_rate=0.12,
     ),
