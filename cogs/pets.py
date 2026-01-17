@@ -23,6 +23,10 @@ from config import (
     GOLD_PET_COMBINE_REQUIRED,
     GOLD_PET_MULTIPLIER,
     GRADE_DEFINITIONS,
+    CELESTE_ZONE_SLUG,
+    DAYCARE_GEM_MAX,
+    DAYCARE_GEM_PER_PET_HOUR,
+    DAYCARE_MAX_PETS,
     EGG_MASTERY_MAX_ROLE_ID,
     PET_MASTERY_MAX_ROLE_ID,
     PET_DEFINITIONS,
@@ -2351,6 +2355,7 @@ class Pets(commands.Cog):
         *,
         include_active: bool = True,
         include_inactive: bool = True,
+        include_daycare: bool = True,
     ) -> tuple[Optional[PetDefinition], List[Mapping[str, Any]], Optional[int], Optional[str]]:
         slug, ordinal, variant = self._parse_pet_query(raw_name)
         if not slug:
@@ -2382,6 +2387,7 @@ class Pets(commands.Cog):
             is_rainbow=is_rainbow,
             include_active=include_active,
             include_inactive=include_inactive,
+            include_daycare=include_daycare,
         )
         return definition, list(rows), ordinal, variant
 
@@ -2534,6 +2540,63 @@ class Pets(commands.Cog):
         if zone.currency == "gem":
             return embeds.format_gems(zone.entry_cost)
         return embeds.format_currency(zone.entry_cost)
+
+    @staticmethod
+    def _parse_pet_id_tokens(tokens: Iterable[str]) -> List[int]:
+        ids: List[int] = []
+        for token in tokens:
+            cleaned = token.replace(",", " ").strip()
+            for part in cleaned.split():
+                if part.isdigit():
+                    ids.append(int(part))
+        return ids
+
+    async def _send_daycare_status(self, ctx: commands.Context) -> None:
+        pets = await self.database.get_daycare_pets(ctx.author.id)
+        last_claim = await self.database.get_daycare_last_claim(ctx.author.id)
+        now = datetime.now(timezone.utc)
+        count = len(pets)
+
+        elapsed_hours = 0.0
+        if isinstance(last_claim, datetime):
+            elapsed_seconds = max(0.0, (now - last_claim).total_seconds())
+            elapsed_hours = elapsed_seconds / 3600 if elapsed_seconds > 0 else 0.0
+
+        estimated = 0
+        if count > 0 and elapsed_hours > 0:
+            estimated = int(round(count * elapsed_hours * DAYCARE_GEM_PER_PET_HOUR))
+            if DAYCARE_GEM_MAX > 0:
+                estimated = min(estimated, DAYCARE_GEM_MAX)
+
+        lines = [
+            f"• Slots occupés : **{count}/{DAYCARE_MAX_PETS}**",
+            f"• Production : **{DAYCARE_GEM_PER_PET_HOUR:g}** gemmes / heure / pet",
+        ]
+        if DAYCARE_GEM_MAX > 0:
+            lines.append(f"• Cap par récolte : {embeds.format_gems(DAYCARE_GEM_MAX)}")
+        if count > 0:
+            lines.append(f"• Gemmes disponibles : {embeds.format_gems(estimated)}")
+        else:
+            lines.append("• Dépose des pets pour commencer à générer des gemmes.")
+
+        embed = embeds.info_embed(
+            "\n".join(lines),
+            title="🍼 Garderie céleste",
+        )
+
+        if pets:
+            pet_line = " ".join(
+                f"{pet_emoji(str(pet.get('name', 'Pet')))} #{int(pet.get('user_pet_id') or 0)}"
+                for pet in pets
+            )
+            embed.add_field(name="Pets en garde", value=pet_line, inline=False)
+
+        if isinstance(last_claim, datetime):
+            embed.set_footer(
+                text=f"Dernière récolte : {discord.utils.format_dt(last_claim, style='R')}"
+            )
+
+        await ctx.send(embed=embed)
 
     @staticmethod
     def _compute_slot_purchase_cost(extra_slots: int) -> int:
@@ -4034,6 +4097,13 @@ class Pets(commands.Cog):
                 )
             )
             return
+        if status == "daycare":
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Ce pet est actuellement à la garderie. Retire-le avant de le revendre.",
+                )
+            )
+            return
         if status != "sold":
             await ctx.send(
                 embed=embeds.error_embed(
@@ -4126,11 +4196,18 @@ class Pets(commands.Cog):
             )
             return
 
-        available_rows = [row for row in rows if not bool(row.get("on_market"))]
+        daycare_pets = await self.database.get_daycare_pets(ctx.author.id)
+        daycare_ids = {int(pet.get("user_pet_id") or 0) for pet in daycare_pets}
+        available_rows = [
+            row
+            for row in rows
+            if not bool(row.get("on_market"))
+            and int(row.get("id") or 0) not in daycare_ids
+        ]
         if not available_rows:
             await ctx.send(
                 embed=embeds.warning_embed(
-                    "Tous tes pets sont actuellement listés sur ton stand. Retire-en un avec `e!stand remove` avant d'utiliser cette commande."
+                    "Tous tes pets disponibles sont indisponibles (stand ou garderie). Retire-en un pour utiliser cette commande."
                 )
             )
             return
@@ -4768,6 +4845,130 @@ class Pets(commands.Cog):
         )
         await self._maybe_award_enchantment(ctx, "distributor")
 
+    @commands.command(name="daycare", aliases=("garderie",))
+    async def daycare(self, ctx: commands.Context, *, action: str | None = None) -> None:
+        await self.database.ensure_user(ctx.author.id)
+
+        unlocked = await self.database.has_unlocked_zone(ctx.author.id, CELESTE_ZONE_SLUG)
+        if not unlocked:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Tu dois débloquer la Citadelle Céleste pour accéder à la garderie."
+                )
+            )
+            return
+
+        raw_action = (action or "").strip()
+        tokens = [token for token in raw_action.split() if token]
+        if not tokens:
+            await self._send_daycare_status(ctx)
+            return
+
+        command = tokens[0].lower()
+        if command in {"status", "info"}:
+            await self._send_daycare_status(ctx)
+            return
+
+        if command in {"claim", "collect", "recolte", "récolte"}:
+            reward, elapsed_hours, pet_count, before, after = await self.database.claim_daycare_gems(
+                ctx.author.id
+            )
+            if pet_count <= 0:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Tu n'as aucun pet à la garderie pour récolter des gemmes."
+                    )
+                )
+                return
+            if reward <= 0:
+                await ctx.send(
+                    embed=embeds.info_embed(
+                        "Tes pets n'ont pas encore généré assez de gemmes. Reviens un peu plus tard."
+                    )
+                )
+                return
+            lines = [
+                f"Gemmes récoltées : {embeds.format_gems(reward)}",
+                f"Gemmes avant : {embeds.format_gems(before)}",
+                f"Gemmes après : {embeds.format_gems(after)}",
+                f"Temps écoulé : {elapsed_hours:.2f}h",
+            ]
+            await ctx.send(
+                embed=embeds.success_embed("\n".join(lines), title="🍼 Garderie céleste")
+            )
+            return
+
+        if command in {"deposit", "depot", "dépot", "add"}:
+            ids = self._parse_pet_id_tokens(tokens[1:])
+            if not ids:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Indique les IDs des pets à déposer (ex: `e!daycare deposit 12 34`)."
+                    )
+                )
+                return
+            try:
+                pets = await self.database.deposit_daycare_pets(ctx.author.id, ids)
+            except DatabaseError as exc:
+                await ctx.send(embed=embeds.error_embed(str(exc)))
+                return
+            await ctx.send(
+                embed=embeds.success_embed(
+                    f"{len(ids)} pet{'s' if len(ids) > 1 else ''} déposé{'s' if len(ids) > 1 else ''} à la garderie.\n"
+                    f"Slots occupés : **{len(pets)}/{DAYCARE_MAX_PETS}**",
+                    title="🍼 Garderie céleste",
+                )
+            )
+            return
+
+        if command in {"withdraw", "retire", "retrait", "remove", "recuperer", "récupérer"}:
+            if len(tokens) == 1:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Indique les IDs des pets à retirer ou utilise `e!daycare withdraw all`."
+                    )
+                )
+                return
+            if tokens[1].lower() in {"all", "tout"}:
+                ids = []
+            else:
+                ids = self._parse_pet_id_tokens(tokens[1:])
+            if not ids and tokens[1].lower() not in {"all", "tout"}:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Indique les IDs des pets à retirer ou utilise `e!daycare withdraw all`."
+                    )
+                )
+                return
+            removed = await self.database.withdraw_daycare_pets(
+                ctx.author.id, ids if ids else None
+            )
+            if removed <= 0:
+                await ctx.send(
+                    embed=embeds.info_embed(
+                        "Aucun pet n'a été retiré de la garderie."
+                    )
+                )
+                return
+            await ctx.send(
+                embed=embeds.success_embed(
+                    f"{removed} pet{'s' if removed > 1 else ''} retiré{'s' if removed > 1 else ''} de la garderie.",
+                    title="🍼 Garderie céleste",
+                )
+            )
+            return
+
+        await ctx.send(
+            embed=embeds.info_embed(
+                "Actions disponibles :\n"
+                "• `e!daycare` — voir le statut\n"
+                "• `e!daycare deposit <id...>` — déposer des pets\n"
+                "• `e!daycare withdraw <id...|all>` — retirer des pets\n"
+                "• `e!daycare claim` — récolter les gemmes",
+                title="🍼 Garderie céleste",
+            )
+        )
+
     @commands.command(name="equip")
     async def equip(self, ctx: commands.Context, *, pet_name: str) -> None:
         definition, rows, ordinal, variant = await self._resolve_user_pet_candidates(
@@ -4775,6 +4976,7 @@ class Pets(commands.Cog):
             pet_name,
             include_active=True,
             include_inactive=True,
+            include_daycare=False,
         )
         if definition is None:
             await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
@@ -4978,6 +5180,7 @@ class Pets(commands.Cog):
             pet_in,
             include_active=True,
             include_inactive=True,
+            include_daycare=False,
         )
         if in_definition is None:
             await ctx.send(embed=embeds.error_embed("Le pet à équiper est introuvable."))
@@ -6007,6 +6210,8 @@ class TradeSession:
                 raise DatabaseError("Ce pet est actuellement équipé.")
             if bool(record.get("on_market")):
                 raise DatabaseError("Ce pet est listé sur un stand.")
+            if await self.cog.database.is_pet_in_daycare(user.id, user_pet_id):
+                raise DatabaseError("Ce pet est actuellement à la garderie.")
 
             pet_data = self.cog._convert_record(record, best_non_huge_income=None)
             offer.pets.append(

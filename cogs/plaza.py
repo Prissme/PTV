@@ -1689,6 +1689,7 @@ class Plaza(commands.Cog):
                 is_rainbow=is_rainbow,
                 is_shiny=is_shiny,
                 include_on_market=True,
+                include_daycare=False,
             )
         )
         if not rows:
