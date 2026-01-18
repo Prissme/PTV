@@ -18,6 +18,7 @@ from config import (
     DAILY_GEMS_CAP,
     DAILY_REWARD,
     DEBUG_CACHE,
+    Emojis,
     GRADE_DEFINITIONS,
     GRADE_ROLE_IDS,
     LEADERBOARD_LIMIT,
@@ -533,7 +534,7 @@ class GradeSystem(commands.Cog):
         )
         if DAILY_GEMS_CAP > 0:
             daily_lines.append(
-                f"Gemmes : {embeds.format_gems(DAILY_GEMS_BASE)}"
+                f"{Emojis.GEM} : {embeds.format_gems(DAILY_GEMS_BASE)}"
                 f" + bonus (cap {embeds.format_gems(DAILY_GEMS_CAP)})"
             )
         daily_lines.append(f"Streak actuelle : **{daily_streak}**")

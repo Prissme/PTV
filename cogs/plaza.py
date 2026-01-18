@@ -12,6 +12,7 @@ import discord
 from discord.ext import commands
 
 from config import (
+    Emojis,
     POTION_DEFINITION_MAP,
     SELLABLE_ROLE_IDS,
     PET_DEFINITIONS,
@@ -715,7 +716,7 @@ class StandTicketListingModal(discord.ui.Modal):
             max_length=5,
         )
         self.price_input = discord.ui.TextInput(
-            label="Prix total (Gemmes)",
+            label=f"Prix total ({Emojis.GEM})",
             placeholder="Ex: 5000",
             min_length=1,
             max_length=18,
@@ -760,7 +761,7 @@ class StandPotionListingModal(discord.ui.Modal):
             max_length=5,
         )
         self.price_input = discord.ui.TextInput(
-            label="Prix total (Gemmes)",
+            label=f"Prix total ({Emojis.GEM})",
             placeholder="Ex: 25000",
             min_length=1,
             max_length=18,
@@ -829,7 +830,7 @@ class StandRoleListingModal(discord.ui.Modal):
         self.view = view
         self.role = role
         self.price_input = discord.ui.TextInput(
-            label="Prix total (Gemmes)",
+            label=f"Prix total ({Emojis.GEM})",
             placeholder="Ex: 50000",
             min_length=1,
             max_length=18,
@@ -1965,7 +1966,7 @@ class Plaza(commands.Cog):
             f"Achat : {item_label}",
             f"Prix : {embeds.format_gems(price)}",
             f"Vendeur : {seller_name}",
-            f"Tes gemmes avant achat : {embeds.format_gems(buyer_before)}",
+            f"Tes {Emojis.GEM} avant achat : {embeds.format_gems(buyer_before)}",
         ]
         embed = embeds.success_embed("\n".join(lines), title="Achat confirmé")
         if item_type == "role":

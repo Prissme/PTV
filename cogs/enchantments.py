@@ -6,7 +6,7 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple, cast
 import discord
 from discord.ext import commands
 
-from config import PREFIX
+from config import PREFIX, Emojis
 from utils import embeds
 from utils.enchantments import (
     ENCHANTMENT_DEFINITION_MAP,
@@ -374,7 +374,7 @@ class Enchantments(commands.Cog):
                 for level, price in sorted(ENCHANTMENT_SELL_PRICES.items())
             ]
             description = [
-                "Revends tes enchantements contre des gemmes (achat par le shop admin, pas entre joueurs).",
+                f"Revends tes enchantements contre {Emojis.GEM} (achat par le shop admin, pas entre joueurs).",
                 "Utilisation :",
                 f"`{PREFIX}adminshop <enchantement> <niveau> [quantité]`",
                 "",
@@ -448,8 +448,8 @@ class Enchantments(commands.Cog):
 
         lines = [
             f"{label} ×{quantity} vendu pour {embeds.format_gems(payout)}.",
-            f"Gemmes avant : {embeds.format_gems(gems_before)}",
-            f"Gemmes après : {embeds.format_gems(gems_after)}",
+            f"{Emojis.GEM} avant : {embeds.format_gems(gems_before)}",
+            f"{Emojis.GEM} après : {embeds.format_gems(gems_after)}",
         ]
         if remaining_qty <= 0:
             lines.append("Cet enchantement n'est plus présent à ce niveau dans ton inventaire.")

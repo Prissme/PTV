@@ -1454,7 +1454,7 @@ _CELESTE_EGG_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name="Stella",
         rarity="Rare",
-        image_url="https://cdn.discordapp.com/emojis/1437826234095636490.png",
+        image_url="https://cdn.discordapp.com/emojis/1462049982919213169.png",
         base_income_per_hour=25_000_000,
         drop_rate=0.55,
     ),
@@ -1475,14 +1475,14 @@ _CELESTE_EGG_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name="Lyra",
         rarity="Mythique",
-        image_url="https://cdn.discordapp.com/emojis/1433377774122303582.png",
+        image_url="https://cdn.discordapp.com/emojis/1462050431198036172.png",
         base_income_per_hour=250_000_000,
         drop_rate=0.029,
     ),
     PetDefinition(
         name="Huge Astralis",
         rarity="Secret",
-        image_url="https://cdn.discordapp.com/emojis/1433379423133892608.png",
+        image_url="https://cdn.discordapp.com/emojis/1462058164223606926.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.000009,
         is_huge=True,
@@ -1490,7 +1490,7 @@ _CELESTE_EGG_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name="Titanic Zenith",
         rarity="Secret",
-        image_url="https://cdn.discordapp.com/emojis/1433380006557646878.png",
+        image_url="https://cdn.discordapp.com/emojis/1462057986695499850.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.000001,
         is_huge=True,
@@ -1711,6 +1711,12 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Stella": os.getenv("PET_EMOJI_STELLA", "<:Stella:1462049982919213169>"),
     "Lyra": os.getenv("PET_EMOJI_LYRA", "<:Lyra:1462050431198036172>"),
     "Orion": os.getenv("PET_EMOJI_ORION", "<:Orion:1462047760479031378>"),
+    "Huge Astralis": os.getenv(
+        "PET_EMOJI_HUGE_ASTRALIS", "<:TitanicAstralis:1462058164223606926>"
+    ),
+    "Titanic Zenith": os.getenv(
+        "PET_EMOJI_TITANIC_ZENITH", "<:HugeZenith:1462057986695499850>"
+    ),
     HUGE_ROSA_NAME: os.getenv("PET_EMOJI_HUGE_ROSA", "<:HugeRosa:1437826071503311010>"),
     TITANIC_POCO_NAME: os.getenv("PET_EMOJI_TITANIC_POCO", "<:TITANICPOCO:1437826145486770176>"),
     # FIX: Ensure default emoji falls back when the environment variable is empty.

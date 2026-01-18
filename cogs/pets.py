@@ -44,6 +44,7 @@ from config import (
     GALAXY_PET_COMBINE_REQUIRED,
     GALAXY_PET_MULTIPLIER,
     PET_EMOJIS,
+    Emojis,
     SHINY_PET_MULTIPLIER,
     PET_SLOT_MAX_CAPACITY,
     PET_SLOT_SHOP_BASE_COST,
@@ -2570,14 +2571,14 @@ class Pets(commands.Cog):
 
         lines = [
             f"• Slots occupés : **{count}/{DAYCARE_MAX_PETS}**",
-            f"• Production : **{DAYCARE_GEM_PER_PET_HOUR:g}** gemmes / heure / pet",
+            f"• Production : **{DAYCARE_GEM_PER_PET_HOUR:g}** {Emojis.GEM} / heure / pet",
         ]
         if DAYCARE_GEM_MAX > 0:
             lines.append(f"• Cap par récolte : {embeds.format_gems(DAYCARE_GEM_MAX)}")
         if count > 0:
-            lines.append(f"• Gemmes disponibles : {embeds.format_gems(estimated)}")
+            lines.append(f"• {Emojis.GEM} disponibles : {embeds.format_gems(estimated)}")
         else:
-            lines.append("• Dépose des pets pour commencer à générer des gemmes.")
+            lines.append(f"• Dépose des pets pour commencer à générer {Emojis.GEM}.")
 
         embed = embeds.info_embed(
             "\n".join(lines),
@@ -2930,7 +2931,7 @@ class Pets(commands.Cog):
                 if balance < effective_price:
                     await ctx.send(
                         embed=embeds.error_embed(
-                            "Tu n'as pas assez de gemmes. Il t'en faut "
+                            f"Tu n'as pas assez de {Emojis.GEM}. Il t'en faut "
                             f"**{embeds.format_gems(effective_price)}** pour acheter {egg.name}."
                         )
                     )
@@ -3774,7 +3775,7 @@ class Pets(commands.Cog):
                         if balance < egg_definition.price:
                             await thread.send(
                                 embed=embeds.warning_embed(
-                                    "Tu n'as plus assez de gemmes pour continuer l'ouverture automatique."
+                                    f"Tu n'as plus assez de {Emojis.GEM} pour continuer l'ouverture automatique."
                                 )
                             )
                             stop_event.set()
@@ -4030,7 +4031,7 @@ class Pets(commands.Cog):
         if user_pet_id is None:
             await ctx.send(
                 embed=embeds.info_embed(
-                    "Utilise `e!sellpet <id>` pour revendre un pet contre des gemmes.",
+                    f"Utilise `e!sellpet <id>` pour revendre un pet contre {Emojis.GEM}.",
                 )
             )
             return
@@ -4115,8 +4116,8 @@ class Pets(commands.Cog):
         name = str(record.get("name", "Pet"))
         lines = [
             f"{name} (ID {user_pet_id}) vendu pour {embeds.format_gems(payout)}.",
-            f"Gemmes avant : {embeds.format_gems(gems_before)}",
-            f"Gemmes après : {embeds.format_gems(gems_after)}",
+            f"{Emojis.GEM} avant : {embeds.format_gems(gems_before)}",
+            f"{Emojis.GEM} après : {embeds.format_gems(gems_after)}",
         ]
         await ctx.send(embed=embeds.success_embed("\n".join(lines), title="Vente de pet"))
 
@@ -4484,7 +4485,7 @@ class Pets(commands.Cog):
                 lines.append("Le magasin est temporairement indisponible.")
 
         description = "\n".join(lines)
-        embed = embeds.info_embed(description, title="💎 Gemshop")
+        embed = embeds.info_embed(description, title=f"{Emojis.GEM} Gemshop")
         embed.set_author(
             name=user.display_name,
             icon_url=user.display_avatar.url,
@@ -4593,7 +4594,7 @@ class Pets(commands.Cog):
             f"Tu peux maintenant équiper **{new_state.total_slots}** pet{'s' if new_state.total_slots > 1 else ''}.",
         ]
         if PET_SLOT_SHOP_CURRENCY == "gem" and balance_after is not None:
-            lines.append(f"Gemmes restantes : {embeds.format_gems(balance_after)}")
+            lines.append(f"{Emojis.GEM} restantes : {embeds.format_gems(balance_after)}")
         elif balance_after is not None:
             lines.append(f"Solde restant : {embeds.format_currency(balance_after)}")
 
@@ -4610,7 +4611,7 @@ class Pets(commands.Cog):
                     "Tu as atteint la limite de slots disponible pour ton grade actuel."
                 )
 
-        embed = embeds.success_embed("\n".join(lines), title="💎 Gemshop")
+        embed = embeds.success_embed("\n".join(lines), title=f"{Emojis.GEM} Gemshop")
         return GemshopPurchaseResult(embed=embed, state=new_state, success=True)
 
     async def _attempt_gemshop_role_purchase(
@@ -4672,7 +4673,7 @@ class Pets(commands.Cog):
             )
             new_state = await self._fetch_gemshop_state(user.id, guild=guild)
             embed = embeds.error_embed(
-                "Impossible d'attribuer le rôle automatiquement. Tes gemmes ont été remboursées."
+                f"Impossible d'attribuer le rôle automatiquement. Tes {Emojis.GEM} ont été remboursées."
             )
             return GemshopPurchaseResult(embed=embed, state=new_state, success=False)
 
@@ -4683,13 +4684,13 @@ class Pets(commands.Cog):
             f"Stock restant : **{max(0, offer.stock - int(new_state.role_sales.get(offer.role_id, 0)))}**",
         ]
         if gems_after:
-            lines.append(f"Gemmes restantes : {embeds.format_gems(gems_after)}")
-        embed = embeds.success_embed("\n".join(lines), title="💎 Gemshop")
+            lines.append(f"{Emojis.GEM} restantes : {embeds.format_gems(gems_after)}")
+        embed = embeds.success_embed("\n".join(lines), title=f"{Emojis.GEM} Gemshop")
         return GemshopPurchaseResult(embed=embed, state=new_state, success=True)
 
     @commands.command(
         name="gemshop",
-        aliases=("shop", "gem", "gems", "gemmes"),
+        aliases=("shop", "gem", "gems"),
     )
     async def gemshop(self, ctx: commands.Context, *, action: str | None = None) -> None:
         await self._ack_heavy_command(ctx)
@@ -4876,21 +4877,21 @@ class Pets(commands.Cog):
             if pet_count <= 0:
                 await ctx.send(
                     embed=embeds.error_embed(
-                        "Tu n'as aucun pet à la garderie pour récolter des gemmes."
+                        f"Tu n'as aucun pet à la garderie pour récolter {Emojis.GEM}."
                     )
                 )
                 return
             if reward <= 0:
                 await ctx.send(
                     embed=embeds.info_embed(
-                        "Tes pets n'ont pas encore généré assez de gemmes. Reviens un peu plus tard."
+                        f"Tes pets n'ont pas encore généré assez de {Emojis.GEM}. Reviens un peu plus tard."
                     )
                 )
                 return
             lines = [
-                f"Gemmes récoltées : {embeds.format_gems(reward)}",
-                f"Gemmes avant : {embeds.format_gems(before)}",
-                f"Gemmes après : {embeds.format_gems(after)}",
+                f"{Emojis.GEM} récoltées : {embeds.format_gems(reward)}",
+                f"{Emojis.GEM} avant : {embeds.format_gems(before)}",
+                f"{Emojis.GEM} après : {embeds.format_gems(after)}",
                 f"Temps écoulé : {elapsed_hours:.2f}h",
             ]
             await ctx.send(
@@ -4964,7 +4965,7 @@ class Pets(commands.Cog):
                 "• `e!daycare` — voir le statut\n"
                 "• `e!daycare deposit <id...>` — déposer des pets\n"
                 "• `e!daycare withdraw <id...|all>` — retirer des pets\n"
-                "• `e!daycare claim` — récolter les gemmes",
+                f"• `e!daycare claim` — récolter {Emojis.GEM}",
                 title="🍼 Garderie céleste",
             )
         )
