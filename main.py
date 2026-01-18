@@ -197,7 +197,6 @@ class EcoBot(commands.Bot):
             "shop": "gemshop",
             "gem": "gemshop",
             "gems": "gemshop",
-            "gemmes": "gemshop",
         }
         self._shutting_down = False
 

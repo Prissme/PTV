@@ -2704,7 +2704,7 @@ class Database:
                     amount=effective_gems,
                     balance_before=before_gems,
                     balance_after=after_gems,
-                    description="Récompense quotidienne (gemmes)",
+                    description="Récompense quotidienne (:Gem:)",
                 )
 
         return {
@@ -2789,7 +2789,7 @@ class Database:
                 user_id,
             )
             if row is None:
-                raise DatabaseError("Utilisateur introuvable lors de la mise à jour des gemmes")
+                raise DatabaseError("Utilisateur introuvable lors de la mise à jour des :Gem:")
 
             before = int(row["gems"])
             tentative_after = before + amount
@@ -2856,7 +2856,7 @@ class Database:
             buyer_before = int(balance_row["gems"])
             if buyer_before < price:
                 raise InsufficientBalanceError(
-                    "Solde de gemmes insuffisant pour acheter ce rôle."
+                    "Solde de :Gem: insuffisant pour acheter ce rôle."
                 )
 
             buyer_after = buyer_before - price
@@ -3022,7 +3022,7 @@ class Database:
         receive_description: str | None = None,
     ) -> dict[str, dict[str, int]]:
         if sender_id == recipient_id:
-            raise DatabaseError("Impossible de transférer des gemmes vers soi-même")
+            raise DatabaseError("Impossible de transférer des :Gem: vers soi-même")
         if amount <= 0:
             raise ValueError("Le montant transféré doit être strictement positif")
 
@@ -3040,11 +3040,13 @@ class Database:
             )
 
             if sender_row is None or recipient_row is None:
-                raise DatabaseError("Utilisateur introuvable lors du transfert de gemmes")
+                raise DatabaseError("Utilisateur introuvable lors du transfert de :Gem:")
 
             sender_before = int(sender_row["gems"])
             if sender_before < amount:
-                raise InsufficientBalanceError("Solde de gemmes insuffisant pour effectuer le transfert")
+                raise InsufficientBalanceError(
+                    "Solde de :Gem: insuffisant pour effectuer le transfert"
+                )
 
             recipient_before = int(recipient_row["gems"])
 
@@ -4965,7 +4967,7 @@ class Database:
                     amount=reward,
                     balance_before=gems_before,
                     balance_after=gems_after,
-                    description="Gemmes récoltées via la garderie",
+                    description=":Gem: récoltées via la garderie",
                 )
 
             await connection.execute(
@@ -5827,7 +5829,7 @@ class Database:
                     amount=gem_reward,
                     balance_before=gems_before,
                     balance_after=gems_after,
-                    description="Gemmes récoltées par les pets",
+                    description=":Gem: récoltées par les pets",
                 )
                 gems_before = gems_after
                 farm_rewards["gems"] = gem_reward
@@ -6546,7 +6548,7 @@ class Database:
         threshold: int = 1_000_000,
         new_amount: int = 100_000,
     ) -> Dict[str, Any]:
-        """Reset les gemmes des utilisateurs riches à un montant fixe."""
+        """Reset les :Gem: des utilisateurs riches à un montant fixe."""
 
         query_select = """
             SELECT user_id, gems
@@ -7026,7 +7028,7 @@ class Database:
             seller_before = int(seller_balance["gems"])
             buyer_before = int(buyer_balance["gems"])
             if buyer_before < price:
-                raise InsufficientBalanceError("Solde de gemmes insuffisant pour cet achat.")
+                raise InsufficientBalanceError("Solde de :Gem: insuffisant pour cet achat.")
 
             seller_after = seller_before + price
             buyer_after = buyer_before - price
@@ -7340,7 +7342,7 @@ class Database:
             seller_before = int(seller_balance["gems"])
             buyer_before = int(buyer_balance["gems"])
             if buyer_before < price:
-                raise InsufficientBalanceError("Solde de gemmes insuffisant pour cet achat.")
+                raise InsufficientBalanceError("Solde de :Gem: insuffisant pour cet achat.")
 
             seller_after = seller_before + price
             buyer_after = buyer_before - price
@@ -7906,7 +7908,7 @@ class Database:
                 raise DatabaseError("Impossible de récupérer ton solde.")
             bidder_before = int(bidder_row.get("gems") or 0)
             if bidder_before < amount:
-                raise InsufficientBalanceError("Solde de gemmes insuffisant pour cette enchère.")
+                raise InsufficientBalanceError("Solde de :Gem: insuffisant pour cette enchère.")
 
             new_bidder_balance = bidder_before - amount
             await connection.execute(

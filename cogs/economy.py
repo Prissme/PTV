@@ -88,7 +88,7 @@ from utils.pet_formatting import PetDisplay
 logger = logging.getLogger(__name__)
 
 
-SLOT_REELS: tuple[str, ...] = ("🍒", "🍋", "🍇", "🔔", "⭐", "💎", "7️⃣")
+SLOT_REELS: tuple[str, ...] = ("🍒", "🍋", "🍇", "🔔", "⭐", Emojis.GEM, "7️⃣")
 SLOT_WEIGHTS: tuple[int, ...] = (24, 22, 18, 12, 10, 8, 6)
 SLOT_TRIPLE_REWARDS: dict[str, tuple[int, str]] = {
     "🍒": (4, "Triplé de 🍒 ! C'est juteux."),
@@ -96,7 +96,7 @@ SLOT_TRIPLE_REWARDS: dict[str, tuple[int, str]] = {
     "🍇": (6, "Raisin royal 🍇🍇🍇 !"),
     "🔔": (8, "Les cloches 🔔🔔🔔 sonnent la victoire !"),
     "⭐": (12, "Étoiles alignées ⭐⭐⭐ !"),
-    "💎": (18, "Pluie de diamants 💎💎💎 !"),
+    Emojis.GEM: (18, f"Pluie {Emojis.GEM}{Emojis.GEM}{Emojis.GEM} !"),
     "7️⃣": (25, "Jackpot 7️⃣7️⃣7️⃣ !"),
 }
 SLOT_PAIR_REWARDS: dict[str, tuple[int, str]] = {
@@ -105,11 +105,11 @@ SLOT_PAIR_REWARDS: dict[str, tuple[int, str]] = {
     "🍇": (1, "Deux 🍇 pour rester à flot."),
     "🔔": (2, "Deux cloches 🔔, ça rapporte."),
     "⭐": (2, "Deux ⭐ scintillent pour toi."),
-    "💎": (3, "Deux 💎, joli butin !"),
+    Emojis.GEM: (3, f"Deux {Emojis.GEM}, joli butin !"),
     "7️⃣": (4, "Deux 7️⃣, presque le jackpot !"),
 }
 SLOT_SPECIAL_COMBOS: dict[tuple[str, ...], tuple[int, str]] = {
-    tuple(sorted(("⭐", "💎", "7️⃣"))): (10, "Combo premium ⭐ 💎 7️⃣ !"),
+    tuple(sorted(("⭐", Emojis.GEM, "7️⃣"))): (10, f"Combo premium ⭐ {Emojis.GEM} 7️⃣ !"),
 }
 MASTERMIND_HUGE_MIN_CHANCE = 0.0055
 MASTERMIND_HUGE_MAX_CHANCE = 0.022
@@ -176,7 +176,7 @@ MILLIONAIRE_RACE_REWARD_POOL: tuple[MillionaireRaceReward, ...] = (
         scales_with_stage=True,
     ),
     MillionaireRaceReward(
-        "Gemmes",
+        str(Emojis.GEM),
         "gems",
         base_quantity=500,
         scales_with_stage=True,
@@ -544,7 +544,7 @@ class MastermindSession:
             f"Tentatives restantes : **{attempts_left}**",
             f"Combinaison : {self._secret_display()}",
             f"Récompense : **{embeds.format_gems(reward)}**",
-            f"Gemmes actuelles : {embeds.format_gems(gems_after)}",
+            f"{Emojis.GEM} actuelles : {embeds.format_gems(gems_after)}",
         ]
         if reward_multiplier != 1.0:
             multiplier_label = f"x{reward_multiplier:.2f}".rstrip("0").rstrip(".")
@@ -594,7 +594,7 @@ class MastermindSession:
         self.status_lines = [
             "Temps écoulé !",
             f"Code secret : {self._secret_display()}",
-            "Reviens tenter ta chance pour gagner des gemmes !",
+            f"Reviens tenter ta chance pour gagner {Emojis.GEM} !",
         ]
         await self._award_mastery_xp(MASTERMIND_TIMEOUT_XP, "timeout")
         self._logger.debug(
@@ -611,7 +611,7 @@ class MastermindSession:
         self.status_lines = [
             "Toutes les tentatives ont été utilisées.",
             f"Code secret : {self._secret_display()}",
-            "Reviens tenter ta chance pour gagner des gemmes !",
+            f"Reviens tenter ta chance pour gagner {Emojis.GEM} !",
         ]
         await self._award_mastery_xp(MASTERMIND_FAILURE_XP, "failure")
         self._logger.debug(
@@ -1608,7 +1608,7 @@ class InventoryView(discord.ui.View):
     def _build_overview(self) -> discord.Embed:
         lines = [
             f"💰 PB : **{embeds.format_currency(self.snapshot.balance)}**",
-            f"💎 Gemmes : **{embeds.format_gems(self.snapshot.gems)}**",
+            f"{Emojis.GEM} : **{embeds.format_gems(self.snapshot.gems)}**",
             f"{TOMBOLA_TICKET_EMOJI} Tickets en inventaire : **{max(0, self.snapshot.tickets_inventory)}**",
             f"🎯 Tickets misés : **{max(0, self.snapshot.tickets_committed)}**",
             "Utilise `e!raffle` pour miser tes tickets sur le prochain tirage.",
@@ -2939,7 +2939,7 @@ class Economy(commands.Cog):
 
     @commands.command(name="mastermind", aliases=("mm", "code"))
     async def mastermind(self, ctx: commands.Context) -> None:
-        """Mini-jeu de Mastermind pour gagner quelques gemmes."""
+        """Mini-jeu de Mastermind pour gagner quelques :Gem:."""
         grade_level = await self.database.get_grade_level(ctx.author.id)
         if grade_level < 1:
             required_name = (

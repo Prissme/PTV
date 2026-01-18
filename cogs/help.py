@@ -8,7 +8,7 @@ from typing import Callable, Dict, Optional, Sequence, Tuple, cast
 import discord
 from discord.ext import commands
 
-from config import PREFIX
+from config import PREFIX, Emojis
 from utils import embeds
 from utils.localization import DEFAULT_LANGUAGE, HelpLocaleStrings
 
@@ -258,15 +258,15 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 },
                 {
                     "command": f"{PREFIX}gemshop",
-                    "description": "Achète des slots d'équipement supplémentaires contre des gemmes.",
+                    "description": f"Achète des slots d'équipement supplémentaires contre {Emojis.GEM}.",
                 },
                 {
                     "command": f"{PREFIX}adminshop",
-                    "description": "Revends tes enchantements contre des gemmes directement au shop admin.",
+                    "description": f"Revends tes enchantements contre {Emojis.GEM} directement au shop admin.",
                 },
                 {
                     "command": f"{PREFIX}sellpet <id>",
-                    "description": "Revends un pet contre des gemmes selon sa valeur marché.",
+                    "description": f"Revends un pet contre {Emojis.GEM} selon sa valeur marché.",
                     "aliases": ("vendrepet", "vendrepets"),
                 },
                 {

@@ -13,7 +13,7 @@ import asyncpg
 import discord
 from discord.ext import commands
 
-from config import PET_DEFINITIONS, PET_EMOJIS, QUERY_TIMEOUT_SECONDS, scale_pet_value
+from config import Emojis, PET_DEFINITIONS, PET_EMOJIS, QUERY_TIMEOUT_SECONDS, scale_pet_value
 from database.db import DatabaseError
 from utils import embeds
 
@@ -438,7 +438,7 @@ class Admin(commands.Cog):
     @commands.command(name="nerfmoney", aliases=("adminresetriches",))
     @commands.is_owner()
     async def admin_reset_riches(self, ctx: commands.Context) -> None:
-        """Reset les gemmes des utilisateurs très riches (commande one-shot)."""
+        """Reset les :Gem: des utilisateurs très riches (commande one-shot)."""
 
         already_run = await self.database.get_config_flag("rich_reset_executed")
         if already_run:
@@ -452,8 +452,8 @@ class Admin(commands.Cog):
         confirm_text = (
             "⚠️ **CONFIRMATION REQUISE**\n\n"
             "Cette action va :\n"
-            "• Récupérer tous les utilisateurs avec ≥1M gemmes\n"
-            "• Reset leurs gemmes à 100K\n"
+            f"• Récupérer tous les utilisateurs avec ≥1M {Emojis.GEM}\n"
+            f"• Reset leurs {Emojis.GEM} à 100K\n"
             "• Logger l'opération\n"
             "• Marquer comme exécuté (irréversible)\n\n"
             "Réagis avec ✅ pour confirmer (30s)"
@@ -499,7 +499,7 @@ class Admin(commands.Cog):
             await self.database.set_config_flag("rich_reset_executed", True)
 
             embed = discord.Embed(
-                title="✅ Reset des Gemmes Effectué",
+                title=f"✅ Reset {Emojis.GEM} effectué",
                 color=0x57F287,
                 timestamp=datetime.now(timezone.utc),
             )
@@ -507,8 +507,8 @@ class Admin(commands.Cog):
                 name="Statistiques",
                 value=(
                     f"**Utilisateurs affectés** : {affected_count}\n"
-                    f"**Gemmes retirées** : {total_removed:,}\n"
-                    f"**Nouvelle limite** : 100,000 gemmes"
+                    f"**{Emojis.GEM} retirées** : {total_removed:,}\n"
+                    f"**Nouvelle limite** : 100,000 {Emojis.GEM}"
                 ),
                 inline=False,
             )
@@ -529,7 +529,7 @@ class Admin(commands.Cog):
 
             await status_msg.edit(content=None, embed=embed)
         except Exception as exc:
-            logger.exception("Erreur lors du reset des gemmes riches")
+            logger.exception("Erreur lors du reset des :Gem: riches")
             await status_msg.edit(
                 embed=embeds.error_embed(
                     f"❌ Erreur : {exc}\n\nVoir les logs pour détails."
@@ -597,7 +597,7 @@ class Admin(commands.Cog):
         summary_lines = [
             "EcoBot est un bot d'économie complet centré sur les pets, l'épargne et le commerce.",
             "Les joueurs gagnent des PB via le daily, l'activité et les revenus des pets équipés.",
-            "Les gemmes servent aux achats premium (boutique, enchères, échanges spéciaux).",
+            f"Les {Emojis.GEM} servent aux achats premium (boutique, enchères, échanges spéciaux).",
             "Le RAP mesure la valeur cumulée des pets possédés (base + variations).",
             "Un marché et des annonces permettent de vendre/échanger des pets entre joueurs.",
             "Les systèmes de grades, clans, potions et enchantements enrichissent la progression.",
@@ -606,7 +606,7 @@ class Admin(commands.Cog):
 
         totals_lines = [
             f"💰 PB totaux : **{embeds.format_currency(totals['total_pb'])}**",
-            f"💎 Gemmes totales : **{embeds.format_gems(totals['total_gems'])}**",
+            f"{Emojis.GEM} totales : **{embeds.format_gems(totals['total_gems'])}**",
             f"📈 RAP total : **{embeds.format_gems(totals['total_rap'])}**",
         ]
         embed.add_field(name="Totaux serveur", value="\n".join(totals_lines), inline=False)

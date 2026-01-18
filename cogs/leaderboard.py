@@ -10,6 +10,7 @@ from discord.ext import commands, tasks
 
 from config import (
     LEADERBOARD_LIMIT,
+    Emojis,
     QUERY_TIMEOUT_SECONDS,
     TOP_PB_ROLE_ID,
     TOP_PB_ROLE_LIMIT,
@@ -67,7 +68,7 @@ class LeaderboardView(discord.ui.View):
                 self.per_page, offset
             )
             entries = [(int(row["user_id"]), int(row["gems"])) for row in rows]
-            return entries, total, "Classement des gemmes", "GEM"
+            return entries, total, f"Classement {Emojis.GEM}", "GEM"
         entries, total = await self.cog.database.get_pet_rap_leaderboard_page(
             self.per_page, offset
         )
@@ -135,7 +136,7 @@ class LeaderboardView(discord.ui.View):
         self.page = 0
         await self._refresh(interaction)
 
-    @discord.ui.button(label="Gemmes", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label=str(Emojis.GEM), style=discord.ButtonStyle.secondary, row=1)
     async def show_gems(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -244,7 +245,7 @@ class Leaderboard(commands.Cog):
     async def gem_leaderboard(self, ctx: commands.Context) -> None:
         rows = await self.database.get_gem_leaderboard(LEADERBOARD_LIMIT)
         embed = embeds.leaderboard_embed(
-            title="Classement des gemmes",
+            title=f"Classement {Emojis.GEM}",
             entries=[(row["user_id"], row["gems"]) for row in rows],
             bot=self.bot,
             symbol="GEM",

@@ -186,7 +186,7 @@ def balance_embed(
 ) -> discord.Embed:
     lines = [f"**Solde :** {format_currency(balance)}"]
     if gems is not None:
-        lines.append(f"**Gemmes :** {format_compact(gems)} {Emojis.GEM}")
+        lines.append(f"**{Emojis.GEM} :** {format_compact(gems)}")
     description = "\n".join(lines)
     embed = _base_embed("Solde", description, color=Colors.SUCCESS if balance else Colors.NEUTRAL)
     _set_member_author(embed, member)
@@ -204,7 +204,7 @@ def daily_embed(
 ) -> discord.Embed:
     lines = [f"Tu as reçu {format_currency(amount)} aujourd'hui."]
     if gems:
-        lines.append(f"Bonus gemmes : {format_gems(gems)}")
+        lines.append(f"Bonus {Emojis.GEM} : {format_gems(gems)}")
     if streak > 0:
         lines.append(f"Streak actuel : **{streak}** (+{streak_bonus * 100:.0f}%)")
     description = "\n".join(lines)
@@ -603,7 +603,7 @@ def rank_profile_embed(
     _set_member_author(embed, member)
     _set_member_thumbnail(embed, member)
     embed.add_field(name="💰 PB", value=format_currency(balance), inline=True)
-    embed.add_field(name="💎 Gemmes", value=format_gems(gems), inline=True)
+    embed.add_field(name=str(Emojis.GEM), value=format_gems(gems), inline=True)
     embed.add_field(name="📊 RAP total", value=format_gems(rap_total), inline=True)
 
     if best_pet_name and best_pet_value > 0:
@@ -635,7 +635,7 @@ def grade_completed_embed(
         f"Nouveau grade : **{grade_name}** ({grade_level}/{total_grades})",
         f"Récompense : **{format_gems(reward_gems)}**",
         f"Slots de pets disponibles : **{pet_slots}**",
-        f"Gemmes actuelles : {format_gems(gems_after)}",
+        f"{Emojis.GEM} actuelles : {format_gems(gems_after)}",
         f"Pense à vérifier tes objectifs avec {PREFIX}grade.",
         "Astuce : plus ton grade est élevé, moins tu as de chances de te faire voler.",
     ]
@@ -1079,7 +1079,7 @@ def pet_claim_embed(
     if farm_rewards:
         gems_reward = int(farm_rewards.get("gems", 0) or 0)
         if gems_reward > 0:
-            reward_lines.append(f"💎 {format_gems(gems_reward)}")
+            reward_lines.append(f"{Emojis.GEM} {format_gems(gems_reward)}")
 
         tickets = int(farm_rewards.get("tickets", 0) or 0)
         if tickets:
