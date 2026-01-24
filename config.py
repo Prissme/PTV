@@ -828,6 +828,7 @@ class PetZoneDefinition:
     egg_mastery_required: int = 0
     pet_mastery_required: int = 0
     rebirth_required: int = 0
+    min_income_required: int = 0
     currency: str = "pb"
 
 
@@ -850,6 +851,7 @@ ANIMALERIE_ZONE_SLUG: Final[str] = "animalerie"
 MEXICO_ZONE_SLUG: Final[str] = "mexico"
 ROCKET_ZONE_SLUG: Final[str] = "fusee"
 CELESTE_ZONE_SLUG: Final[str] = "celeste"
+ZODIAQUE_ZONE_SLUG: Final[str] = "zodiaque"
 GOLD_PET_MULTIPLIER: Final[int] = 3
 GOLD_PET_CHANCE: Final[float] = _get_float_env("PET_GOLD_CHANCE", 0.0)
 GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
@@ -872,12 +874,18 @@ HUGE_GRIFF_NAME: Final[str] = "Huge Griff"
 HUGE_BULL_NAME: Final[str] = "Huge Bull"
 TITANIC_GRIFF_NAME: Final[str] = "Titanic Griff"
 TITANIC_COLT_NAME: Final[str] = "Titanic Colt"
+HUGE_ASTRALIS_NAME: Final[str] = "Huge Astralis"
+TITANIC_ZENITH_NAME: Final[str] = "Titanic Zenith"
+HUGE_VIRGO_COLLETTE_NAME: Final[str] = "Huge Virgo Collette"
+TITANIC_CAPRICORN_STU_NAME: Final[str] = "Titanic Capricorn Stu"
 HUGE_KENJI_ONI_NAME: Final[str] = "Huge Kenji Oni"
 HUGE_RED_KING_FRANK_NAME: Final[str] = "Huge Red King Frank"
 HUGE_RED_KING_FRANK_MULTIPLIER: Final[float] = 40
 HUGE_GRIFF_MULTIPLIER: Final[float] = 6
 TITANIC_COLT_MULTIPLIER: Final[float] = 50
 TITANIC_GRIFF_MULTIPLIER: Final[float] = 35
+HUGE_ASTRALIS_MULTIPLIER: Final[float] = 25
+TITANIC_ZENITH_MULTIPLIER: Final[float] = 100
 HUGE_GALE_MULTIPLIER: Final[float] = 10
 HUGE_KENJI_ONI_MULTIPLIER: Final[float] = 12
 HUGE_BULL_MULTIPLIER: Final[float] = 3.5
@@ -899,6 +907,8 @@ HUGE_CLANCY_NAME: Final[str] = "Huge Clancy"
 HUGE_CLANCY_MULTIPLIER: Final[float] = 10
 HUGE_WISHED_NAME: Final[str] = "Huge Wished"
 HUGE_WISHED_MULTIPLIER: Final[float] = 20
+HUGE_VIRGO_COLLETTE_MULTIPLIER: Final[float] = 25
+TITANIC_CAPRICORN_STU_MULTIPLIER: Final[float] = 100
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
 HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
@@ -909,6 +919,10 @@ TITANIC_GRIFF_NAME: TITANIC_GRIFF_MULTIPLIER,
 TITANIC_COLT_NAME: TITANIC_COLT_MULTIPLIER,
 HUGE_SURGE_NAME: HUGE_SURGE_MULTIPLIER,
 TITANIC_MEEPLE_NAME: TITANIC_MEEPLE_MULTIPLIER,
+    HUGE_ASTRALIS_NAME: HUGE_ASTRALIS_MULTIPLIER,
+    TITANIC_ZENITH_NAME: TITANIC_ZENITH_MULTIPLIER,
+    HUGE_VIRGO_COLLETTE_NAME: HUGE_VIRGO_COLLETTE_MULTIPLIER,
+    TITANIC_CAPRICORN_STU_NAME: TITANIC_CAPRICORN_STU_MULTIPLIER,
     HUGE_BULL_NAME: HUGE_BULL_MULTIPLIER,
     HUGE_BO_NAME: HUGE_BO_MULTIPLIER,
     HUGE_CLANCY_NAME: HUGE_CLANCY_MULTIPLIER,
@@ -1043,6 +1057,10 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     HUGE_SURGE_NAME: "Apparaît dans l'Œuf métallique pour les stratèges les plus assidus.",
     HUGE_BO_NAME: "Récompense du mode King of the Hill : défends ton trône pour tenter ta chance !",
     TITANIC_MEEPLE_NAME: "Récompense quasi mythique de l'Œuf métallique, au-delà du légendaire.",
+    HUGE_ASTRALIS_NAME: "Pet stellaire de la Citadelle Céleste.",
+    TITANIC_ZENITH_NAME: "Joyau cosmique ultime de la Citadelle Céleste.",
+    HUGE_VIRGO_COLLETTE_NAME: "Gardienne céleste de la zone Zodiaque.",
+    TITANIC_CAPRICORN_STU_NAME: "Titan zodiacal réservé aux plus persévérants.",
     HUGE_CLANCY_NAME: "Se trouve dans l'Œuf vivant de l'Animalerie après ton premier rebirth.",
     HUGE_ROSA_NAME: "Ultra rare dans l'Œuf Huevo de Mexico — seuls les plus courageux la rencontrent.",
     TITANIC_POCO_NAME: "Récompense mythique de l'Œuf Huevo de Mexico, l'égale du Titanic Meeple.",
@@ -1480,7 +1498,7 @@ _CELESTE_EGG_PETS: Tuple[PetDefinition, ...] = (
         drop_rate=0.029,
     ),
     PetDefinition(
-        name="Huge Astralis",
+        name=HUGE_ASTRALIS_NAME,
         rarity="Secret",
         image_url="https://cdn.discordapp.com/emojis/1462058164223606926.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
@@ -1488,9 +1506,56 @@ _CELESTE_EGG_PETS: Tuple[PetDefinition, ...] = (
         is_huge=True,
     ),
     PetDefinition(
-        name="Titanic Zenith",
+        name=TITANIC_ZENITH_NAME,
         rarity="Secret",
         image_url="https://cdn.discordapp.com/emojis/1462057986695499850.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.000001,
+        is_huge=True,
+    ),
+)
+
+_ZODIAQUE_EGG_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="Pisces Piper",
+        rarity="Rare",
+        image_url="https://cdn.discordapp.com/emojis/1430584949215596654.png",
+        base_income_per_hour=600_000_000,
+        drop_rate=0.55,
+    ),
+    PetDefinition(
+        name="Scorpion Bibi",
+        rarity="Épique",
+        image_url="https://cdn.discordapp.com/emojis/1433582351702818897.png",
+        base_income_per_hour=1_200_000_000,
+        drop_rate=0.30,
+    ),
+    PetDefinition(
+        name="Aquarius Emz",
+        rarity="Légendaire",
+        image_url="https://cdn.discordapp.com/emojis/1433582901081018458.png",
+        base_income_per_hour=2_500_000_000,
+        drop_rate=0.11,
+    ),
+    PetDefinition(
+        name="Sagittarius Bo",
+        rarity="Mythique",
+        image_url="https://cdn.discordapp.com/emojis/1433378374650429522.png",
+        base_income_per_hour=5_000_000_000,
+        drop_rate=0.029,
+    ),
+    PetDefinition(
+        name=HUGE_VIRGO_COLLETTE_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1431422778170408960.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.000009,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=TITANIC_CAPRICORN_STU_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1433379423133892608.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.000001,
         is_huge=True,
@@ -1568,6 +1633,14 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
         zone_slug=CELESTE_ZONE_SLUG,
         aliases=("oeuf celeste", "celeste", "celestial"),
     ),
+    PetEggDefinition(
+        name="Œuf Zodiaque",
+        slug="zodiaque",
+        price=90_000_000_000_000,
+        pets=_ZODIAQUE_EGG_PETS,
+        zone_slug=ZODIAQUE_ZONE_SLUG,
+        aliases=("oeuf zodiaque", "zodiaque", "zodiac"),
+    ),
 )
 
 
@@ -1634,6 +1707,17 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         egg_mastery_required=15,
         pet_mastery_required=15,
         rebirth_required=2,
+    ),
+    PetZoneDefinition(
+        name="Zone Zodiaque",
+        slug=ZODIAQUE_ZONE_SLUG,
+        grade_required=20,
+        entry_cost=300_000_000_000_000,
+        eggs=_eggs_for_zone(ZODIAQUE_ZONE_SLUG),
+        egg_mastery_required=30,
+        pet_mastery_required=30,
+        rebirth_required=2,
+        min_income_required=300_000_000_000,
     ),
     PetZoneDefinition(
         name="Fusée Orbitale",
@@ -1711,10 +1795,10 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Stella": os.getenv("PET_EMOJI_STELLA", "<:Stella:1462049982919213169>"),
     "Lyra": os.getenv("PET_EMOJI_LYRA", "<:Lyra:1462050431198036172>"),
     "Orion": os.getenv("PET_EMOJI_ORION", "<:Orion:1462047760479031378>"),
-    "Huge Astralis": os.getenv(
+    HUGE_ASTRALIS_NAME: os.getenv(
         "PET_EMOJI_HUGE_ASTRALIS", "<:TitanicAstralis:1462058164223606926>"
     ),
-    "Titanic Zenith": os.getenv(
+    TITANIC_ZENITH_NAME: os.getenv(
         "PET_EMOJI_TITANIC_ZENITH", "<:HugeZenith:1462057986695499850>"
     ),
     HUGE_ROSA_NAME: os.getenv("PET_EMOJI_HUGE_ROSA", "<:HugeRosa:1437826071503311010>"),
@@ -1749,5 +1833,7 @@ PET_RARITY_ORDER: Final[dict[str, int]] = {
     "Atypique": 1,
     "Rare": 2,
     "Épique": 3,
-    "Secret": 4,
+    "Légendaire": 4,
+    "Mythique": 5,
+    "Secret": 6,
 }
