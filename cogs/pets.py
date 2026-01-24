@@ -635,6 +635,7 @@ class ZoneOverviewView(discord.ui.View):
         meets_egg_mastery: bool
         meets_pet_mastery: bool
         meets_rebirth: bool
+        meets_income: bool
 
     def __init__(
         self,
@@ -665,6 +666,7 @@ class ZoneOverviewView(discord.ui.View):
                 meets_egg_mastery=False,
                 meets_pet_mastery=False,
                 meets_rebirth=False,
+                meets_income=False,
             )
         return self._pages[self.page]
 
@@ -1985,6 +1987,15 @@ class Pets(commands.Cog):
             effective_income = self._compute_huge_income(
                 reference_income, pet_name=pet_name, level=level
             )
+            effective_income = int(
+                effective_income
+                * self._variant_income_multiplier(
+                    is_gold=is_gold,
+                    is_rainbow=is_rainbow,
+                    is_galaxy=is_galaxy,
+                    is_shiny=is_shiny,
+                )
+            )
         else:
             data.pop("huge_level", None)
             data.pop("huge_xp", None)
@@ -2614,6 +2625,11 @@ class Pets(commands.Cog):
             return embeds.format_gems(amount)
         return embeds.format_currency(amount)
 
+    async def _get_active_income(self, user_id: int) -> int:
+        records = await self.database.get_user_pets(user_id)
+        pets = self._sort_pets_for_display(records, market_values=None)
+        return sum(int(pet["income"]) for pet in pets if pet.get("is_active"))
+
     async def _ensure_zone_access(
         self, ctx: commands.Context, zone: PetZoneDefinition
     ) -> bool:
@@ -2655,6 +2671,18 @@ class Pets(commands.Cog):
                     embed=embeds.error_embed(
                         "Tu dois effectuer au moins "
                         f"{zone.rebirth_required} rebirth{'s' if zone.rebirth_required > 1 else ''} "
+                        f"pour accéder à {zone.name}."
+                    )
+                )
+                return False
+
+        if zone.min_income_required > 0:
+            active_income = await self._get_active_income(ctx.author.id)
+            if active_income < zone.min_income_required:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Tu dois générer au moins "
+                        f"{embeds.format_currency(zone.min_income_required)}/h "
                         f"pour accéder à {zone.name}."
                     )
                 )
@@ -2713,6 +2741,7 @@ class Pets(commands.Cog):
         meets_egg_mastery: bool,
         meets_pet_mastery: bool,
         meets_rebirth: bool,
+        meets_income: bool,
     ) -> discord.Embed:
         status_emoji = "✅" if has_unlocked else "🔒"
         title = f"{status_emoji} {zone.name}"
@@ -2729,6 +2758,7 @@ class Pets(commands.Cog):
             and meets_egg_mastery
             and meets_pet_mastery
             and meets_rebirth
+            and meets_income
         )
         description_lines.append(
             f"Accès actuel : {'Disponible' if accessible else 'Conditions à remplir'}"
@@ -2747,6 +2777,10 @@ class Pets(commands.Cog):
             plural = "s" if zone.rebirth_required > 1 else ""
             requirements.append(
                 f"{'✅' if meets_rebirth else '❌'} {zone.rebirth_required} rebirth{plural}"
+            )
+        if zone.min_income_required > 0:
+            requirements.append(
+                f"{'✅' if meets_income else '❌'} {embeds.format_currency(zone.min_income_required)}/h"
             )
         if zone.entry_cost > 0:
             requirements.append(
@@ -2813,6 +2847,7 @@ class Pets(commands.Cog):
         egg_level = int(egg_mastery.get("level", 1))
         pet_level = int(pet_mastery.get("level", 1))
         rebirth_count = await self.database.get_rebirth_count(ctx.author.id)
+        active_income = await self._get_active_income(ctx.author.id)
 
         zone_pages: List[ZoneOverviewView.PageState] = []
         for zone in PET_ZONES:
@@ -2820,6 +2855,7 @@ class Pets(commands.Cog):
             meets_egg_mastery = egg_level >= zone.egg_mastery_required
             meets_pet_mastery = pet_level >= zone.pet_mastery_required
             meets_rebirth = rebirth_count >= zone.rebirth_required
+            meets_income = active_income >= zone.min_income_required
 
             embed = self._build_zone_overview_embed(
                 ctx,
@@ -2828,6 +2864,7 @@ class Pets(commands.Cog):
                 meets_egg_mastery=meets_egg_mastery,
                 meets_pet_mastery=meets_pet_mastery,
                 meets_rebirth=meets_rebirth,
+                meets_income=meets_income,
             )
             zone_pages.append(
                 ZoneOverviewView.PageState(
@@ -2837,6 +2874,7 @@ class Pets(commands.Cog):
                     meets_egg_mastery=meets_egg_mastery,
                     meets_pet_mastery=meets_pet_mastery,
                     meets_rebirth=meets_rebirth,
+                    meets_income=meets_income,
                 )
             )
 
@@ -2857,6 +2895,7 @@ class Pets(commands.Cog):
                     meets_egg_mastery=False,
                     meets_pet_mastery=False,
                     meets_rebirth=False,
+                    meets_income=False,
                 )
             )
 
@@ -4230,7 +4269,28 @@ class Pets(commands.Cog):
             if user_pet_id <= 0:
                 continue
             data = self._convert_record(row, best_non_huge_income=best_non_huge_income)
-            income = scale_pet_value(int(data.get("base_income_per_hour", 0)))
+            base_income = int(data.get("base_income_per_hour", 0))
+            if bool(data.get("is_huge")):
+                reference_income = int(data.get("_reference_income") or 0)
+                if reference_income <= 0:
+                    reference_income = base_income
+                max_income = self._compute_huge_income(
+                    reference_income,
+                    pet_name=str(data.get("name", "")),
+                    level=HUGE_PET_LEVEL_CAP,
+                )
+                max_income = int(
+                    max_income
+                    * self._variant_income_multiplier(
+                        is_gold=bool(data.get("is_gold")),
+                        is_rainbow=bool(data.get("is_rainbow")),
+                        is_galaxy=bool(data.get("is_galaxy")),
+                        is_shiny=bool(data.get("is_shiny")),
+                    )
+                )
+                income = scale_pet_value(max_income)
+            else:
+                income = scale_pet_value(base_income)
             rarity = str(data.get("rarity", ""))
             rarity_rank = PET_RARITY_ORDER.get(rarity, -1)
             acquired_at = row.get("acquired_at")
@@ -5298,18 +5358,123 @@ class Pets(commands.Cog):
         if user_pet_inputs:
             auto_mode = any(str(value).lower() in {"auto", "random"} for value in user_pet_inputs)
 
+        name_requests: list[tuple[str, int]] = []
+        id_inputs: list[int] = []
+        raw_inputs = [str(value) for value in user_pet_inputs]
+        if user_pet_inputs and not auto_mode:
+            if any(not token.isdigit() for token in raw_inputs):
+                name_buffer: list[str] = []
+                for token in raw_inputs:
+                    lowered = token.lower()
+                    if lowered in {"auto", "random"}:
+                        continue
+                    if token.isdigit():
+                        if name_buffer:
+                            count = int(token)
+                            name = " ".join(name_buffer).strip()
+                            if name and count > 0:
+                                name_requests.append((name, count))
+                            name_buffer = []
+                        else:
+                            parsed = int(token)
+                            if parsed > 0:
+                                id_inputs.append(parsed)
+                    else:
+                        name_buffer.append(token)
+                if name_buffer:
+                    name_requests.append((" ".join(name_buffer).strip(), 1))
+            else:
+                for token in raw_inputs:
+                    parsed = int(token)
+                    if parsed > 0:
+                        id_inputs.append(parsed)
+
         unique_ids: list[int] = []
-        for value in user_pet_inputs:
-            try:
-                parsed = int(value)
-            except (TypeError, ValueError):
-                continue
-            if parsed > 0 and parsed not in unique_ids:
-                unique_ids.append(parsed)
-            if len(unique_ids) >= 10:
-                break
+        for value in id_inputs:
+            if value > 0 and value not in unique_ids:
+                unique_ids.append(value)
 
         auto_selected = False
+        if name_requests:
+            rows = await self.database.get_user_pets(ctx.author.id)
+            available = [
+                row
+                for row in rows
+                if not bool(row.get("is_active"))
+                and not bool(row.get("on_market"))
+                and not bool(row.get("is_huge"))
+            ]
+            available_by_name: Dict[str, List[Dict[str, Any]]] = {}
+            for row in available:
+                data = self._convert_record(row, best_non_huge_income=None)
+                key = str(data.get("name", "")).casefold()
+                available_by_name.setdefault(key, []).append({"record": row, "data": data})
+            for entries in available_by_name.values():
+                entries.sort(
+                    key=lambda entry: (
+                        int(entry["data"].get("base_income_per_hour", 0)),
+                        int(entry["record"].get("id") or 0),
+                    )
+                )
+
+            missing: List[str] = []
+            for raw_name, count in name_requests:
+                if count <= 0:
+                    continue
+                slug, _, variant = self._parse_pet_query(raw_name)
+                definition = self._definition_by_slug.get(slug or "")
+                if definition is None:
+                    missing.append(raw_name)
+                    continue
+                key = definition.name.casefold()
+                candidates = available_by_name.get(key, [])
+                if variant == "gold":
+                    filtered = [
+                        entry for entry in candidates if bool(entry["data"].get("is_gold"))
+                    ]
+                elif variant == "rainbow":
+                    filtered = [
+                        entry for entry in candidates if bool(entry["data"].get("is_rainbow"))
+                    ]
+                elif variant == "normal":
+                    filtered = [
+                        entry
+                        for entry in candidates
+                        if not bool(entry["data"].get("is_gold"))
+                        and not bool(entry["data"].get("is_rainbow"))
+                    ]
+                else:
+                    filtered = list(candidates)
+
+                if len(filtered) < count:
+                    await ctx.send(
+                        embed=embeds.error_embed(
+                            f"Il te faut encore {count} pets **{definition.name}** disponibles pour la fusion."
+                        )
+                    )
+                    return
+
+                chosen = filtered[:count]
+                chosen_ids = {int(entry["record"].get("id") or 0) for entry in chosen}
+                available_by_name[key] = [
+                    entry
+                    for entry in candidates
+                    if int(entry["record"].get("id") or 0) not in chosen_ids
+                ]
+                for entry in chosen:
+                    entry_id = int(entry["record"].get("id") or 0)
+                    if entry_id > 0 and entry_id not in unique_ids:
+                        unique_ids.append(entry_id)
+
+            if missing:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Pets introuvables pour la fusion : "
+                        + ", ".join(f"`{name}`" for name in missing)
+                    )
+                )
+                return
+
         if auto_mode and not unique_ids:
             rows = await self.database.get_user_pets(ctx.author.id)
             available = [
@@ -5322,7 +5487,7 @@ class Pets(commands.Cog):
             if len(available) < 10:
                 await ctx.send(
                     embed=embeds.error_embed(
-                        "La machine a besoin de **10 pets différents** disponibles."
+                        "La machine a besoin de **10 pets** disponibles."
                         " Pense à retirer les pets actifs ou en vente, puis réessaie.",
                     )
                 )
@@ -5342,7 +5507,16 @@ class Pets(commands.Cog):
             await ctx.send(
                 embed=embeds.info_embed(
                     "Utilise `e!fuse <id1> <id2> … <id10>` pour sacrifier 10 pets et en obtenir un nouveau."
-                    " Tu peux aussi lancer `e!fuse auto` pour choisir automatiquement.",
+                    " Tu peux aussi lancer `e!fuse auto` pour choisir automatiquement,"
+                    " ou `e!fuse shelly 5 angelo 3 lily 2` pour fusionner par nom.",
+                )
+            )
+            return
+
+        if len(unique_ids) > 10:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "La machine ne peut consommer que **10 pets** à la fois."
                 )
             )
             return
@@ -5350,7 +5524,7 @@ class Pets(commands.Cog):
         if len(unique_ids) < 10:
             await ctx.send(
                 embed=embeds.error_embed(
-                    "La machine a besoin de **10 pets différents**."
+                    "La machine a besoin de **10 pets**."
                     " Utilise `e!pets` puis repère la colonne `ID` pour noter ceux qui sont libres.",
                 )
             )

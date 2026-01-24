@@ -338,7 +338,16 @@ class Database:
                 best_non_huge_income if best_non_huge_income > 0 else base_income
             )
             raw_income = compute_huge_income(reference_income, multiplier)
-            return scale_pet_value(raw_income)
+            income_value = raw_income
+            if bool(row.get("is_galaxy")):
+                income_value *= GALAXY_PET_MULTIPLIER
+            elif bool(row.get("is_rainbow")):
+                income_value *= RAINBOW_PET_MULTIPLIER
+            elif bool(row["is_gold"]):
+                income_value *= GOLD_PET_MULTIPLIER
+            if bool(row.get("is_shiny")):
+                income_value *= SHINY_PET_MULTIPLIER
+            return scale_pet_value(income_value)
 
         income_value = base_income
         if bool(row.get("is_galaxy")):
