@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import random
@@ -10,137 +9,20 @@ import signal
 import sys
 import time
 from contextlib import suppress
-from pathlib import Path
-from typing import Dict, Optional, Sequence
+from typing import Dict, Sequence
 
 sys.path.append(os.path.expanduser("~/.local/lib/python3.12/site-packages"))
 
 import discord
 
-from aiohttp import web
 from discord.ext import commands
 
 from config import DATABASE_URL, LOG_LEVEL, OWNER_ID, PREFIX, TOKEN, PET_DEFINITIONS
 from utils.localization import DEFAULT_LANGUAGE
 
-# FIX: Allow tuning of the health check server operations timeout via environment.
-HEALTH_CHECK_TIMEOUT = int(os.getenv("HEALTH_TIMEOUT", "10"))
 from database.db import Database, DatabaseError
 
 logger = logging.getLogger(__name__)
-
-
-class HealthCheckServer:
-    """Expose un endpoint HTTP minimal utilisé par Koyeb pour le health check."""
-
-    def __init__(
-        self,
-        *,
-        host: str = "0.0.0.0",
-        port: int | None = None,
-        index_template_path: str | None = None,
-    ) -> None:
-        self._host = host
-        self._logger = logging.getLogger(f"{__name__}.HealthCheckServer")
-        resolved_port: Optional[int]
-        if port is not None:
-            resolved_port = port
-        else:
-            env_port = os.getenv("PORT")
-            resolved_port = None
-            if env_port:
-                try:
-                    resolved_port = int(env_port)
-                except ValueError:
-                    self._logger.warning(
-                        "Valeur de PORT invalide (%s), utilisation du port par défaut 8000",
-                        env_port,
-                    )
-            if resolved_port is None:
-                resolved_port = 8000
-        self._port = resolved_port
-        self._app = web.Application()
-        self._app.router.add_get("/", self.root)
-        self._app.router.add_get("/health", self.health_check)
-        self._runner: Optional[web.AppRunner] = None
-        self._site: Optional[web.TCPSite] = None
-        self._index_template_path = index_template_path
-        self._index_template: str | None = None
-        if index_template_path:
-            try:
-                self._index_template = Path(index_template_path).read_text(encoding="utf-8")
-            except FileNotFoundError:
-                self._logger.warning(
-                    "Impossible de charger le template HTML %s", index_template_path
-                )
-
-    async def health_check(self, request: web.Request) -> web.Response:
-        return web.Response(text="Bot is alive", status=200)
-
-    def _build_config_script(self, request: web.Request) -> str:
-        config = {
-            "supabaseUrl": os.getenv("SUPABASE_URL", ""),
-            "supabaseAnonKey": os.getenv("SUPABASE_ANON_KEY", ""),
-            "apiBase": os.getenv("PUBLIC_API_BASE_URL")
-            or f"{request.scheme}://{request.host}/api",
-        }
-        serialized = json.dumps(config, ensure_ascii=False).replace("</", "<\\/")
-        return f"<script>window.APP_CONFIG = {serialized};</script>"
-
-    def _render_index(self, request: web.Request) -> str | None:
-        if self._index_template is None:
-            return None
-
-        script_tag = self._build_config_script(request)
-        placeholder = "<!--APP_CONFIG-->"
-        if placeholder in self._index_template:
-            return self._index_template.replace(placeholder, script_tag)
-
-        return self._index_template + script_tag
-
-    async def root(self, request: web.Request) -> web.Response:
-        rendered = self._render_index(request)
-        if rendered is None:
-            return await self.health_check(request)
-
-        return web.Response(text=rendered, content_type="text/html", status=200)
-
-    async def start(self) -> None:
-        if self._runner is not None:
-            return
-
-        try:
-            runner = web.AppRunner(self._app)
-            await asyncio.wait_for(runner.setup(), timeout=HEALTH_CHECK_TIMEOUT)
-            site = web.TCPSite(runner, self._host, self._port)
-            await asyncio.wait_for(site.start(), timeout=HEALTH_CHECK_TIMEOUT)
-        except asyncio.TimeoutError:
-            self._logger.error(
-                "Expiration du délai lors du démarrage du serveur de health check (%ss)",
-                HEALTH_CHECK_TIMEOUT,
-            )
-            await self.stop()
-            raise
-        except Exception:
-            self._logger.exception("Échec du démarrage du serveur HTTP de health check")
-            await self.stop()
-            raise
-
-        self._runner = runner
-        self._site = site
-        self._logger.info(
-            "Serveur de health check opérationnel sur %s:%s", self._host, self._port
-        )
-
-    async def stop(self) -> None:
-        if self._site is not None:
-            await self._site.stop()
-            self._site = None
-
-        if self._runner is not None:
-            await self._runner.cleanup()
-            self._runner = None
-            self._logger.info("Serveur de health check arrêté")
 
 
 def configure_logging() -> None:
@@ -162,11 +44,9 @@ class EcoBot(commands.Bot):
         *,
         prefix: str,
         intents: discord.Intents,
-        health_server: Optional[HealthCheckServer] = None,
     ) -> None:
         super().__init__(command_prefix=commands.when_mentioned_or(prefix), intents=intents, help_command=None)
         self.database = database
-        self.health_server = health_server
         self.initial_extensions: tuple[str, ...] = (
             "economy",
             "grades",
@@ -239,17 +119,6 @@ class EcoBot(commands.Bot):
             except Exception:  # pragma: no cover - log uniquement
                 logger.exception("Impossible de charger l'extension %s", extension)
 
-        if self.health_server is not None:
-            try:
-                # FIX: Bound the health server startup to avoid hangs during boot.
-                await asyncio.wait_for(
-                    self.health_server.start(), timeout=HEALTH_CHECK_TIMEOUT
-                )
-            except Exception:
-                logger.exception(
-                    "Le serveur de health check n'a pas pu démarrer. Poursuite en mode dégradé."
-                )
-
     async def close(self) -> None:  # pragma: no cover - cycle de vie discord.py
         if self._shutting_down:
             return
@@ -261,15 +130,6 @@ class EcoBot(commands.Bot):
                 await self.unload_extension(extension)
             except Exception:
                 logger.exception("Impossible de décharger l'extension %s", extension)
-
-        if self.health_server is not None:
-            try:
-                # FIX: Bound the health server shutdown to avoid indefinite waits.
-                await asyncio.wait_for(
-                    self.health_server.stop(), timeout=HEALTH_CHECK_TIMEOUT
-                )
-            except Exception:
-                logger.exception("Impossible d'arrêter proprement le serveur de health check")
 
         try:
             await self.database.close()
@@ -470,11 +330,7 @@ async def start_bot() -> None:
     intents.message_content = True
     intents.members = True
 
-    index_template = Path(__file__).parent / "static" / "index.html"
-    health_server = HealthCheckServer(
-        index_template_path=str(index_template) if index_template.exists() else None
-    )
-    bot = EcoBot(database, prefix=PREFIX, intents=intents, health_server=health_server)
+    bot = EcoBot(database, prefix=PREFIX, intents=intents)
 
     if OWNER_ID:
         bot.owner_ids = {OWNER_ID}
