@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 import contextlib
 import logging
 import math
@@ -24,6 +25,7 @@ from config import (
     GOLD_PET_MULTIPLIER,
     GRADE_DEFINITIONS,
     CELESTE_ZONE_SLUG,
+    ZODIAQUE_ZONE_SLUG,
     DAYCARE_GEM_MAX,
     DAYCARE_GEM_PER_PET_HOUR,
     DAYCARE_MAX_PETS,
@@ -91,7 +93,7 @@ from config import (
 )
 from utils import embeds
 from utils.cache import TTLCache
-from utils.pet_formatting import pet_emoji
+from utils.pet_formatting import PetDisplay, pet_emoji
 from cogs.economy import (
     CASINO_HUGE_CHANCE_PER_PB,
     CASINO_HUGE_MAX_CHANCE,
@@ -119,6 +121,8 @@ from utils.enchantments import (
 )
 
 logger = logging.getLogger(__name__)
+
+FUSE_ZODIAQUE_WEIGHT_MULTIPLIER: Final[float] = 0.2
 
 
 HUGE_SHELLY_ALERT_CHANNEL_ID = 1236724293631611022
@@ -548,6 +552,7 @@ class PetInventoryView(discord.ui.View):
         ctx: commands.Context,
         pets: Iterable[Mapping[str, Any]],
         total_income: int,
+        total_count: int,
         per_page: int = 8,
         huge_descriptions: Mapping[str, str] | None = None,
     ) -> None:
@@ -557,6 +562,7 @@ class PetInventoryView(discord.ui.View):
         self._pets: List[Dict[str, Any]] = [dict(pet) for pet in pets]
         self._per_page = max(1, per_page)
         self._total_income = int(total_income)
+        self._total_count = int(total_count)
         self._huge_descriptions: Dict[str, str] = dict(huge_descriptions or {})
         self.page_count = max(1, math.ceil(len(self._pets) / self._per_page))
         self.page = 0
@@ -574,7 +580,7 @@ class PetInventoryView(discord.ui.View):
         return embeds.pet_collection_embed(
             member=self.member,
             pets=self._current_slice(),
-            total_count=len(self._pets),
+            total_count=self._total_count,
             total_income_per_hour=self._total_income,
             page=self.page + 1,
             page_count=self.page_count,
@@ -3417,6 +3423,34 @@ class Pets(commands.Cog):
         )
         return converted
 
+    @staticmethod
+    def _group_inventory_pets(
+        pets: Sequence[Mapping[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        grouped: OrderedDict[tuple[object, ...], Dict[str, Any]] = OrderedDict()
+        for pet in pets:
+            display = PetDisplay.from_mapping(pet)
+            key: tuple[object, ...] = display.collection_key()
+            if display.is_huge:
+                key = (key, display.identifier or id(pet))
+            entry = grouped.get(key)
+            if entry is None:
+                entry = display.to_mutable_mapping()
+                entry["identifier"] = display.identifier
+                entry["quantity"] = 1
+                if display.is_huge and display.identifier:
+                    entry["identifiers"] = [int(display.identifier)]
+                grouped[key] = entry
+                continue
+
+            entry["quantity"] = int(entry.get("quantity", 1)) + 1
+            if display.is_huge and display.identifier:
+                identifiers = entry.setdefault("identifiers", [])
+                if isinstance(identifiers, list):
+                    identifiers.append(int(display.identifier))
+
+        return list(grouped.values())
+
 
     # ------------------------------------------------------------------
     # Commandes
@@ -4031,19 +4065,21 @@ class Pets(commands.Cog):
             if DEBUG_CACHE:
                 logger.debug("Cache pets mis à jour", extra={"user_id": ctx.author.id})
         pets = self._sort_pets_for_display(records, market_values)
+        grouped_pets = self._group_inventory_pets(pets)
         active_income = sum(int(pet["income"]) for pet in pets if pet.get("is_active"))
         per_page = PETS_PAGE_SIZE
         total_count = len(pets)
-        page_count = max(1, math.ceil(total_count / per_page))
+        page_count = max(1, math.ceil(len(grouped_pets) / per_page))
         if page_count <= 1:
             embed = embeds.pet_collection_embed(
                 member=ctx.author,
-                pets=pets,
+                pets=grouped_pets,
                 total_count=total_count,
                 total_income_per_hour=active_income,
                 page=1,
                 page_count=1,
                 huge_descriptions=HUGE_PET_SOURCES,
+                group_duplicates=False,
             )
             if loading_message is not None:
                 await loading_message.edit(content=None, embed=embed)
@@ -4052,8 +4088,9 @@ class Pets(commands.Cog):
         else:
             view = PetInventoryView(
                 ctx=ctx,
-                pets=pets,
+                pets=grouped_pets,
                 total_income=active_income,
+                total_count=total_count,
                 per_page=per_page,
                 huge_descriptions=HUGE_PET_SOURCES,
             )
@@ -5559,7 +5596,18 @@ class Pets(commands.Cog):
             await ctx.send(embed=embeds.error_embed("Aucun pet disponible pour la fusion."))
             return
 
-        weights = [max(0.0001, float(getattr(pet, "drop_rate", 0.0)) or 0.0001) for pet in non_huge_definitions]
+        zodiaque_pet_names = {
+            pet.name
+            for egg in PET_EGG_DEFINITIONS
+            if egg.zone_slug == ZODIAQUE_ZONE_SLUG
+            for pet in egg.pets
+        }
+        weights = []
+        for pet in non_huge_definitions:
+            base_weight = max(0.0001, float(getattr(pet, "drop_rate", 0.0)) or 0.0001)
+            if pet.name in zodiaque_pet_names:
+                base_weight *= FUSE_ZODIAQUE_WEIGHT_MULTIPLIER
+            weights.append(max(0.0001, base_weight))
 
         total_outputs = 1
         bonus_label = None
@@ -5648,7 +5696,8 @@ class Pets(commands.Cog):
             if entry.get("is_shiny"):
                 tags.append("Shiny")
             suffix = f" ({', '.join(tags)})" if tags else ""
-            lines.append(f"{embeds.format_currency(income)}/h — **{name}**{suffix}")
+            emoji = pet_emoji(name)
+            lines.append(f"{embeds.format_currency(income)}/h — {emoji}{suffix}")
 
         if auto_selected:
             used_ids = ", ".join(str(pet_id) for pet_id in consumed_ids)
@@ -6423,9 +6472,9 @@ class TradeSession:
         if bool(data.get("is_shiny")):
             markers.append("✨")
         suffix = f" {' '.join(markers)}" if markers else ""
+        emoji = pet_emoji(str(data.get("name", "Pet")))
         return (
-            f"#{data.get('user_pet_id', 0)} • {data.get('name', 'Pet')}{suffix}"
-            f" — {embeds.format_currency(price)}"
+            f"{emoji} {data.get('name', 'Pet')}{suffix} — {embeds.format_currency(price)}"
         )
 
     def build_embed(self) -> discord.Embed:
@@ -6631,38 +6680,30 @@ class TradeSession:
             self.view.stop()
 
 
-class TradeAddPetModal(discord.ui.Modal):
-    def __init__(self, view: "TradeView", user_id: int) -> None:
+class TradePetPriceModal(discord.ui.Modal):
+    def __init__(self, view: "TradeView", user_pet_id: int) -> None:
         super().__init__(title="Ajouter un pet au trade")
         self.view = view
-        self.user_id = user_id
-        self.pet_id_input = discord.ui.TextInput(
-            label="Identifiant du pet",
-            placeholder="Ex: 42",
-            min_length=1,
-            max_length=10,
-        )
+        self.user_pet_id = user_pet_id
         self.price_input = discord.ui.TextInput(
             label="Valeur estimée en PB",
             placeholder="Ex: 150000",
             min_length=1,
             max_length=18,
         )
-        self.add_item(self.pet_id_input)
         self.add_item(self.price_input)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         try:
-            pet_id = int(self.pet_id_input.value)
             price = max(0, int(self.price_input.value))
         except ValueError:
             await interaction.response.send_message(
-                embed=embeds.error_embed("Merci d'indiquer un identifiant et un prix valides."),
+                embed=embeds.error_embed("Merci d'indiquer un prix valide."),
                 ephemeral=True,
             )
             return
         try:
-            await self.view.session.add_pet(interaction.user, pet_id, price)
+            await self.view.session.add_pet(interaction.user, self.user_pet_id, price)
         except DatabaseError as exc:
             await interaction.response.send_message(
                 embed=embeds.error_embed(str(exc)), ephemeral=True
@@ -6672,6 +6713,136 @@ class TradeAddPetModal(discord.ui.Modal):
             embed=embeds.success_embed("Pet ajouté à ton offre."), ephemeral=True
         )
         await self.view.session.refresh()
+
+
+class TradePetSelect(discord.ui.Select):
+    def __init__(self, view: "TradePetSelectView") -> None:
+        self.trade_view = view
+        options = view.current_options()
+        super().__init__(
+            placeholder="Choisis un pet à ajouter",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.trade_view.user.id:
+            await interaction.response.send_message(
+                "Seul l'auteur peut utiliser cette liste.",
+                ephemeral=True,
+            )
+            return
+        selected = int(self.values[0])
+        if selected <= 0:
+            await interaction.response.send_message(
+                "Aucun pet disponible à sélectionner.",
+                ephemeral=True,
+            )
+            return
+        modal = TradePetPriceModal(self.trade_view.parent_view, selected)
+        await interaction.response.send_modal(modal)
+
+
+class TradePetSelectView(discord.ui.View):
+    def __init__(
+        self,
+        *,
+        parent_view: "TradeView",
+        user: discord.abc.User,
+        pets: Sequence[Mapping[str, Any]],
+    ) -> None:
+        super().__init__(timeout=120)
+        self.parent_view = parent_view
+        self.user = user
+        self.pets = list(pets)
+        self.page = 0
+        self.per_page = 25
+        self.pet_select = TradePetSelect(self)
+        if not self.pets:
+            self.pet_select.disabled = True
+        self.add_item(self.pet_select)
+        self._sync_buttons()
+
+    def _current_slice(self) -> list[Mapping[str, Any]]:
+        start = self.page * self.per_page
+        end = start + self.per_page
+        return self.pets[start:end]
+
+    def current_options(self) -> list[discord.SelectOption]:
+        options: list[discord.SelectOption] = []
+        for pet in self._current_slice():
+            label = str(pet.get("label", "Pet"))
+            description = pet.get("description")
+            if isinstance(description, str) and len(description) > 100:
+                description = description[:97] + "…"
+            options.append(
+                discord.SelectOption(
+                    label=label[:100],
+                    value=str(pet.get("id", 0)),
+                    description=description if isinstance(description, str) else None,
+                )
+            )
+        if not options:
+            options.append(
+                discord.SelectOption(
+                    label="Aucun pet disponible",
+                    value="0",
+                    description="",
+                )
+            )
+        return options
+
+    def build_embed(self) -> discord.Embed:
+        total_pages = max(1, math.ceil(len(self.pets) / self.per_page))
+        embed = embeds.info_embed(
+            "Sélectionne un pet puis indique sa valeur estimée.",
+            title="🐾 Sélection de pet",
+        )
+        embed.set_footer(text=f"Page {self.page + 1}/{total_pages}")
+        return embed
+
+    def _sync_buttons(self) -> None:
+        total_pages = max(1, math.ceil(len(self.pets) / self.per_page))
+        has_multiple = total_pages > 1
+        if hasattr(self, "previous_page"):
+            self.previous_page.disabled = not has_multiple or self.page <= 0
+        if hasattr(self, "next_page"):
+            self.next_page.disabled = not has_multiple or self.page >= total_pages - 1
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message(
+                "Seul l'auteur peut utiliser cette liste.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary)
+    async def previous_page(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if self.page > 0:
+            self.page -= 1
+        self.pet_select.options = self.current_options()
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary)
+    async def next_page(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        total_pages = max(1, math.ceil(len(self.pets) / self.per_page))
+        if self.page < total_pages - 1:
+            self.page += 1
+        self.pet_select.options = self.current_options()
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
 
 
 class TradePBModal(discord.ui.Modal):
@@ -6734,8 +6905,52 @@ class TradeView(discord.ui.View):
     async def add_pet_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        modal = TradeAddPetModal(self, interaction.user.id)
-        await interaction.response.send_modal(modal)
+        rows = await self.session.cog.database.get_user_pets(interaction.user.id)
+        if not rows:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Tu n'as aucun pet disponible."),
+                ephemeral=True,
+            )
+            return
+        pets_data = self.session.cog._sort_pets_for_display(rows, market_values=None)
+        options: list[dict[str, Any]] = []
+        for pet in pets_data:
+            name = str(pet.get("name", "Pet"))
+            emoji = pet_emoji(name)
+            markers: list[str] = []
+            if pet.get("is_huge"):
+                markers.append("Huge")
+            if pet.get("is_galaxy"):
+                markers.append("🌌")
+            elif pet.get("is_rainbow"):
+                markers.append("🌈")
+            elif pet.get("is_gold"):
+                markers.append("🥇")
+            if pet.get("is_shiny"):
+                markers.append("✨")
+            suffix = f" {' '.join(markers)}" if markers else ""
+            label = f"{emoji} {name}{suffix}".strip()
+            rarity = str(pet.get("rarity", "?"))
+            income = int(pet.get("base_income_per_hour", 0))
+            status = "Disponible"
+            if pet.get("is_active"):
+                status = "Équipé"
+            elif pet.get("on_market"):
+                status = "En vente"
+            description = f"{rarity} • {embeds.format_currency(income)}/h • {status}"
+            options.append(
+                {
+                    "id": int(pet.get("id", 0)),
+                    "label": label,
+                    "description": description,
+                }
+            )
+        view = TradePetSelectView(parent_view=self, user=interaction.user, pets=options)
+        await interaction.response.send_message(
+            embed=view.build_embed(),
+            view=view,
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Ajouter des PB", style=discord.ButtonStyle.secondary)
     async def add_pb_button(
