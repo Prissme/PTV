@@ -936,10 +936,13 @@ class Database:
                     name TEXT UNIQUE NOT NULL,
                     rarity TEXT NOT NULL,
                     image_url TEXT NOT NULL,
-                    base_income_per_hour INTEGER NOT NULL CHECK (base_income_per_hour >= 0),
+                    base_income_per_hour BIGINT NOT NULL CHECK (base_income_per_hour >= 0),
                     drop_rate DOUBLE PRECISION NOT NULL CHECK (drop_rate >= 0)
                 )
                 """
+            )
+            await connection.execute(
+                "ALTER TABLE pets ALTER COLUMN base_income_per_hour TYPE BIGINT"
             )
             await connection.execute(
                 """
