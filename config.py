@@ -1783,6 +1783,7 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "El Primo": os.getenv("PET_EMOJI_EL_PRIMO", "<:ElPrimo:1437826192794321097>"),
     "Amber": os.getenv("PET_EMOJI_AMBER", "<:Amber:1437826234095636490>"),
     "Stella": os.getenv("PET_EMOJI_STELLA", "<:Stella:1462049982919213169>"),
+    "Nova": os.getenv("PET_EMOJI_NOVA", "<:Nova:1437826273673089238>"),
     "Lyra": os.getenv("PET_EMOJI_LYRA", "<:Lyra:1462050431198036172>"),
     "Orion": os.getenv("PET_EMOJI_ORION", "<:Orion:1462047760479031378>"),
     HUGE_ASTRALIS_NAME: os.getenv(

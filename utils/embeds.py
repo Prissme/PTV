@@ -745,7 +745,8 @@ def pet_collection_embed(
 ) -> discord.Embed:
     del huge_descriptions  # Non utilisé dans la version minimaliste
 
-    displays = [PetDisplay.from_mapping(pet) for pet in pets]
+    display_entries = [(PetDisplay.from_mapping(pet), pet) for pet in pets]
+    displays = [display for display, _ in display_entries]
     active_count = sum(1 for pet in displays if pet.is_active)
     header = [
         f"Total : {total_count}",
@@ -758,12 +759,14 @@ def pet_collection_embed(
         grouped: OrderedDict[
             tuple[object, ...], dict[str, object]
         ] = OrderedDict()
-        for display in displays:
+        for display, pet in display_entries:
             key = display.collection_key()
+            if display.is_huge:
+                key = (key, display.identifier or id(pet))
             entry = grouped.get(key)
             if entry is None:
                 identifiers: list[int] = []
-                if display.identifier:
+                if display.is_huge and display.identifier:
                     identifiers.append(int(display.identifier))
                 grouped[key] = {
                     "display": display,
@@ -773,7 +776,7 @@ def pet_collection_embed(
                 continue
 
             entry["count"] = int(entry.get("count", 0)) + 1
-            if display.identifier:
+            if display.is_huge and display.identifier:
                 identifiers = entry.setdefault("identifiers", [])
                 if isinstance(identifiers, list):
                     identifiers.append(int(display.identifier))
@@ -783,21 +786,25 @@ def pet_collection_embed(
             if display is None:
                 continue
             count = int(entry.get("count", 0))
-            identifiers = entry.get("identifiers")
+            identifiers = entry.get("identifiers") if display.is_huge else None
             if isinstance(identifiers, list):
                 line = display.collection_line(quantity=count, identifiers=identifiers)
             else:
                 line = display.collection_line(quantity=count)
             description_lines.append(line)
     else:
-        for display in displays:
-            identifier_value = (
-                int(display.identifier)
-                if display.identifier is not None
-                else 0
-            )
-            identifiers = [identifier_value] if identifier_value else None
-            line = display.collection_line(quantity=1, identifiers=identifiers)
+        for display, pet in display_entries:
+            quantity = int(pet.get("quantity", 1)) if isinstance(pet, Mapping) else 1
+            identifiers: Sequence[int] | None = None
+            if display.is_huge:
+                raw_identifiers = None
+                if isinstance(pet, Mapping):
+                    raw_identifiers = pet.get("identifiers")
+                if isinstance(raw_identifiers, Sequence) and not isinstance(raw_identifiers, (str, bytes)):
+                    identifiers = [int(value) for value in raw_identifiers if value]
+                elif display.identifier is not None:
+                    identifiers = [int(display.identifier)]
+            line = display.collection_line(quantity=quantity, identifiers=identifiers)
             description_lines.append(line)
 
     embed_description = " • ".join(header)
