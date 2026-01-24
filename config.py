@@ -849,7 +849,6 @@ MANOIR_ZONE_SLUG: Final[str] = "manoir_hante"
 ROBOT_ZONE_SLUG: Final[str] = "robotique"
 ANIMALERIE_ZONE_SLUG: Final[str] = "animalerie"
 MEXICO_ZONE_SLUG: Final[str] = "mexico"
-ROCKET_ZONE_SLUG: Final[str] = "fusee"
 CELESTE_ZONE_SLUG: Final[str] = "celeste"
 ZODIAQUE_ZONE_SLUG: Final[str] = "zodiaque"
 GOLD_PET_MULTIPLIER: Final[int] = 3
@@ -1718,15 +1717,6 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         pet_mastery_required=30,
         rebirth_required=2,
         min_income_required=300_000_000_000,
-    ),
-    PetZoneDefinition(
-        name="Fusée Orbitale",
-        slug=ROCKET_ZONE_SLUG,
-        grade_required=15,
-        entry_cost=rebase_gems_price(1_000_000),
-        eggs=(),
-        rebirth_required=2,
-        currency="gem",
     ),
 )
 
