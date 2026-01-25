@@ -73,10 +73,10 @@ class EcoBot(commands.Bot):
             "pets": "pets",
             "eggs": "eggs",
             "claim": "claim",
-            "gemshop": "gemshop",
-            "shop": "gemshop",
-            "gem": "gemshop",
-            "gems": "gemshop",
+            "gemshop": "shop",
+            "shop": "shop",
+            "gem": "shop",
+            "gems": "shop",
         }
         self._shutting_down = False
 

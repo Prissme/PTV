@@ -295,6 +295,12 @@ MARKET_VALUE_TITANIC_MULTIPLIER = _get_economy_float(
     "market_value.titanic_multiplier", 50.0, minimum=0.1
 )
 MARKET_VALUE_MIN = _get_economy_int("market_value.min_value", 1, minimum=1)
+MARKET_VALUE_OWNER_EXPONENT = _get_economy_float(
+    "market_value.owner_exponent", 0.5, minimum=0.0, maximum=2.0
+)
+MARKET_VALUE_OWNER_MIN_MULTIPLIER = _get_economy_float(
+    "market_value.owner_min_multiplier", 0.1, minimum=0.0, maximum=1.0
+)
 DISPLAY_GEMS_COMPACT = _get_economy_bool("display.compact", True)
 
 MARKET_VALUE_CONFIG: Final[Mapping[str, object]] = {
@@ -306,6 +312,8 @@ MARKET_VALUE_CONFIG: Final[Mapping[str, object]] = {
     "huge_multiplier": MARKET_VALUE_HUGE_MULTIPLIER,
     "titanic_multiplier": MARKET_VALUE_TITANIC_MULTIPLIER,
     "min_value": MARKET_VALUE_MIN,
+    "owner_exponent": MARKET_VALUE_OWNER_EXPONENT,
+    "owner_min_multiplier": MARKET_VALUE_OWNER_MIN_MULTIPLIER,
     "debug": ECONOMY_DEBUG,
 }
 _daily_min = _get_balance_int("daily_reward_min", 10_000, minimum=0)
@@ -861,6 +869,9 @@ RAINBOW_PET_COMBINE_REQUIRED: Final[int] = 10
 RAINBOW_PET_CHANCE: Final[float] = 0.0
 GALAXY_PET_MULTIPLIER: Final[int] = 25
 GALAXY_PET_COMBINE_REQUIRED: Final[int] = 100
+GOLDIFY_GEM_COST: Final[int] = _get_balance_int("goldify_gem_cost", 100, minimum=0)
+RAINBOWIFY_GEM_COST: Final[int] = _get_balance_int("rainbowify_gem_cost", 500, minimum=0)
+GALAXY_GEM_COST: Final[int] = _get_balance_int("galaxy_gem_cost", 2_500, minimum=0)
 SHINY_PET_MULTIPLIER: Final[int] = 5
 HUGE_PET_NAME: Final[str] = "Huge Shelly"
 HUGE_PET_MULTIPLIER: Final[float] = 2
@@ -1163,7 +1174,7 @@ _BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
         rarity="Secret",
         image_url="https://cdn.discordapp.com/emojis/1430587331819212831.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.00015,
+        drop_rate=0.00003,
         is_huge=True,
     ),
 )
@@ -1202,7 +1213,7 @@ _FOREST_EGG_PETS: Tuple[PetDefinition, ...] = (
         rarity="Secret",
         image_url="https://example.com/document53.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.0005,
+        drop_rate=0.0001,
         is_huge=True,
     ),
 )
@@ -1253,7 +1264,7 @@ _CURSED_EGG_PETS: Tuple[PetDefinition, ...] = (
         rarity="Secret",
         image_url="https://cdn.discordapp.com/emojis/1431422771094753310.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.005,
+        drop_rate=0.001,
         is_huge=True,
     ),
 )
@@ -1375,7 +1386,7 @@ _ROBOT_EGG_PETS: Tuple[PetDefinition, ...] = (
         rarity="Secret",
         image_url="https://cdn.discordapp.com/emojis/1433379423133892608.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.0001,
+        drop_rate=0.00002,
         is_huge=True,
     ),
     PetDefinition(

@@ -23,6 +23,7 @@ from config import (
     GOLD_PET_CHANCE,
     GOLD_PET_COMBINE_REQUIRED,
     GOLD_PET_MULTIPLIER,
+    GOLDIFY_GEM_COST,
     GRADE_DEFINITIONS,
     CELESTE_ZONE_SLUG,
     ZODIAQUE_ZONE_SLUG,
@@ -43,8 +44,10 @@ from config import (
     RAINBOW_PET_CHANCE,
     RAINBOW_PET_COMBINE_REQUIRED,
     RAINBOW_PET_MULTIPLIER,
+    RAINBOWIFY_GEM_COST,
     GALAXY_PET_COMBINE_REQUIRED,
     GALAXY_PET_MULTIPLIER,
+    GALAXY_GEM_COST,
     PET_EMOJIS,
     Emojis,
     SHINY_PET_MULTIPLIER,
@@ -255,32 +258,11 @@ class GemshopRoleOffer:
 
 GEMSHOP_ROLE_OFFERS: Final[tuple[GemshopRoleOffer, ...]] = (
     GemshopRoleOffer(
-        role_id=EGG_LUCK_ROLE_ID,
-        description="+30% d'XP • +10% Luck dans les œufs",
-        price=rebase_gems_price(5_000),
-        stock=7,
-        slug="luck",
-    ),
-    GemshopRoleOffer(
-        role_id=VOICE_XP_ROLE_ID,
-        description="+15% d'XP • Salon voc illimité",
-        price=rebase_gems_price(1_500),
-        stock=13,
-        slug="vocal",
-    ),
-    GemshopRoleOffer(
-        role_id=XP_BOOST_ROLE_ID,
-        description="+50% d'XP",
-        price=rebase_gems_price(4_000),
-        stock=7,
-        slug="xp",
-    ),
-    GemshopRoleOffer(
-        role_id=STEAL_PROTECTED_ROLE_ID,
-        description="Divise par 10 les chances de vol",
+        role_id=1388837886924685343,
+        description="Rôle Bourgeois",
         price=rebase_gems_price(10_000),
-        stock=7,
-        slug="protege",
+        stock=9_999,
+        slug="bourgeois",
     ),
 )
 
@@ -378,7 +360,7 @@ class GemshopRoleButton(discord.ui.Button):
         self, cog: "Pets", ctx: commands.Context, offer: GemshopRoleOffer, state: GemshopState
     ) -> None:
         super().__init__(
-            label="Acheter le rôle",
+            label="(Bourgeois)",
             style=discord.ButtonStyle.blurple,
             custom_id=f"gemshop:role:{offer.role_id}",
         )
@@ -390,7 +372,7 @@ class GemshopRoleButton(discord.ui.Button):
     def update_state(self, state: GemshopState) -> None:
         sold = int(state.role_sales.get(self.offer.role_id, 0))
         remaining = max(0, self.offer.stock - sold)
-        self.label = f"{embeds.format_gems(self.offer.price)} ({remaining}/{self.offer.stock})"
+        self.label = "(Bourgeois)"
         self.disabled = remaining <= 0
 
     async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
@@ -2122,12 +2104,16 @@ class Pets(commands.Cog):
             while True:
                 try:
                     make_shiny = _roll_shiny(pet_perks.goldify_shiny_chance)
-                    gold_record, consumed = await self.database.upgrade_pet_to_gold(
-                        ctx.author.id, pet_id, make_shiny=make_shiny
+                    gold_records, consumed = await self.database.upgrade_pet_to_gold(
+                        ctx.author.id,
+                        pet_id,
+                        make_shiny=make_shiny,
+                        cost=GOLDIFY_GEM_COST,
                     )
                 except DatabaseError:
                     break
 
+                gold_record = gold_records[0]
                 name = str(gold_record.get("name", definition.name))
                 shiny_suffix = " shiny" if bool(gold_record.get("is_shiny")) else ""
                 messages.append(
@@ -2144,12 +2130,16 @@ class Pets(commands.Cog):
             while True:
                 try:
                     make_shiny = _roll_shiny(pet_perks.rainbowify_shiny_chance)
-                    rainbow_record, consumed = await self.database.upgrade_pet_to_rainbow(
-                        ctx.author.id, pet_id, make_shiny=make_shiny
+                    rainbow_records, consumed = await self.database.upgrade_pet_to_rainbow(
+                        ctx.author.id,
+                        pet_id,
+                        make_shiny=make_shiny,
+                        cost=RAINBOWIFY_GEM_COST,
                     )
                 except DatabaseError:
                     break
 
+                rainbow_record = rainbow_records[0]
                 name = str(rainbow_record.get("name", definition.name))
                 shiny_suffix = " shiny" if bool(rainbow_record.get("is_shiny")) else ""
                 messages.append(
@@ -2313,6 +2303,18 @@ class Pets(commands.Cog):
             await channel.send("\n".join(announcement_lines))
         except discord.HTTPException:
             logger.warning("Impossible d'envoyer l'annonce de maîtrise", exc_info=True)
+
+    @staticmethod
+    def _split_pet_quantity(raw: str) -> tuple[str, int]:
+        tokens = [token for token in raw.split() if token]
+        if not tokens:
+            return "", 1
+        if len(tokens) > 1 and tokens[-1].isdigit():
+            quantity = int(tokens[-1])
+            name = " ".join(tokens[:-1]).strip()
+            if name:
+                return name, quantity
+        return raw.strip(), 1
 
     def _parse_pet_query(self, raw: str) -> tuple[str, Optional[int], Optional[str]]:
         tokens = [token for token in raw.split() if token]
@@ -4567,7 +4569,7 @@ class Pets(commands.Cog):
                 f"• Prochain slot : **{self._format_slot_cost(state.next_cost)}**"
             )
             lines.append(
-                "Appuie sur le bouton ci-dessous ou utilise `e!gemshop buy` pour acheter un slot."
+                "Appuie sur le bouton ci-dessous ou utilise `e!shop buy` pour acheter un slot."
             )
         else:
             if state.has_reached_hard_cap or state.base_capacity >= state.hard_cap:
@@ -4699,7 +4701,7 @@ class Pets(commands.Cog):
             lines.append(
                 f"Prochain slot : {self._format_slot_cost(new_state.next_cost)}."
             )
-            lines.append("Utilise le bouton du magasin ou `e!gemshop buy` (`e!shop buy`).")
+            lines.append("Utilise le bouton du magasin ou `e!shop buy`.")
         else:
             if new_state.has_reached_hard_cap:
                 lines.append("Tu as atteint la capacité maximale de 40 pets équipés.")
@@ -4786,8 +4788,8 @@ class Pets(commands.Cog):
         return GemshopPurchaseResult(embed=embed, state=new_state, success=True)
 
     @commands.command(
-        name="gemshop",
-        aliases=("shop", "gem", "gems"),
+        name="shop",
+        aliases=("gemshop", "gem", "gems"),
     )
     async def gemshop(self, ctx: commands.Context, *, action: str | None = None) -> None:
         await self._ack_heavy_command(ctx)
@@ -5657,7 +5659,7 @@ class Pets(commands.Cog):
         except InsufficientBalanceError:
             await ctx.send(
                 embed=embeds.error_embed(
-                    f"Tu n'as pas assez de PB pour payer la fusion ({embeds.format_currency(fusion_cost)})."
+                    f"Tu n'as pas assez de {Emojis.GEM} pour payer la fusion ({embeds.format_gems(fusion_cost)})."
                 )
             )
             return
@@ -5704,7 +5706,7 @@ class Pets(commands.Cog):
             lines.append(f"IDs utilisés : {used_ids}")
         if bonus_label:
             lines.append(bonus_label)
-        lines.append(f"Coût : {embeds.format_currency(fusion_cost)}")
+        lines.append(f"Coût : {embeds.format_gems(fusion_cost)}")
 
         embed.description = "\n".join(lines)
         await ctx.send(embed=embed)
@@ -5721,13 +5723,22 @@ class Pets(commands.Cog):
         if not pet_name:
             await ctx.send(
                 embed=embeds.info_embed(
-                    "Utilise `e!goldify <nom du pet>` pour fusionner **"
+                    "Utilise `e!goldify <nom du pet> [quantité]` pour fusionner **"
                     f"{GOLD_PET_COMBINE_REQUIRED}** exemplaires identiques en une version or."
+                    f"\nCoût : {embeds.format_gems(GOLDIFY_GEM_COST)} par fusion."
                 )
             )
             return
 
-        lookup = pet_name.strip().lower()
+        raw_name, quantity = self._split_pet_quantity(pet_name)
+        if quantity <= 0:
+            await ctx.send(embed=embeds.error_embed("La quantité doit être positive."))
+            return
+        if not raw_name:
+            await ctx.send(embed=embeds.error_embed("Merci d'indiquer le nom du pet."))
+            return
+
+        lookup = raw_name.strip().lower()
         definition = self._definition_by_slug.get(lookup)
         if definition is None:
             await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
@@ -5760,54 +5771,87 @@ class Pets(commands.Cog):
         shiny_chance *= float(pet_perks.egg_shiny_multiplier)
         shiny_chance *= clan_shiny_multiplier
         shiny_chance = min(1.0, max(0.0, shiny_chance))
-        make_shiny = random.random() < shiny_chance
+        make_shiny = [random.random() < shiny_chance for _ in range(quantity)]
 
         try:
-            record, consumed = await self.database.upgrade_pet_to_gold(
-                ctx.author.id, pet_id, make_shiny=make_shiny
+            records, consumed = await self.database.upgrade_pet_to_gold(
+                ctx.author.id,
+                pet_id,
+                make_shiny=make_shiny,
+                quantity=quantity,
+                cost=GOLDIFY_GEM_COST,
             )
+        except InsufficientBalanceError:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    f"Tu n'as pas assez de {Emojis.GEM} pour goldify ({embeds.format_gems(GOLDIFY_GEM_COST * quantity)})."
+                )
+            )
+            return
         except DatabaseError as exc:
             await ctx.send(embed=embeds.error_embed(str(exc)))
             return
 
-        best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
-        pet_data = self._convert_record(record, best_non_huge_income=best_non_huge_income)
-        market_values = await self.database.get_pet_market_values()
-        pet_identifier = int(pet_data.get("pet_id", 0))
-        pet_data["market_value"] = self._resolve_market_value(
-            market_values,
-            pet_id=pet_identifier,
-            is_gold=bool(pet_data.get("is_gold")),
-            is_rainbow=bool(pet_data.get("is_rainbow")),
-            is_galaxy=bool(pet_data.get("is_galaxy")),
-            is_shiny=bool(pet_data.get("is_shiny")),
-        )
-        reveal_embed = embeds.pet_reveal_embed(
-            name=str(pet_data.get("name", definition.name)),
-            rarity=str(pet_data.get("rarity", definition.rarity)),
-            image_url=str(pet_data.get("image_url", definition.image_url)),
-            income_per_hour=int(pet_data.get("base_income_per_hour", definition.base_income_per_hour)),
-            is_huge=bool(pet_data.get("is_huge", False)),
-            is_gold=True,
-            is_rainbow=bool(pet_data.get("is_rainbow", False)),
-            is_galaxy=bool(pet_data.get("is_galaxy", False)),
-            is_shiny=bool(pet_data.get("is_shiny", False)),
-            market_value=int(pet_data.get("market_value", 0)),
-        )
-        reveal_embed.add_field(
-            name="Fusion dorée",
-            value=(
-                f"{consumed} exemplaires combinés pour obtenir cette version or !\n"
-                "Les pets utilisés ont été retirés de ton inventaire."
-            ),
-            inline=False,
-        )
-        user_pet_id = int(pet_data.get("id", 0))
-        if user_pet_id:
-            reveal_embed.set_footer(
-                text=f"Utilise e!equip {definition.name} pour l'équiper !"
+        total_cost = GOLDIFY_GEM_COST * quantity
+        if quantity == 1:
+            record = records[0]
+            best_non_huge_income = await self.database.get_best_non_huge_income(
+                ctx.author.id
             )
-        await ctx.send(embed=reveal_embed)
+            pet_data = self._convert_record(
+                record, best_non_huge_income=best_non_huge_income
+            )
+            market_values = await self.database.get_pet_market_values()
+            pet_identifier = int(pet_data.get("pet_id", 0))
+            pet_data["market_value"] = self._resolve_market_value(
+                market_values,
+                pet_id=pet_identifier,
+                is_gold=bool(pet_data.get("is_gold")),
+                is_rainbow=bool(pet_data.get("is_rainbow")),
+                is_galaxy=bool(pet_data.get("is_galaxy")),
+                is_shiny=bool(pet_data.get("is_shiny")),
+            )
+            reveal_embed = embeds.pet_reveal_embed(
+                name=str(pet_data.get("name", definition.name)),
+                rarity=str(pet_data.get("rarity", definition.rarity)),
+                image_url=str(pet_data.get("image_url", definition.image_url)),
+                income_per_hour=int(
+                    pet_data.get("base_income_per_hour", definition.base_income_per_hour)
+                ),
+                is_huge=bool(pet_data.get("is_huge", False)),
+                is_gold=True,
+                is_rainbow=bool(pet_data.get("is_rainbow", False)),
+                is_galaxy=bool(pet_data.get("is_galaxy", False)),
+                is_shiny=bool(pet_data.get("is_shiny", False)),
+                market_value=int(pet_data.get("market_value", 0)),
+            )
+            reveal_embed.add_field(
+                name="Fusion dorée",
+                value=(
+                    f"{consumed} exemplaires combinés pour obtenir cette version or !\n"
+                    "Les pets utilisés ont été retirés de ton inventaire.\n"
+                    f"Coût : {embeds.format_gems(total_cost)}"
+                ),
+                inline=False,
+            )
+            user_pet_id = int(pet_data.get("id", 0))
+            if user_pet_id:
+                reveal_embed.set_footer(
+                    text=f"Utilise e!equip {definition.name} pour l'équiper !"
+                )
+            await ctx.send(embed=reveal_embed)
+        else:
+            shiny_count = sum(1 for record in records if bool(record.get("is_shiny")))
+            lines = [
+                f"🎉 {quantity} versions or créées pour **{definition.name}**.",
+                f"Pets consommés : {consumed} ({GOLD_PET_COMBINE_REQUIRED} par fusion).",
+                f"Coût total : {embeds.format_gems(total_cost)}",
+            ]
+            if shiny_count:
+                lines.append(f"✨ Shiny obtenus : {shiny_count}/{quantity}")
+            await ctx.send(
+                embed=embeds.success_embed("\n".join(lines), title="Fusion dorée")
+            )
 
         mastery_update = await self.database.add_mastery_experience(
             ctx.author.id, PET_MASTERY.slug, max(1, int(consumed))
@@ -5818,7 +5862,12 @@ class Pets(commands.Cog):
 
     @commands.command(name="rainbow", aliases=("rainbowify", "rb"))
     async def rainbow(self, ctx: commands.Context, *, pet_name: str) -> None:
-        slug, _, _ = self._parse_pet_query(pet_name)
+        raw_name, quantity = self._split_pet_quantity(pet_name)
+        if quantity <= 0:
+            await ctx.send(embed=embeds.error_embed("La quantité doit être positive."))
+            return
+
+        slug, _, _ = self._parse_pet_query(raw_name)
         if not slug:
             await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
             return
@@ -5855,44 +5904,71 @@ class Pets(commands.Cog):
         shiny_chance *= float(pet_perks.egg_shiny_multiplier)
         shiny_chance *= clan_shiny_multiplier
         shiny_chance = min(1.0, max(0.0, shiny_chance))
-        make_shiny = random.random() < shiny_chance
+        make_shiny = [random.random() < shiny_chance for _ in range(quantity)]
 
         try:
-            record, consumed = await self.database.upgrade_pet_to_rainbow(
-                ctx.author.id, pet_id, make_shiny=make_shiny
+            records, consumed = await self.database.upgrade_pet_to_rainbow(
+                ctx.author.id,
+                pet_id,
+                make_shiny=make_shiny,
+                quantity=quantity,
+                cost=RAINBOWIFY_GEM_COST,
             )
+        except InsufficientBalanceError:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    f"Tu n'as pas assez de {Emojis.GEM} pour rainbowify ({embeds.format_gems(RAINBOWIFY_GEM_COST * quantity)})."
+                )
+            )
+            return
         except DatabaseError as exc:
             await ctx.send(embed=embeds.error_embed(str(exc)))
             return
 
-        pet_data = self._convert_record(record, best_non_huge_income=None)
+        total_cost = RAINBOWIFY_GEM_COST * quantity
         base_income = definition.base_income_per_hour
         rainbow_income = base_income * RAINBOW_PET_MULTIPLIER
         display_rainbow_income = scale_pet_value(rainbow_income)
-
-        embed = embeds.pet_reveal_embed(
-            name=definition.name,
-            rarity=definition.rarity,
-            image_url=definition.image_url,
-            income_per_hour=rainbow_income,
-            is_huge=False,
-            is_gold=False,
-            is_galaxy=False,
-            is_rainbow=True,
-            is_shiny=bool(pet_data.get("is_shiny", False)),
-            market_value=0,
-        )
-        embed.add_field(
-            name="🌈 Fusion Rainbow",
-            value=(
-                f"🎉 {consumed} pets GOLD fusionnés en 1 RAINBOW !\n"
-                f"Puissance : **{display_rainbow_income:,} PB/h** ({RAINBOW_PET_MULTIPLIER}x le pet de base)\n"
-                "Les pets utilisés ont été retirés de ton inventaire."
-            ).replace(",", " "),
-            inline=False,
-        )
-
-        await ctx.send(embed=embed)
+        if quantity == 1:
+            pet_data = self._convert_record(records[0], best_non_huge_income=None)
+            embed = embeds.pet_reveal_embed(
+                name=definition.name,
+                rarity=definition.rarity,
+                image_url=definition.image_url,
+                income_per_hour=rainbow_income,
+                is_huge=False,
+                is_gold=False,
+                is_galaxy=False,
+                is_rainbow=True,
+                is_shiny=bool(pet_data.get("is_shiny", False)),
+                market_value=0,
+            )
+            embed.add_field(
+                name="🌈 Fusion Rainbow",
+                value=(
+                    f"🎉 {consumed} pets GOLD fusionnés en 1 RAINBOW !\n"
+                    f"Puissance : **{display_rainbow_income:,} PB/h** ({RAINBOW_PET_MULTIPLIER}x le pet de base)\n"
+                    "Les pets utilisés ont été retirés de ton inventaire.\n"
+                    f"Coût : {embeds.format_gems(total_cost)}"
+                ).replace(",", " "),
+                inline=False,
+            )
+            await ctx.send(embed=embed)
+        else:
+            shiny_count = sum(1 for record in records if bool(record.get("is_shiny")))
+            lines = [
+                f"🎉 {quantity} versions rainbow créées pour **{definition.name}**.",
+                f"Pets consommés : {consumed} ({RAINBOW_PET_COMBINE_REQUIRED} par fusion).",
+                f"Puissance : **{display_rainbow_income:,} PB/h** ({RAINBOW_PET_MULTIPLIER}x)",
+                f"Coût total : {embeds.format_gems(total_cost)}",
+            ]
+            if shiny_count:
+                lines.append(f"✨ Shiny obtenus : {shiny_count}/{quantity}")
+            await ctx.send(
+                embed=embeds.success_embed(
+                    "\n".join(lines).replace(",", " "), title="🌈 Fusion Rainbow"
+                )
+            )
 
         mastery_update = await self.database.add_mastery_experience(
             ctx.author.id, PET_MASTERY.slug, max(1, int(consumed))
@@ -5943,17 +6019,28 @@ class Pets(commands.Cog):
         make_shiny = random.random() < shiny_chance
 
         try:
-            record, consumed = await self.database.upgrade_pet_to_galaxy(
-                ctx.author.id, pet_id, make_shiny=make_shiny
+            records, consumed = await self.database.upgrade_pet_to_galaxy(
+                ctx.author.id,
+                pet_id,
+                make_shiny=make_shiny,
+                cost=GALAXY_GEM_COST,
             )
+        except InsufficientBalanceError:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    f"Tu n'as pas assez de {Emojis.GEM} pour galaxy ({embeds.format_gems(GALAXY_GEM_COST)})."
+                )
+            )
+            return
         except DatabaseError as exc:
             await ctx.send(embed=embeds.error_embed(str(exc)))
             return
 
-        pet_data = self._convert_record(record, best_non_huge_income=None)
+        pet_data = self._convert_record(records[0], best_non_huge_income=None)
         base_income = definition.base_income_per_hour
         galaxy_income = base_income * GALAXY_PET_MULTIPLIER
         display_galaxy_income = scale_pet_value(galaxy_income)
+        total_cost = GALAXY_GEM_COST
 
         embed = embeds.pet_reveal_embed(
             name=definition.name,
@@ -5972,7 +6059,8 @@ class Pets(commands.Cog):
             value=(
                 f"🎉 {consumed} pets RAINBOW fusionnés en 1 GALAXY !\n"
                 f"Puissance : **{display_galaxy_income:,} PB/h** ({GALAXY_PET_MULTIPLIER}x le pet de base)\n"
-                "Les pets utilisés ont été retirés de ton inventaire."
+                "Les pets utilisés ont été retirés de ton inventaire.\n"
+                f"Coût : {embeds.format_gems(total_cost)}"
             ).replace(",", " "),
             inline=False,
         )

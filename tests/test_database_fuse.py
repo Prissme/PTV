@@ -125,35 +125,36 @@ def test_upgrade_pet_to_galaxy_consumes_required_rainbow() -> None:
         [
             {"id": idx}
             for idx in range(1, GALAXY_PET_COMBINE_REQUIRED + 3)
-        ]
-    ]
-    connection.fetchrow_results = [
-        {"id": 999},
-        {
-            "id": 999,
-            "nickname": None,
-            "is_active": False,
-            "is_huge": False,
-            "is_gold": False,
-            "is_rainbow": False,
-            "is_galaxy": True,
-            "is_shiny": True,
-            "huge_level": 1,
-            "huge_xp": 0,
-            "acquired_at": None,
-            "pet_id": 42,
-            "name": "Galaxy Test",
-            "rarity": "Mythique",
-            "image_url": "https://example.com/pet.png",
-            "base_income_per_hour": 1_000,
-        },
+        ],
+        [{"id": 999}],
+        [
+            {
+                "id": 999,
+                "nickname": None,
+                "is_active": False,
+                "is_huge": False,
+                "is_gold": False,
+                "is_rainbow": False,
+                "is_galaxy": True,
+                "is_shiny": True,
+                "huge_level": 1,
+                "huge_xp": 0,
+                "acquired_at": None,
+                "pet_id": 42,
+                "name": "Galaxy Test",
+                "rarity": "Mythique",
+                "image_url": "https://example.com/pet.png",
+                "base_income_per_hour": 1_000,
+            }
+        ],
     ]
 
-    record, consumed = asyncio.run(
+    records, consumed = asyncio.run(
         database.upgrade_pet_to_galaxy(123, 42, make_shiny=True)
     )
 
     assert consumed == GALAXY_PET_COMBINE_REQUIRED
+    record = records[0]
     assert bool(record["is_galaxy"]) is True
     # Shiny flag must be preserved on the resulting entry
     assert bool(record["is_shiny"]) is True
@@ -164,4 +165,3 @@ def test_upgrade_pet_to_galaxy_consumes_required_rainbow() -> None:
 def test_build_variant_code_prioritises_galaxy() -> None:
     assert Database._build_variant_code(True, True, True, False) == "galaxy"
     assert Database._build_variant_code(False, False, True, True) == "galaxy+shiny"
-
