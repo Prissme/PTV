@@ -257,7 +257,7 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "aliases": ("bestpets", "autoequip"),
                 },
                 {
-                    "command": f"{PREFIX}gemshop",
+                    "command": f"{PREFIX}shop",
                     "description": f"Achète des slots d'équipement supplémentaires contre {Emojis.GEM}.",
                 },
                 {

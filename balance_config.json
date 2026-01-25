@@ -30,6 +30,9 @@
   "fusion_cost_output_multiplier": 0.6,
   "fusion_cost_min": 1000,
   "fusion_cost_max": 5000000,
+  "goldify_gem_cost": 100,
+  "rainbowify_gem_cost": 500,
+  "galaxy_gem_cost": 2500,
   "fusion_cost_rarity_multipliers": {
     "Commun": 1.0,
     "Atypique": 1.4,

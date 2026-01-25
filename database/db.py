@@ -4343,10 +4343,51 @@ class Database:
         return row
 
     async def upgrade_pet_to_gold(
-        self, user_id: int, pet_id: int, *, make_shiny: bool = False
-    ) -> tuple[asyncpg.Record, int]:
+        self,
+        user_id: int,
+        pet_id: int,
+        *,
+        make_shiny: bool | Sequence[bool] = False,
+        quantity: int = 1,
+        cost: int = 0,
+    ) -> tuple[list[asyncpg.Record], int]:
         await self.ensure_user(user_id)
+        if quantity <= 0:
+            raise DatabaseError("La quantité demandée doit être positive.")
+        if isinstance(make_shiny, Sequence) and not isinstance(make_shiny, (str, bytes)):
+            shiny_flags = [bool(flag) for flag in make_shiny]
+        else:
+            shiny_flags = [bool(make_shiny) for _ in range(quantity)]
+        if len(shiny_flags) != quantity:
+            raise DatabaseError("Le nombre de flags shiny ne correspond pas à la quantité demandée.")
+        total_cost = max(0, int(cost)) * quantity
         async with self.transaction() as connection:
+            if total_cost > 0:
+                balance_row = await connection.fetchrow(
+                    "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
+                    user_id,
+                )
+                if balance_row is None:
+                    raise DatabaseError("Utilisateur introuvable lors du goldify.")
+                before_balance = int(balance_row["gems"])
+                if before_balance < total_cost:
+                    raise InsufficientBalanceError("Solde insuffisant pour le goldify.")
+                after_balance = before_balance - total_cost
+                await connection.execute(
+                    "UPDATE users SET gems = $1 WHERE user_id = $2",
+                    after_balance,
+                    user_id,
+                )
+                await self.record_transaction(
+                    connection=connection,
+                    user_id=user_id,
+                    transaction_type="goldify",
+                    currency="gem",
+                    amount=-total_cost,
+                    balance_before=before_balance,
+                    balance_after=after_balance,
+                    description="Coût goldify",
+                )
             # FIX: Prevent rainbow pets from being consumed and guarantee deterministic ordering.
             rows = await connection.fetch(
                 """
@@ -4367,7 +4408,7 @@ class Database:
             )
 
             available_ids: List[int] = [int(row["id"]) for row in rows]
-            required = GOLD_PET_COMBINE_REQUIRED
+            required = GOLD_PET_COMBINE_REQUIRED * quantity
             if len(available_ids) < required:
                 raise DatabaseError(
                     (
@@ -4382,20 +4423,22 @@ class Database:
                 consumed_ids,
             )
 
-            inserted = await connection.fetchrow(
+            inserted_rows = await connection.fetch(
                 """
                 INSERT INTO user_pets (user_id, pet_id, is_gold, is_shiny)
-                VALUES ($1, $2, TRUE, $3)
+                SELECT $1, $2, TRUE, shiny_flag
+                FROM unnest($3::bool[]) AS shiny_flag
                 RETURNING id
                 """,
                 user_id,
                 pet_id,
-                make_shiny,
+                shiny_flags,
             )
-            if inserted is None:
+            if not inserted_rows:
                 raise DatabaseError("Impossible de créer le pet doré")
 
-            new_record = await connection.fetchrow(
+            inserted_ids = [int(row["id"]) for row in inserted_rows]
+            new_records = await connection.fetch(
                 """
                 SELECT
                     up.id,
@@ -4416,20 +4459,61 @@ class Database:
                     p.base_income_per_hour
                 FROM user_pets AS up
                 JOIN pets AS p ON p.pet_id = up.pet_id
-                WHERE up.id = $1
+                WHERE up.id = ANY($1::INT[])
                 """,
-                int(inserted["id"]),
+                inserted_ids,
             )
 
-        if new_record is None:
+        if not new_records:
             raise DatabaseError("Impossible de récupérer le pet doré généré")
-        return new_record, required
+        return list(new_records), required
 
     async def upgrade_pet_to_rainbow(
-        self, user_id: int, pet_id: int, *, make_shiny: bool = False
-    ) -> tuple[asyncpg.Record, int]:
+        self,
+        user_id: int,
+        pet_id: int,
+        *,
+        make_shiny: bool | Sequence[bool] = False,
+        quantity: int = 1,
+        cost: int = 0,
+    ) -> tuple[list[asyncpg.Record], int]:
         await self.ensure_user(user_id)
+        if quantity <= 0:
+            raise DatabaseError("La quantité demandée doit être positive.")
+        if isinstance(make_shiny, Sequence) and not isinstance(make_shiny, (str, bytes)):
+            shiny_flags = [bool(flag) for flag in make_shiny]
+        else:
+            shiny_flags = [bool(make_shiny) for _ in range(quantity)]
+        if len(shiny_flags) != quantity:
+            raise DatabaseError("Le nombre de flags shiny ne correspond pas à la quantité demandée.")
+        total_cost = max(0, int(cost)) * quantity
         async with self.transaction() as connection:
+            if total_cost > 0:
+                balance_row = await connection.fetchrow(
+                    "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
+                    user_id,
+                )
+                if balance_row is None:
+                    raise DatabaseError("Utilisateur introuvable lors du rainbowify.")
+                before_balance = int(balance_row["gems"])
+                if before_balance < total_cost:
+                    raise InsufficientBalanceError("Solde insuffisant pour le rainbowify.")
+                after_balance = before_balance - total_cost
+                await connection.execute(
+                    "UPDATE users SET gems = $1 WHERE user_id = $2",
+                    after_balance,
+                    user_id,
+                )
+                await self.record_transaction(
+                    connection=connection,
+                    user_id=user_id,
+                    transaction_type="rainbowify",
+                    currency="gem",
+                    amount=-total_cost,
+                    balance_before=before_balance,
+                    balance_after=after_balance,
+                    description="Coût rainbowify",
+                )
             # FIX: Ensure deterministic rainbow fusion selection order.
             rows = await connection.fetch(
                 """
@@ -4450,7 +4534,7 @@ class Database:
             )
 
             available_ids = [int(row["id"]) for row in rows]
-            required = RAINBOW_PET_COMBINE_REQUIRED
+            required = RAINBOW_PET_COMBINE_REQUIRED * quantity
 
             if len(available_ids) < required:
                 raise DatabaseError(
@@ -4463,21 +4547,23 @@ class Database:
                 consumed_ids,
             )
 
-            inserted = await connection.fetchrow(
+            inserted_rows = await connection.fetch(
                 """
                 INSERT INTO user_pets (user_id, pet_id, is_rainbow, is_shiny)
-                VALUES ($1, $2, TRUE, $3)
+                SELECT $1, $2, TRUE, shiny_flag
+                FROM unnest($3::bool[]) AS shiny_flag
                 RETURNING id
                 """,
                 user_id,
                 pet_id,
-                make_shiny,
+                shiny_flags,
             )
 
-            if inserted is None:
+            if not inserted_rows:
                 raise DatabaseError("Impossible de créer le pet rainbow")
 
-            new_record = await connection.fetchrow(
+            inserted_ids = [int(row["id"]) for row in inserted_rows]
+            new_records = await connection.fetch(
                 """
                 SELECT
                     up.id,
@@ -4498,21 +4584,62 @@ class Database:
                     p.base_income_per_hour
                 FROM user_pets AS up
                 JOIN pets AS p ON p.pet_id = up.pet_id
-                WHERE up.id = $1
+                WHERE up.id = ANY($1::INT[])
                 """,
-                int(inserted["id"]),
+                inserted_ids,
             )
 
-        if new_record is None:
+        if not new_records:
             raise DatabaseError("Impossible de récupérer le pet rainbow")
 
-        return new_record, required
+        return list(new_records), required
 
     async def upgrade_pet_to_galaxy(
-        self, user_id: int, pet_id: int, *, make_shiny: bool = False
-    ) -> tuple[asyncpg.Record, int]:
+        self,
+        user_id: int,
+        pet_id: int,
+        *,
+        make_shiny: bool | Sequence[bool] = False,
+        quantity: int = 1,
+        cost: int = 0,
+    ) -> tuple[list[asyncpg.Record], int]:
         await self.ensure_user(user_id)
+        if quantity <= 0:
+            raise DatabaseError("La quantité demandée doit être positive.")
+        if isinstance(make_shiny, Sequence) and not isinstance(make_shiny, (str, bytes)):
+            shiny_flags = [bool(flag) for flag in make_shiny]
+        else:
+            shiny_flags = [bool(make_shiny) for _ in range(quantity)]
+        if len(shiny_flags) != quantity:
+            raise DatabaseError("Le nombre de flags shiny ne correspond pas à la quantité demandée.")
+        total_cost = max(0, int(cost)) * quantity
         async with self.transaction() as connection:
+            if total_cost > 0:
+                balance_row = await connection.fetchrow(
+                    "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
+                    user_id,
+                )
+                if balance_row is None:
+                    raise DatabaseError("Utilisateur introuvable lors du galaxy.")
+                before_balance = int(balance_row["gems"])
+                if before_balance < total_cost:
+                    raise InsufficientBalanceError("Solde insuffisant pour le galaxy.")
+                after_balance = before_balance - total_cost
+                await connection.execute(
+                    "UPDATE users SET gems = $1 WHERE user_id = $2",
+                    after_balance,
+                    user_id,
+                )
+                await self.record_transaction(
+                    connection=connection,
+                    user_id=user_id,
+                    transaction_type="galaxy",
+                    currency="gem",
+                    amount=-total_cost,
+                    balance_before=before_balance,
+                    balance_after=after_balance,
+                    description="Coût galaxy",
+                )
             rows = await connection.fetch(
                 """
                 SELECT up.id
@@ -4531,7 +4658,7 @@ class Database:
             )
 
             available_ids = [int(row["id"]) for row in rows]
-            required = GALAXY_PET_COMBINE_REQUIRED
+            required = GALAXY_PET_COMBINE_REQUIRED * quantity
 
             if len(available_ids) < required:
                 raise DatabaseError(
@@ -4544,21 +4671,23 @@ class Database:
                 consumed_ids,
             )
 
-            inserted = await connection.fetchrow(
+            inserted_rows = await connection.fetch(
                 """
                 INSERT INTO user_pets (user_id, pet_id, is_galaxy, is_shiny)
-                VALUES ($1, $2, TRUE, $3)
+                SELECT $1, $2, TRUE, shiny_flag
+                FROM unnest($3::bool[]) AS shiny_flag
                 RETURNING id
                 """,
                 user_id,
                 pet_id,
-                make_shiny,
+                shiny_flags,
             )
 
-            if inserted is None:
+            if not inserted_rows:
                 raise DatabaseError("Impossible de créer le pet galaxy")
 
-            new_record = await connection.fetchrow(
+            inserted_ids = [int(row["id"]) for row in inserted_rows]
+            new_records = await connection.fetch(
                 """
                 SELECT
                     up.id,
@@ -4579,15 +4708,15 @@ class Database:
                     p.base_income_per_hour
                 FROM user_pets AS up
                 JOIN pets AS p ON p.pet_id = up.pet_id
-                WHERE up.id = $1
+                WHERE up.id = ANY($1::INT[])
                 """,
-                int(inserted["id"]),
+                inserted_ids,
             )
 
-        if new_record is None:
+        if not new_records:
             raise DatabaseError("Impossible de récupérer le pet galaxy")
 
-        return new_record, required
+        return list(new_records), required
 
     async def fuse_user_pets(
         self,
@@ -4626,17 +4755,17 @@ class Database:
 
             if cost > 0:
                 balance_row = await connection.fetchrow(
-                    "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
+                    "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
                     user_id,
                 )
                 if balance_row is None:
                     raise DatabaseError("Utilisateur introuvable lors de la fusion.")
-                before_balance = int(balance_row["balance"])
+                before_balance = int(balance_row["gems"])
                 if before_balance < cost:
                     raise InsufficientBalanceError("Solde insuffisant pour la fusion.")
                 after_balance = before_balance - cost
                 await connection.execute(
-                    "UPDATE users SET balance = $1 WHERE user_id = $2",
+                    "UPDATE users SET gems = $1 WHERE user_id = $2",
                     after_balance,
                     user_id,
                 )
@@ -4644,7 +4773,7 @@ class Database:
                     connection=connection,
                     user_id=user_id,
                     transaction_type="pet_fuse",
-                    currency="pb",
+                    currency="gem",
                     amount=-cost,
                     balance_before=before_balance,
                     balance_after=after_balance,
@@ -6257,7 +6386,14 @@ class Database:
         base_income_by_pet: Dict[int, int] = {}
         name_by_pet: Dict[int, str] = {}
         rarity_by_pet: Dict[int, str] = {}
+        owner_counts: Dict[int, int] = {}
         async with self.transaction() as connection:
+            owner_rows = await connection.fetch(
+                "SELECT pet_id, COUNT(DISTINCT user_id) AS owners FROM user_pets GROUP BY pet_id"
+            )
+            owner_counts = {
+                int(row["pet_id"]): int(row.get("owners") or 0) for row in owner_rows
+            }
             async for row in connection.cursor(query):
                 pet_id = int(row["pet_id"])
                 price = int(row["price"])
@@ -6293,6 +6429,7 @@ class Database:
             is_huge = pet_name.lower() in _HUGE_PET_NAME_LOOKUP
             zone_slug = _PET_ZONE_BY_NAME.get(pet_name.lower(), "exclusif")
             variant_multiplier = float(_MARKET_VARIANT_MULTIPLIERS.get(code, 1.0))
+            owner_count = owner_counts.get(pet_id, 0)
             base_value = self.compute_market_value_gems(
                 {
                     "name": pet_name,
@@ -6302,6 +6439,7 @@ class Database:
                 },
                 config=MARKET_VALUE_CONFIG,
                 zone_slug=zone_slug,
+                owner_count=owner_count,
                 variant_multiplier=variant_multiplier,
             )
             min_value = max(1, int(base_value * _MARKET_MIN_MULTIPLIER))
@@ -6374,6 +6512,7 @@ class Database:
         *,
         config: Mapping[str, object],
         zone_slug: str | None = None,
+        owner_count: int | None = None,
         variant_multiplier: float = 1.0,
     ) -> int:
         name = str(pet.get("name") or "")
@@ -6407,7 +6546,20 @@ class Database:
         elif is_huge:
             size_multiplier = float(config.get("huge_multiplier", 1.0) or 1.0)
 
-        value = base_value * power_factor * size_multiplier * max(0.0, float(variant_multiplier))
+        owner_multiplier = 1.0
+        if owner_count is not None and owner_count > 1:
+            exponent = float(config.get("owner_exponent", 0.0) or 0.0)
+            min_multiplier = float(config.get("owner_min_multiplier", 0.0) or 0.0)
+            if exponent > 0:
+                owner_multiplier = max(min_multiplier, owner_count ** (-exponent))
+
+        value = (
+            base_value
+            * power_factor
+            * size_multiplier
+            * max(0.0, float(variant_multiplier))
+            * owner_multiplier
+        )
         min_value = int(config.get("min_value", 1) or 1)
         if value < min_value:
             value = float(min_value)
@@ -6470,6 +6622,7 @@ class Database:
         base_income_per_hour: int,
         zone_slug: str,
         is_huge: bool,
+        owner_count: int | None = None,
     ) -> float:
         return float(
             cls.compute_market_value_gems(
@@ -6481,6 +6634,7 @@ class Database:
                 },
                 config=MARKET_VALUE_CONFIG,
                 zone_slug=zone_slug,
+                owner_count=owner_count,
             )
         )
 
@@ -6497,6 +6651,12 @@ class Database:
             FROM pets AS p
             """
         )
+        owner_rows = await self.pool.fetch(
+            "SELECT pet_id, COUNT(DISTINCT user_id) AS owners FROM user_pets GROUP BY pet_id"
+        )
+        owner_counts = {
+            int(row["pet_id"]): int(row.get("owners") or 0) for row in owner_rows
+        }
 
         is_huge_lookup = {pet.name.lower(): pet.is_huge for pet in PET_DEFINITIONS}
         zone_by_pet = {
@@ -6513,12 +6673,14 @@ class Database:
             base_income = int(row.get("base_income_per_hour") or 0)
             is_huge = bool(is_huge_lookup.get(name.lower(), False))
             zone_slug = zone_by_pet.get(name.lower(), "exclusif")
+            owner_count = owner_counts.get(pet_id, 0)
             base_value = self._compute_pet_base_market_value(
                 name=name,
                 rarity=rarity,
                 base_income_per_hour=base_income,
                 zone_slug=zone_slug,
                 is_huge=is_huge,
+                owner_count=owner_count,
             )
             rarity_key = self._market_rarity_key(
                 name=name, rarity=rarity, is_huge=is_huge
