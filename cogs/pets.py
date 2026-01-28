@@ -6249,9 +6249,10 @@ class Pets(commands.Cog):
                 f"{discord.utils.format_dt(frenzy_end_utc, style='t')} "
                 f"({discord.utils.format_dt(frenzy_start_utc, style='R')})."
             )
-        # Huge Bull — daily raffle.
+        # Tombola — Huge aléatoire toutes les 3h.
         bull_line = (
-            f"{_format_emoji(HUGE_BULL_NAME)} **{HUGE_BULL_NAME}** — tirage quotidien via `e!raffle`."
+            f"{_format_emoji(HUGE_BULL_NAME)} **Tombola** — tirage toutes les 3h via `e!raffle` "
+            "(Huge aléatoire x2 à x10)."
         )
         if raffle_pool > 0:
             pool_display = f"{raffle_pool:,}".replace(",", " ")

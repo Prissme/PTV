@@ -1061,7 +1061,7 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     TITANIC_COLT_NAME: "Récompense mythique octroyée uniquement par l'équipe via le panneau admin.",
     HUGE_GALE_NAME: "Récompense finale du mode Millionaire Race (étape 20).",
     HUGE_KENJI_ONI_NAME: "Récompense rarissime du Mastermind pour les esprits les plus vifs.",
-    HUGE_BULL_NAME: "Tirée chaque jour via la tombola Mastermind (tickets garantis par victoire).",
+    HUGE_BULL_NAME: "Récompense de la tombola Mastermind (tirage toutes les 3h, Huge aléatoire x2 à x10).",
     HUGE_SHADE_NAME: "Extrêmement rare dans l'Œuf Maudit (0.5%) - Zone Manoir Hanté.",
     HUGE_MORTIS_NAME: "Récompense exclusive pour les membres VIP du serveur.",
     HUGE_SURGE_NAME: "Apparaît dans l'Œuf métallique pour les stratèges les plus assidus.",

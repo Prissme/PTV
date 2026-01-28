@@ -44,6 +44,7 @@ from config import (
     HUGE_MORTIS_NAME,
     HUGE_RED_KING_FRANK_NAME,
     HUGE_PET_MIN_INCOME,
+    HUGE_PET_NAMES,
     HUGE_WISHED_NAME,
     MASTERMIND_MASTERY_MAX_ROLE_ID,
     MESSAGE_COOLDOWN,
@@ -62,6 +63,7 @@ from config import (
     compute_daily_streak_bonus,
     compute_steal_success_chance,
     compute_huge_income,
+    get_huge_multiplier,
     get_huge_level_multiplier,
 )
 from utils import embeds
@@ -127,9 +129,30 @@ HUGE_WISHED_STEAL_CHANCE = 0.001
 
 TOMBOLA_TICKET_EMOJI = "🎟️"
 TOMBOLA_PRIZE_FALLBACK = "<:HugeBull:1433617222357487748>"
-TOMBOLA_PRIZE_EMOJI = PET_EMOJIS.get(HUGE_BULL_NAME, TOMBOLA_PRIZE_FALLBACK)
-TOMBOLA_PRIZE_LABEL = f"{TOMBOLA_PRIZE_EMOJI} {HUGE_BULL_NAME}"
-TOMBOLA_DRAW_INTERVAL = timedelta(hours=24)
+TOMBOLA_PRIZE_MIN_MULTIPLIER = 2
+TOMBOLA_PRIZE_MAX_MULTIPLIER = 10
+TOMBOLA_PRIZE_POOL_LABEL = "un Huge aléatoire (x2 à x10)"
+TOMBOLA_DRAW_INTERVAL = timedelta(hours=3)
+TOMBOLA_ANNOUNCE_CHANNEL_ID = 1260936586720186409
+TOMBOLA_BLOCKED_CHANNEL_ID = 1263357865003843604
+TOMBOLA_PRIZE_POOL: tuple[str, ...] = tuple(
+    name
+    for name in sorted(HUGE_PET_NAMES)
+    if "titanic" not in name.lower()
+    and TOMBOLA_PRIZE_MIN_MULTIPLIER
+    <= get_huge_multiplier(name)
+    <= TOMBOLA_PRIZE_MAX_MULTIPLIER
+)
+if not TOMBOLA_PRIZE_POOL:
+    TOMBOLA_PRIZE_POOL = (HUGE_BULL_NAME,)
+
+
+def _tombola_prize_emoji(pet_name: str) -> str:
+    return PET_EMOJIS.get(pet_name, TOMBOLA_PRIZE_FALLBACK)
+
+
+def _tombola_prize_label(pet_name: str) -> str:
+    return f"{_tombola_prize_emoji(pet_name)} {pet_name}"
 
 KOTH_ROLL_INTERVAL = 10
 KOTH_HUGE_CHANCE_DENOMINATOR = 6_000
@@ -563,7 +586,7 @@ class MastermindSession:
                 f"{TOMBOLA_TICKET_EMOJI} Ticket ajouté à ton inventaire ! Total : **{new_total}**"
             )
             self.status_lines.append(
-                f"Mise-les sur `{PREFIX}raffle` pour tenter {TOMBOLA_PRIZE_LABEL}."
+                f"Mise-les sur `{PREFIX}raffle` pour tenter {TOMBOLA_PRIZE_POOL_LABEL}."
             )
         self._logger.debug(
             "Mastermind win",
@@ -1324,7 +1347,7 @@ class RaffleView(discord.ui.View):
             committed_tickets=self.committed,
             total_committed=self.pool_total,
             next_draw=next_draw,
-            prize_label=TOMBOLA_PRIZE_LABEL,
+            prize_label=TOMBOLA_PRIZE_POOL_LABEL,
             ticket_emoji=TOMBOLA_TICKET_EMOJI,
         )
 
@@ -1896,15 +1919,17 @@ class Economy(commands.Cog):
             logger.debug("Tombola Mastermind : aucun ticket en jeu pour ce tirage.")
             return
         winner_id, total_tickets, winning_ticket = result
-        pet_id = await self.database.get_pet_id_by_name(HUGE_BULL_NAME)
+        prize_name = random.choice(TOMBOLA_PRIZE_POOL)
+        prize_label = _tombola_prize_label(prize_name)
+        pet_id = await self.database.get_pet_id_by_name(prize_name)
         if pet_id is None:
-            logger.warning("Pet %s introuvable pour la tombola", HUGE_BULL_NAME)
+            logger.warning("Pet %s introuvable pour la tombola", prize_name)
         else:
             try:
                 await self.database.add_user_pet(winner_id, pet_id, is_huge=True)
             except DatabaseError:
                 logger.exception(
-                    "Impossible d'ajouter %s au gagnant de la tombola", HUGE_BULL_NAME
+                    "Impossible d'ajouter %s au gagnant de la tombola", prize_name
                 )
         try:
             best_non_huge = await self.database.get_best_non_huge_income(winner_id)
@@ -1914,7 +1939,7 @@ class Economy(commands.Cog):
                 winner_id,
             )
             best_non_huge = 0
-        multiplier = get_huge_level_multiplier(HUGE_BULL_NAME, 1)
+        multiplier = get_huge_level_multiplier(prize_name, 1)
         huge_income = compute_huge_income(best_non_huge, multiplier)
         try:
             remaining = await self.database.get_user_raffle_tickets(winner_id)
@@ -1943,7 +1968,7 @@ class Economy(commands.Cog):
         lines = [
             f"{TOMBOLA_TICKET_EMOJI} Un nouveau ticket gagnant a été tiré !",
             f"🥳 Félicitations à {winner_display} !",
-            f"Ils remportent {TOMBOLA_PRIZE_LABEL} (jusqu'à {embeds.format_currency(huge_income)} /h).",
+            f"Ils remportent {prize_label} (jusqu'à {embeds.format_currency(huge_income)} /h).",
             f"Tickets en lice : **{total_tickets}** — Ticket gagnant #{winning_ticket}",
             f"Tickets restants pour le gagnant : **{remaining}**",
             "Plus tu cumules de tickets Mastermind, plus tes chances explosent !",
@@ -1955,7 +1980,7 @@ class Economy(commands.Cog):
         if user is not None:
             personal_lines = [
                 "🎉 Tu viens de remporter la tombola Mastermind !",
-                f"Le lot **{TOMBOLA_PRIZE_LABEL}** a été ajouté à ton inventaire.",
+                f"Le lot **{prize_label}** a été ajouté à ton inventaire.",
                 f"Reviens jouer au Mastermind pour cumuler encore plus de tickets !",
             ]
             with contextlib.suppress(discord.HTTPException, discord.Forbidden):
@@ -1968,31 +1993,23 @@ class Economy(commands.Cog):
             "tombola_winner",
             extra={
                 "user_id": winner_id,
+                "prize_name": prize_name,
                 "total_tickets": total_tickets,
                 "winning_ticket": winning_ticket,
             },
         )
 
     async def _broadcast_raffle_result(self, embed: discord.Embed) -> None:
-        for guild in self.bot.guilds:
-            me = guild.me
-            if me is None:
-                continue
-            channel: discord.abc.Messageable | None = guild.system_channel
-            if (
-                channel is None
-                or not isinstance(channel, discord.TextChannel)
-                or not channel.permissions_for(me).send_messages
-            ):
-                channel = None
-                for candidate in guild.text_channels:
-                    if candidate.permissions_for(me).send_messages:
-                        channel = candidate
-                        break
-            if channel is None:
-                continue
+        channel = self.bot.get_channel(TOMBOLA_ANNOUNCE_CHANNEL_ID)
+        if channel is None:
+            with contextlib.suppress(discord.HTTPException, discord.Forbidden):
+                channel = await self.bot.fetch_channel(TOMBOLA_ANNOUNCE_CHANNEL_ID)
+        if isinstance(channel, discord.TextChannel):
+            if channel.id == TOMBOLA_BLOCKED_CHANNEL_ID:
+                return
             with contextlib.suppress(discord.HTTPException, discord.Forbidden):
                 await channel.send(embed=embed)
+
     def _build_mastermind_helper(
         self, perks: MastermindMasteryPerks
     ) -> MastermindHelper:
