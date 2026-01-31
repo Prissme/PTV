@@ -50,7 +50,7 @@ PET_MASTERY = MasteryDefinition(
 MASTERMIND_MASTERY_SLUG = "mastermind"
 MASTERMIND_MASTERY = MasteryDefinition(
     slug=MASTERMIND_MASTERY_SLUG,
-    display_name="Maîtrise Mastermind",
+    display_name="Maîtrise du Mastermind",
     max_level=99,
     base_xp=10,
     growth_factor=1.34,
@@ -77,4 +77,3 @@ def iter_masteries() -> Iterable[MasteryDefinition]:
     """Itère sur toutes les maîtrises déclarées."""
 
     return MASTERIES.values()
-

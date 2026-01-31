@@ -1294,6 +1294,8 @@ def clan_overview_embed(
         )
 
     embed.set_footer(
-        text="Plus ton clan rugit, plus tes gains explosent. Active-toi et fais trembler le classement !"
+        text=(
+            "Le classement a pris du retard : fais remonter les retours de ton clan pour ajuster le tir."
+        )
     )
     return _finalize_embed(embed)

@@ -281,12 +281,12 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 },
                 {
                     "command": f"{PREFIX}goldify",
-                    "description": "Fusionne tes pets en version or pour booster leur puissance.",
+                    "description": "Fusionne tes pets en version or pour booster leur puissance (utilise `all` pour tout fusionner d'un coup).",
                     "aliases": ("gold", "fusion"),
                 },
                 {
-                    "command": f"{PREFIX}galaxy <pet>",
-                    "description": "Fusionne 100 rainbow en une variante galaxy 25× plus puissante.",
+                    "command": f"{PREFIX}galaxy <pet|all>",
+                    "description": "Fusionne 100 rainbow en une variante galaxy 25× plus puissante (utilise `all` pour tout fusionner).",
                 },
                 {
                     "command": f"{PREFIX}claim",
@@ -486,12 +486,12 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 },
                 {
                     "command": f"{PREFIX}goldify",
-                    "description": "Fuse your pets into their golden version to boost their power.",
+                    "description": "Fuse your pets into their golden version to boost their power (use `all` to fuse everything at once).",
                     "aliases": ("gold", "fusion"),
                 },
                 {
-                    "command": f"{PREFIX}galaxy <pet>",
-                    "description": "Fuse 100 rainbow copies into a galaxy variant that's 25× stronger.",
+                    "command": f"{PREFIX}galaxy <pet|all>",
+                    "description": "Fuse 100 rainbow copies into a galaxy variant that's 25× stronger (use `all` to fuse everything).",
                 },
                 {
                     "command": f"{PREFIX}claim",
