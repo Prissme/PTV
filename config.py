@@ -896,7 +896,7 @@ TITANIC_COLT_MULTIPLIER: Final[float] = 50
 TITANIC_GRIFF_MULTIPLIER: Final[float] = 35
 HUGE_ASTRALIS_MULTIPLIER: Final[float] = 25
 TITANIC_ZENITH_MULTIPLIER: Final[float] = 100
-HUGE_GALE_MULTIPLIER: Final[float] = 10
+HUGE_GALE_MULTIPLIER: Final[float] = 50
 HUGE_KENJI_ONI_MULTIPLIER: Final[float] = 12
 HUGE_BULL_MULTIPLIER: Final[float] = 3.5
 HUGE_BO_NAME: Final[str] = "Huge Bo"
@@ -1794,7 +1794,11 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "El Primo": os.getenv("PET_EMOJI_EL_PRIMO", "<:ElPrimo:1437826192794321097>"),
     "Amber": os.getenv("PET_EMOJI_AMBER", "<:Amber:1437826234095636490>"),
     "Stella": os.getenv("PET_EMOJI_STELLA", "<:Stella:1462049982919213169>"),
-    "Nova": os.getenv("PET_EMOJI_NOVA", "<:Nova:1437826273673089238>"),
+    "Nova": os.getenv("PET_EMOJI_NOVA") or "🌟",
+    "Pisces Piper": os.getenv("PET_EMOJI_PISCES_PIPER") or "♓",
+    "Scorpion Bibi": os.getenv("PET_EMOJI_SCORPION_BIBI") or "♏",
+    "Aquarius Emz": os.getenv("PET_EMOJI_AQUARIUS_EMZ") or "♒",
+    "Sagittarius Bo": os.getenv("PET_EMOJI_SAGITTARIUS_BO") or "♐",
     "Lyra": os.getenv("PET_EMOJI_LYRA", "<:Lyra:1462050431198036172>"),
     "Orion": os.getenv("PET_EMOJI_ORION", "<:Orion:1462047760479031378>"),
     HUGE_ASTRALIS_NAME: os.getenv(

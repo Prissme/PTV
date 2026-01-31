@@ -1453,6 +1453,11 @@ class Pets(commands.Cog):
                 if count == 1:
                     self._definition_by_slug[base_slug] = pet
             self._definition_by_slug[pet.name.lower()] = pet
+            if pet.name.startswith(("Huge ", "Titanic ")):
+                base_name = pet.name.split(" ", 1)[1]
+                base_slug = self._normalize_pet_key(base_name)
+                if base_slug and base_slug not in self._definition_by_slug:
+                    self._definition_by_slug[base_slug] = pet
         self._definition_by_id: Dict[int, PetDefinition] = {}
         self._pet_ids: Dict[str, int] = {}
         self._eggs: Dict[str, PetEggDefinition] = {
@@ -2315,6 +2320,59 @@ class Pets(commands.Cog):
             if name:
                 return name, quantity
         return raw.strip(), 1
+
+    @staticmethod
+    def _is_all_token(raw: str | None) -> bool:
+        return bool(raw) and raw.strip().lower() in {"all", "tout"}
+
+    def _build_bulk_fusion_plan(
+        self,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        mode: str,
+    ) -> list[tuple[PetDefinition, int, int]]:
+        if mode == "gold":
+            required = GOLD_PET_COMBINE_REQUIRED
+        elif mode == "rainbow":
+            required = RAINBOW_PET_COMBINE_REQUIRED
+        elif mode == "galaxy":
+            required = GALAXY_PET_COMBINE_REQUIRED
+        else:
+            raise ValueError("Mode de fusion inconnu.")
+
+        counts: Dict[int, int] = {}
+        for row in rows:
+            if bool(row.get("is_active")) or bool(row.get("on_market")):
+                continue
+            if bool(row.get("is_huge")):
+                continue
+            is_gold = bool(row.get("is_gold"))
+            is_rainbow = bool(row.get("is_rainbow"))
+            is_galaxy = bool(row.get("is_galaxy"))
+            if mode == "gold":
+                if is_gold or is_rainbow or is_galaxy:
+                    continue
+            elif mode == "rainbow":
+                if not is_gold or is_rainbow or is_galaxy:
+                    continue
+            elif mode == "galaxy":
+                if not is_rainbow or is_galaxy:
+                    continue
+            pet_id = int(row.get("pet_id") or 0)
+            if pet_id <= 0:
+                continue
+            counts[pet_id] = counts.get(pet_id, 0) + 1
+
+        plan: list[tuple[PetDefinition, int, int]] = []
+        for pet_id, count in counts.items():
+            definition = self._definition_by_id.get(pet_id)
+            if definition is None or definition.is_huge:
+                continue
+            quantity = count // required
+            if quantity > 0:
+                plan.append((definition, pet_id, quantity))
+        plan.sort(key=lambda entry: entry[0].name)
+        return plan
 
     def _parse_pet_query(self, raw: str) -> tuple[str, Optional[int], Optional[str]]:
         tokens = [token for token in raw.split() if token]
@@ -5718,6 +5776,127 @@ class Pets(commands.Cog):
             ctx, mastery_update, mastery=PET_MASTERY
         )
 
+    async def _bulk_fuse_variants(
+        self,
+        ctx: commands.Context,
+        *,
+        mode: str,
+    ) -> None:
+        rows = await self.database.get_user_pets(ctx.author.id)
+        plan = self._build_bulk_fusion_plan(rows, mode=mode)
+        if not plan:
+            await ctx.send(embed=embeds.info_embed("Aucune fusion possible pour le moment."))
+            return
+
+        pet_mastery_progress = await self.database.get_mastery_progress(
+            ctx.author.id, PET_MASTERY.slug
+        )
+        pet_mastery_level = int(pet_mastery_progress.get("level", 1))
+        pet_perks = _compute_pet_mastery_perks(pet_mastery_level)
+        clan_row = await self.database.get_user_clan(ctx.author.id)
+        clan_shiny_multiplier = 1.0
+        if clan_row is not None:
+            clan_shiny_multiplier = max(
+                1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
+            )
+        _, index_bonus_ratio = await self._fetch_index_shiny_bonus(ctx.author.id)
+
+        if mode == "gold":
+            combine_required = GOLD_PET_COMBINE_REQUIRED
+            cost = GOLDIFY_GEM_COST
+            shiny_base = float(pet_perks.goldify_shiny_chance)
+            upgrade = self.database.upgrade_pet_to_gold
+            title = "Fusion dorée — tout"
+            variant_label = "or"
+        elif mode == "rainbow":
+            combine_required = RAINBOW_PET_COMBINE_REQUIRED
+            cost = RAINBOWIFY_GEM_COST
+            shiny_base = float(pet_perks.rainbowify_shiny_chance)
+            upgrade = self.database.upgrade_pet_to_rainbow
+            title = "🌈 Fusion Rainbow — tout"
+            variant_label = "rainbow"
+        elif mode == "galaxy":
+            combine_required = GALAXY_PET_COMBINE_REQUIRED
+            cost = GALAXY_GEM_COST
+            shiny_base = float(pet_perks.rainbowify_shiny_chance)
+            upgrade = self.database.upgrade_pet_to_galaxy
+            title = "🌌 Fusion Galaxy — tout"
+            variant_label = "galaxy"
+        else:
+            await ctx.send(embed=embeds.error_embed("Mode de fusion inconnu."))
+            return
+
+        shiny_chance = self._apply_index_bonus(shiny_base, index_bonus_ratio)
+        shiny_chance *= float(pet_perks.egg_shiny_multiplier)
+        shiny_chance *= clan_shiny_multiplier
+        shiny_chance = min(1.0, max(0.0, shiny_chance))
+
+        total_cost = 0
+        total_consumed = 0
+        total_fusions = 0
+        total_shiny = 0
+        lines: list[str] = []
+        errors: list[str] = []
+
+        for definition, pet_id, quantity in plan:
+            make_shiny = [random.random() < shiny_chance for _ in range(quantity)]
+            try:
+                records, consumed = await upgrade(
+                    ctx.author.id,
+                    pet_id,
+                    make_shiny=make_shiny,
+                    quantity=quantity,
+                    cost=cost,
+                )
+            except InsufficientBalanceError:
+                if total_fusions == 0:
+                    await ctx.send(
+                        embed=embeds.error_embed(
+                            f"Tu n'as pas assez de {Emojis.GEM} pour lancer la fusion {variant_label} en masse."
+                        )
+                    )
+                    return
+                errors.append("Solde insuffisant pour terminer toutes les fusions.")
+                break
+            except DatabaseError as exc:
+                errors.append(f"{definition.name} : {exc}")
+                continue
+
+            shiny_count = sum(1 for record in records if bool(record.get("is_shiny")))
+            total_shiny += shiny_count
+            total_fusions += quantity
+            total_consumed += consumed
+            total_cost += cost * quantity
+            shiny_suffix = f" • ✨ {shiny_count}/{quantity}" if shiny_count else ""
+            lines.append(
+                f"• {definition.name} : {quantity} fusion{'' if quantity == 1 else 's'} {variant_label}{shiny_suffix}"
+            )
+
+        if total_fusions <= 0:
+            await ctx.send(embed=embeds.info_embed("Aucune fusion effectuée."))
+            return
+
+        summary_lines = [
+            f"Fusions réalisées : {total_fusions}",
+            f"Pets consommés : {total_consumed} ({combine_required} par fusion)",
+            f"Coût total : {embeds.format_gems(total_cost)}",
+        ]
+        if total_shiny:
+            summary_lines.append(f"✨ Shiny obtenus : {total_shiny}/{total_fusions}")
+        lines.extend(summary_lines)
+        if errors:
+            lines.append("")
+            lines.append("⚠️ " + " | ".join(errors))
+
+        await ctx.send(embed=embeds.success_embed("\n".join(lines), title=title))
+
+        mastery_update = await self.database.add_mastery_experience(
+            ctx.author.id, PET_MASTERY.slug, max(1, int(total_consumed))
+        )
+        await self._handle_mastery_notifications(
+            ctx, mastery_update, mastery=PET_MASTERY
+        )
+
     @commands.command(name="goldify", aliases=("gold", "fusion"))
     async def goldify(self, ctx: commands.Context, *, pet_name: str | None = None) -> None:
         if not pet_name:
@@ -5726,8 +5905,13 @@ class Pets(commands.Cog):
                     "Utilise `e!goldify <nom du pet> [quantité]` pour fusionner **"
                     f"{GOLD_PET_COMBINE_REQUIRED}** exemplaires identiques en une version or."
                     f"\nCoût : {embeds.format_gems(GOLDIFY_GEM_COST)} par fusion."
+                    "\nAstuce : utilise `e!gold all` pour tout fusionner d'un coup."
                 )
             )
+            return
+
+        if self._is_all_token(pet_name):
+            await self._bulk_fuse_variants(ctx, mode="gold")
             return
 
         raw_name, quantity = self._split_pet_quantity(pet_name)
@@ -5862,6 +6046,10 @@ class Pets(commands.Cog):
 
     @commands.command(name="rainbow", aliases=("rainbowify", "rb"))
     async def rainbow(self, ctx: commands.Context, *, pet_name: str) -> None:
+        if self._is_all_token(pet_name):
+            await self._bulk_fuse_variants(ctx, mode="rainbow")
+            return
+
         raw_name, quantity = self._split_pet_quantity(pet_name)
         if quantity <= 0:
             await ctx.send(embed=embeds.error_embed("La quantité doit être positive."))
@@ -5979,6 +6167,10 @@ class Pets(commands.Cog):
 
     @commands.command(name="galaxy")
     async def galaxy(self, ctx: commands.Context, *, pet_name: str) -> None:
+        if self._is_all_token(pet_name):
+            await self._bulk_fuse_variants(ctx, mode="galaxy")
+            return
+
         slug, _, _ = self._parse_pet_query(pet_name)
         if not slug:
             await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
