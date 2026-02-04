@@ -554,7 +554,21 @@ class MastermindSession:
         base_reward = random.randint(*self.helper.config.base_reward)
         raw_reward = base_reward + attempts_left * self.helper.config.attempt_bonus
         reward_multiplier = max(1.0, float(self.mastery_perks.reward_multiplier))
-        reward = int(round(raw_reward * reward_multiplier))
+        streak = 0
+        streak_bonus_pct = 0
+        try:
+            streak, _ = await self.database.update_mastermind_winstreak(
+                self.ctx.author.id,
+                won=True,
+            )
+            streak_bonus_pct = min(streak, 100)
+        except Exception:
+            self._logger.exception(
+                "Impossible de mettre à jour la winstreak Mastermind",
+                extra={"user_id": self.ctx.author.id},
+            )
+        streak_multiplier = 1 + (streak_bonus_pct / 100)
+        reward = int(round(raw_reward * reward_multiplier * streak_multiplier))
         _, gems_after = await self.database.increment_gems(
             self.ctx.author.id,
             reward,
@@ -573,6 +587,10 @@ class MastermindSession:
             multiplier_label = f"x{reward_multiplier:.2f}".rstrip("0").rstrip(".")
             self.status_lines.append(
                 f"Multiplicateur de maîtrise appliqué : {multiplier_label}"
+            )
+        if streak_bonus_pct > 0:
+            self.status_lines.append(
+                f"Winstreak Mastermind : **{streak}** (bonus +{streak_bonus_pct}%)"
             )
         try:
             new_total = await self.database.add_raffle_tickets(self.ctx.author.id)
@@ -598,6 +616,8 @@ class MastermindSession:
                 "base_reward": base_reward,
                 "attempts_left": attempts_left,
                 "reward_multiplier": reward_multiplier,
+                "winstreak": streak,
+                "winstreak_bonus_pct": streak_bonus_pct,
             },
         )
         self.bot.dispatch(
@@ -619,6 +639,7 @@ class MastermindSession:
             f"Code secret : {self._secret_display()}",
             f"Reviens tenter ta chance pour gagner {Emojis.GEM} !",
         ]
+        await self._reset_mastermind_winstreak()
         await self._award_mastery_xp(MASTERMIND_TIMEOUT_XP, "timeout")
         self._logger.debug(
             "Mastermind timeout",
@@ -636,6 +657,7 @@ class MastermindSession:
             f"Code secret : {self._secret_display()}",
             f"Reviens tenter ta chance pour gagner {Emojis.GEM} !",
         ]
+        await self._reset_mastermind_winstreak()
         await self._award_mastery_xp(MASTERMIND_FAILURE_XP, "failure")
         self._logger.debug(
             "Mastermind loss",
@@ -649,6 +671,7 @@ class MastermindSession:
     async def _handle_cancel(self) -> None:
         self.embed_color = Colors.WARNING
         self.status_lines = ["Partie annulée. Relance `e!mastermind` quand tu veux retenter ta chance !"]
+        await self._reset_mastermind_winstreak()
         self._logger.debug(
             "Mastermind cancelled",
             extra={
@@ -657,6 +680,18 @@ class MastermindSession:
                 "attempts": self.attempts,
             },
         )
+
+    async def _reset_mastermind_winstreak(self) -> None:
+        try:
+            await self.database.update_mastermind_winstreak(
+                self.ctx.author.id,
+                won=False,
+            )
+        except Exception:
+            self._logger.exception(
+                "Impossible de réinitialiser la winstreak Mastermind",
+                extra={"user_id": self.ctx.author.id},
+            )
 
     def _secret_display(self) -> str:
         return self.helper.format_code(self.secret, include_names=True)

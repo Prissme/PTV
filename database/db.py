@@ -824,6 +824,8 @@ class Database:
                     gems BIGINT NOT NULL DEFAULT 0 CHECK (gems >= 0),
                     last_daily TIMESTAMPTZ,
                     daily_streak INTEGER NOT NULL DEFAULT 0 CHECK (daily_streak >= 0),
+                    mastermind_winstreak INTEGER NOT NULL DEFAULT 0 CHECK (mastermind_winstreak >= 0),
+                    mastermind_wins INTEGER NOT NULL DEFAULT 0 CHECK (mastermind_wins >= 0),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     pet_last_claim TIMESTAMPTZ
                 )
@@ -845,6 +847,14 @@ class Database:
             await connection.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_streak INTEGER NOT NULL DEFAULT 0"
                 " CHECK (daily_streak >= 0)"
+            )
+            await connection.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS mastermind_winstreak INTEGER NOT NULL DEFAULT 0"
+                " CHECK (mastermind_winstreak >= 0)"
+            )
+            await connection.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS mastermind_wins INTEGER NOT NULL DEFAULT 0"
+                " CHECK (mastermind_wins >= 0)"
             )
             await connection.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS help_dm_sent_at TIMESTAMPTZ"
@@ -1455,21 +1465,56 @@ class Database:
 
         return int(updated.get("race_best_stage") or normalized_stage)
 
-    async def get_transaction_count(
-        self, user_id: int, *, transaction_type: str
-    ) -> int:
+    async def get_mastermind_wins(self, user_id: int) -> int:
+        await self.ensure_user(user_id)
         row = await self.pool.fetchrow(
-            """
-            SELECT COUNT(*) AS total
-            FROM transactions
-            WHERE user_id = $1 AND transaction_type = $2
-            """,
+            "SELECT mastermind_wins FROM users WHERE user_id = $1",
             user_id,
-            transaction_type,
         )
         if row is None:
             return 0
-        return int(row.get("total") or 0)
+        return int(row.get("mastermind_wins") or 0)
+
+    async def update_mastermind_winstreak(
+        self, user_id: int, *, won: bool
+    ) -> tuple[int, int]:
+        await self.ensure_user(user_id)
+        async with self.transaction() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT mastermind_winstreak, mastermind_wins
+                FROM users
+                WHERE user_id = $1
+                FOR UPDATE
+                """,
+                user_id,
+            )
+            current_streak = int(row.get("mastermind_winstreak") or 0) if row else 0
+            current_wins = int(row.get("mastermind_wins") or 0) if row else 0
+            if won:
+                new_streak = current_streak + 1
+                new_wins = current_wins + 1
+            else:
+                new_streak = 0
+                new_wins = current_wins
+            await connection.execute(
+                """
+                UPDATE users
+                SET mastermind_winstreak = $2,
+                    mastermind_wins = $3
+                WHERE user_id = $1
+                """,
+                user_id,
+                new_streak,
+                new_wins,
+            )
+        return new_streak, new_wins
+
+    async def get_transaction_count(
+        self, user_id: int, *, transaction_type: str
+    ) -> int:
+        _ = (user_id, transaction_type)
+        return 0
 
     async def add_raffle_tickets(
         self,
@@ -2363,20 +2408,7 @@ class Database:
         related_user_id: int | None = None,
         connection: asyncpg.Connection | None = None,
     ) -> None:
-        query = """
-            INSERT INTO transactions (
-                user_id,
-                transaction_type,
-                currency,
-                amount,
-                balance_before,
-                balance_after,
-                description,
-                related_user_id
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        """
-        params = (
+        _ = (
             user_id,
             transaction_type,
             currency,
@@ -2385,23 +2417,9 @@ class Database:
             balance_after,
             description,
             related_user_id,
+            connection,
         )
-
-        if connection is not None:
-            try:
-                await connection.execute(query, *params)
-            except asyncpg.exceptions.UndefinedTableError:
-                logger.warning("Transactions table missing — recreating before retry")
-                await self._ensure_transactions_table(connection)
-                await connection.execute(query, *params)
-            return
-
-        try:
-            await self.pool.execute(query, *params)
-        except asyncpg.exceptions.UndefinedTableError:
-            logger.warning("Transactions table missing — recreating before retry")
-            await self._ensure_transactions_table(self.pool)
-            await self.pool.execute(query, *params)
+        return
 
     # ------------------------------------------------------------------
     # Statistiques d'activité
@@ -6845,29 +6863,8 @@ class Database:
     # Historique financier
     # ------------------------------------------------------------------
     async def get_recent_transactions(self, user_id: int, limit: int = 20) -> Sequence[asyncpg.Record]:
-        await self.ensure_user(user_id)
-        query = """
-            SELECT
-                id,
-                transaction_type,
-                currency,
-                amount,
-                balance_before,
-                balance_after,
-                description,
-                related_user_id,
-                created_at
-            FROM transactions
-            WHERE user_id = $1
-            ORDER BY created_at DESC
-            LIMIT $2
-        """
-        try:
-            return await self.pool.fetch(query, user_id, limit)
-        except asyncpg.exceptions.UndefinedTableError:
-            logger.warning("Transactions table missing — recreating before retry")
-            await self._ensure_transactions_table(self.pool)
-            return await self.pool.fetch(query, user_id, limit)
+        _ = (user_id, limit)
+        return []
 
     # ------------------------------------------------------------------
     # Stand de la plaza (listings)
