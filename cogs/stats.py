@@ -147,9 +147,7 @@ class ActivityStats(commands.Cog):
         if not luck_breakdown:
             luck_breakdown.append("Aucun bonus de luck actif pour le moment.")
 
-        mastermind_wins = await self.database.get_transaction_count(
-            member.id, transaction_type="mastermind_win"
-        )
+        mastermind_wins = await self.database.get_mastermind_wins(member.id)
         race_best_stage = await self.database.get_race_personal_best(member.id)
         bounded_stage = min(
             max(0, race_best_stage), max(0, len(MILLIONAIRE_RACE_STAGES))
