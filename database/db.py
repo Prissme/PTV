@@ -1163,6 +1163,7 @@ class Database:
                     buyer_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
                     item_type TEXT NOT NULL CHECK (item_type IN ('ticket', 'potion', 'role')),
                     item_slug TEXT,
+                    item_power SMALLINT,
                     quantity INTEGER NOT NULL CHECK (quantity > 0),
                     price BIGINT NOT NULL CHECK (price >= 0),
                     status VARCHAR(20) NOT NULL DEFAULT 'active',
@@ -1178,10 +1179,13 @@ class Database:
                 """
             )
             await connection.execute(
+                "ALTER TABLE plaza_consumable_listings ADD COLUMN IF NOT EXISTS item_power SMALLINT"
+            )
+            await connection.execute(
                 """
                 ALTER TABLE plaza_consumable_listings
                 ADD CONSTRAINT plaza_consumable_listings_item_type_check
-                CHECK (item_type IN ('ticket', 'potion', 'role'))
+                CHECK (item_type IN ('ticket', 'potion', 'role', 'enchantment'))
                 """
             )
             await connection.execute(
@@ -7371,8 +7375,9 @@ class Database:
         quantity: int,
         price: int,
         item_slug: str | None = None,
+        item_power: int | None = None,
     ) -> asyncpg.Record:
-        if item_type not in {"ticket", "potion", "role"}:
+        if item_type not in {"ticket", "potion", "role", "enchantment"}:
             raise DatabaseError("Type d'objet invalide pour la plaza.")
         if quantity <= 0:
             raise DatabaseError("La quantité doit être positive.")
@@ -7382,6 +7387,11 @@ class Database:
             raise DatabaseError("Merci de préciser le rôle à mettre en vente.")
         if item_type == "role" and quantity != 1:
             raise DatabaseError("Tu ne peux vendre qu'un rôle à la fois.")
+        if item_type == "enchantment":
+            if not item_slug or item_power is None:
+                raise DatabaseError("Merci de préciser l'enchantement et son niveau.")
+            if item_power < 1 or item_power > 10:
+                raise DatabaseError("Le niveau doit être compris entre 1 et 10.")
 
         await self.ensure_user(seller_id)
 
@@ -7407,19 +7417,41 @@ class Database:
                 )
                 if not consumed:
                     raise DatabaseError("Tu n'as pas assez d'exemplaires de cette potion.")
+            elif item_type == "enchantment":
+                if not slug:
+                    raise DatabaseError("Merci de préciser l'enchantement à vendre.")
+                if item_power is None:
+                    raise DatabaseError("Merci de préciser le niveau de l'enchantement.")
+                consumed = await self.consume_user_enchantment(
+                    seller_id,
+                    slug,
+                    power=item_power,
+                    quantity=quantity,
+                    connection=connection,
+                )
+                if not consumed:
+                    raise DatabaseError("Tu ne possèdes pas assez de cet enchantement.")
             else:
                 if not slug:
                     raise DatabaseError("Merci de préciser le rôle à mettre en vente.")
 
             listing = await connection.fetchrow(
                 """
-                INSERT INTO plaza_consumable_listings (seller_id, item_type, item_slug, quantity, price)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO plaza_consumable_listings (
+                    seller_id,
+                    item_type,
+                    item_slug,
+                    item_power,
+                    quantity,
+                    price
+                )
+                VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING *
                 """,
                 seller_id,
                 item_type,
                 slug,
+                item_power,
                 quantity,
                 price,
             )
@@ -7456,6 +7488,17 @@ class Database:
                 await self.add_user_potion(
                     seller_id,
                     str(item_slug),
+                    quantity=quantity,
+                    connection=connection,
+                )
+            elif item_type == "enchantment":
+                if not item_slug:
+                    raise DatabaseError("Enchantement inconnu pour cette annonce.")
+                power = int(listing.get("item_power") or 0)
+                await self.add_user_enchantment(
+                    seller_id,
+                    str(item_slug),
+                    power=power,
                     quantity=quantity,
                     connection=connection,
                 )
@@ -7537,6 +7580,15 @@ class Database:
                 await self.add_user_potion(
                     buyer_id,
                     item_slug,
+                    quantity=quantity,
+                    connection=connection,
+                )
+            elif item_type == "enchantment":
+                power = int(listing.get("item_power") or 0)
+                await self.add_user_enchantment(
+                    buyer_id,
+                    item_slug,
+                    power=power,
                     quantity=quantity,
                     connection=connection,
                 )

@@ -793,6 +793,64 @@ class StandPotionListingModal(discord.ui.Modal):
             await self.view.refresh_if_needed()
 
 
+class StandEnchantListingModal(discord.ui.Modal):
+    def __init__(self, view: "StandManagementView") -> None:
+        super().__init__(title="Lister un enchantement")
+        self.view = view
+        self.slug_input = discord.ui.TextInput(
+            label="Enchantement",
+            placeholder="Slug ou nom (ex: chance, prissbucks)",
+            min_length=1,
+            max_length=50,
+        )
+        self.power_input = discord.ui.TextInput(
+            label="Puissance (1-10)",
+            placeholder="Ex: 5",
+            min_length=1,
+            max_length=2,
+        )
+        self.quantity_input = discord.ui.TextInput(
+            label="Quantité",
+            placeholder="Ex: 1",
+            min_length=1,
+            max_length=5,
+        )
+        self.price_input = discord.ui.TextInput(
+            label=f"Prix total ({Emojis.GEM})",
+            placeholder="Ex: 25000",
+            min_length=1,
+            max_length=18,
+        )
+        self.add_item(self.slug_input)
+        self.add_item(self.power_input)
+        self.add_item(self.quantity_input)
+        self.add_item(self.price_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            power = int(self.power_input.value)
+            quantity = int(self.quantity_input.value)
+            price = int(self.price_input.value.replace(" ", ""))
+        except ValueError:
+            await interaction.response.send_message(
+                embed=embeds.error_embed("Merci d'indiquer une quantité et un prix valides."),
+                ephemeral=True,
+            )
+            return
+
+        success, embed = await self.view.plaza._create_enchantment_listing_embed(
+            interaction.user,
+            self.slug_input.value,
+            power,
+            quantity,
+            price,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        if success:
+            await self.view.mark_dirty()
+            await self.view.refresh_if_needed()
+
+
 class StandRemoveListingModal(discord.ui.Modal):
     def __init__(self, view: "StandManagementView") -> None:
         super().__init__(title="Retirer une annonce")
@@ -916,6 +974,12 @@ class StandManagementView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         await interaction.response.send_modal(StandPotionListingModal(self))
+
+    @discord.ui.button(label="Lister un enchantement", style=discord.ButtonStyle.secondary)
+    async def list_enchantment(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.send_modal(StandEnchantListingModal(self))
 
     @discord.ui.button(label="Vendre un rôle", style=discord.ButtonStyle.secondary)
     async def list_role(
@@ -1131,6 +1195,9 @@ class ConsumableListingsView(discord.ui.View):
         self.user_cache = user_cache
         self.message: Optional[discord.Message] = None
         self.potion_filters: list[tuple[str, str]] = self._collect_potion_filters()
+        self.has_enchantment_listing = any(
+            str(record.get("item_type")) == "enchantment" for record in self.listings
+        )
         self.current_filter: str = "all"
         self.filter_select = ConsumableFilterSelect(self)
         self.add_item(self.filter_select)
@@ -1172,6 +1239,14 @@ class ConsumableListingsView(discord.ui.View):
                     description="Afficher les rôles en vente.",
                 )
             )
+        if self.has_enchantment_listing:
+            options.append(
+                discord.SelectOption(
+                    label="✨ Enchantements",
+                    value="enchantment",
+                    description="Afficher les enchantements en vente.",
+                )
+            )
 
         for slug, name in self.potion_filters[:23]:
             options.append(
@@ -1200,6 +1275,10 @@ class ConsumableListingsView(discord.ui.View):
         elif item_type == "role":
             slug = str(record.get("item_slug") or "")
             label = f"🛡️ {self.plaza._role_label(slug, getattr(self.author, 'guild', None))}"
+        elif item_type == "enchantment":
+            slug = str(record.get("item_slug") or "")
+            power = int(record.get("item_power") or 0)
+            label = f"{self.plaza._format_enchantment_label(slug, power)} ×{quantity}"
         else:
             slug = str(record.get("item_slug") or "")
             definition = POTION_DEFINITION_MAP.get(slug)
@@ -1220,6 +1299,13 @@ class ConsumableListingsView(discord.ui.View):
                 record for record in self.listings if str(record.get("item_type")) == "role"
             ]
             title = "🛡️ Rôles en vente"
+        elif key == "enchantment":
+            filtered = [
+                record
+                for record in self.listings
+                if str(record.get("item_type")) == "enchantment"
+            ]
+            title = "✨ Enchantements en vente"
         elif key.startswith("potion:"):
             slug = key.split(":", 1)[1]
             filtered = [
@@ -1252,7 +1338,10 @@ class ConsumableListingsView(discord.ui.View):
 
     def update_filters(self) -> None:
         self.potion_filters = self._collect_potion_filters()
-        valid_filters = {"all", "ticket", "role"}
+        self.has_enchantment_listing = any(
+            str(record.get("item_type")) == "enchantment" for record in self.listings
+        )
+        valid_filters = {"all", "ticket", "role", "enchantment"}
         valid_filters.update(f"potion:{slug}" for slug, _ in self.potion_filters)
         if self.current_filter not in valid_filters:
             self.current_filter = "all"
@@ -1499,6 +1588,10 @@ class Plaza(commands.Cog):
             elif item_type == "role":
                 slug = str(record.get("item_slug") or "")
                 name = f"🛡️ {self._role_label(slug, guild)}"
+            elif item_type == "enchantment":
+                slug = str(record.get("item_slug") or "")
+                power = int(record.get("item_power") or 0)
+                name = f"{self._format_enchantment_label(slug, power)} ×{quantity}"
             else:
                 slug = str(record.get("item_slug") or "")
                 definition = POTION_DEFINITION_MAP.get(slug)
@@ -1749,6 +1842,19 @@ class Plaza(commands.Cog):
                 return slug, definition
         return None, None
 
+    def _resolve_enchantment_slug(self, raw: str) -> str | None:
+        candidate = raw.strip().lower()
+        normalized = self._normalize_key(raw)
+        for slug, definition in ENCHANTMENT_DEFINITION_MAP.items():
+            aliases = {
+                slug.lower(),
+                definition.name.lower(),
+                self._normalize_key(definition.name),
+            }
+            if candidate in aliases or normalized in aliases:
+                return slug
+        return None
+
     def _get_sellable_roles(self, member: discord.Member | None) -> list[discord.Role]:
         roles: list[discord.Role] = []
         if member is None or member.guild is None:
@@ -1860,6 +1966,45 @@ class Plaza(commands.Cog):
         )
         return True, embed
 
+    async def _create_enchantment_listing_embed(
+        self,
+        user: discord.abc.User,
+        raw_slug: str,
+        power: int,
+        quantity: int,
+        price: int,
+    ) -> tuple[bool, discord.Embed]:
+        if quantity <= 0:
+            return False, embeds.error_embed("Indique une quantité positive.")
+        if price <= 0:
+            return False, embeds.error_embed("Le prix doit être supérieur à zéro.")
+        if power < 1 or power > 10:
+            return False, embeds.error_embed("Le niveau doit être compris entre 1 et 10.")
+
+        slug = self._resolve_enchantment_slug(raw_slug)
+        if slug is None:
+            return False, embeds.error_embed("Enchantement inconnu. Vérifie le nom ou le slug.")
+
+        try:
+            listing = await self.database.create_consumable_listing(
+                user.id,
+                item_type="enchantment",
+                item_slug=slug,
+                item_power=power,
+                quantity=quantity,
+                price=price,
+            )
+        except DatabaseError as exc:
+            return False, embeds.error_embed(str(exc))
+
+        listing_id = int(listing["id"])
+        label = self._format_enchantment_label(slug, power)
+        embed = embeds.success_embed(
+            f"{label} x{quantity} listé pour {embeds.format_gems(price)} (annonce #{listing_id}).",
+            title="Annonce créée",
+        )
+        return True, embed
+
     async def _create_role_listing_embed(
         self,
         user: discord.abc.User,
@@ -1945,6 +2090,9 @@ class Plaza(commands.Cog):
             item_label = f"🎟️ Tickets ×{quantity}"
         elif item_type == "role":
             item_label = f"🛡️ {self._role_label(slug, guild)}"
+        elif item_type == "enchantment":
+            power = int(listing_record.get("item_power") or 0)
+            item_label = f"{self._format_enchantment_label(slug, power)} ×{quantity}"
         else:
             definition = POTION_DEFINITION_MAP.get(slug)
             name = definition.name if definition else slug or "Potion"
@@ -2024,6 +2172,10 @@ class Plaza(commands.Cog):
                         with contextlib.suppress(discord.HTTPException, discord.Forbidden):
                             await user.add_roles(role, reason="Annonce de rôle annulée")
                 label = self._role_label(slug, getattr(user, "guild", None))
+            elif item_type == "enchantment":
+                slug = str(consumable.get("item_slug", ""))
+                power = int(consumable.get("item_power") or 0)
+                label = f"{self._format_enchantment_label(slug, power)} x{quantity}"
             else:
                 slug = str(consumable.get("item_slug", ""))
                 definition = POTION_DEFINITION_MAP.get(slug)
@@ -2166,6 +2318,10 @@ class Plaza(commands.Cog):
 
     @commands.group(name="auction", invoke_without_command=True)
     async def auction_group(self, ctx: commands.Context) -> None:
+        await self._open_auction_browser(ctx)
+
+    @auction_group.command(name="mine", aliases=("mes", "my"))
+    async def auction_mine(self, ctx: commands.Context) -> None:
         embed = await self._build_user_auction_embed(ctx.author)
         await ctx.send(embed=embed)
 
@@ -2338,8 +2494,7 @@ class Plaza(commands.Cog):
 
     @auction_group.command(name="list")
     async def auction_list(self, ctx: commands.Context) -> None:
-        embed = await self._build_auction_overview_embed(ctx.author)
-        await ctx.send(embed=embed)
+        await self._open_auction_browser(ctx)
         seller_user: Optional[discord.abc.User]
         if seller is not None:
             seller_user = seller

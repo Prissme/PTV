@@ -1164,6 +1164,8 @@ class PetSelectionView(discord.ui.View):
         *,
         ctx: commands.Context,
         candidates: Sequence[Mapping[str, Any]],
+        title: str,
+        description: str,
     ) -> None:
         super().__init__(timeout=60)
         self.ctx = ctx
@@ -1172,6 +1174,8 @@ class PetSelectionView(discord.ui.View):
         self.selection: Optional[Mapping[str, Any]] = None
         self.cancelled = False
         self.message: discord.Message | None = None
+        self.title = title
+        self.description = description
         self.page_size = max(1, min(self.PAGE_SIZE, len(self.candidates)))
         self.page_count = max(1, math.ceil(len(self.candidates) / self.page_size))
         self.page = 0
@@ -1234,7 +1238,9 @@ class PetSelectionView(discord.ui.View):
                 selection_view.page -= 1
             selection_view._refresh_options()
             selection_view._sync_buttons()
-            await interaction.response.edit_message(view=selection_view)
+            await interaction.response.edit_message(
+                embed=selection_view.build_embed(), view=selection_view
+            )
 
     class NextPageButton(discord.ui.Button):
         def __init__(self, view: "PetSelectionView") -> None:
@@ -1247,7 +1253,9 @@ class PetSelectionView(discord.ui.View):
                 selection_view.page += 1
             selection_view._refresh_options()
             selection_view._sync_buttons()
-            await interaction.response.edit_message(view=selection_view)
+            await interaction.response.edit_message(
+                embed=selection_view.build_embed(), view=selection_view
+            )
 
     class CancelButton(discord.ui.Button):
         def __init__(self, view: "PetSelectionView") -> None:
@@ -1266,9 +1274,15 @@ class PetSelectionView(discord.ui.View):
             selection_view.selection = None
             selection_view.disable_all()
             if interaction.response.is_done():
-                await interaction.followup.edit_message(interaction.message.id, view=selection_view)
+                await interaction.followup.edit_message(
+                    interaction.message.id,
+                    embed=selection_view.build_embed(),
+                    view=selection_view,
+                )
             else:
-                await interaction.response.edit_message(view=selection_view)
+                await interaction.response.edit_message(
+                    embed=selection_view.build_embed(), view=selection_view
+                )
             selection_view.stop()
 
     @staticmethod
@@ -1311,6 +1325,53 @@ class PetSelectionView(discord.ui.View):
             self.select.placeholder = f"Sélectionne un pet (page {self.page + 1}/{self.page_count})"
         else:
             self.select.placeholder = "Sélectionne un pet"
+
+    def build_embed(self) -> discord.Embed:
+        start = self.page * self.page_size
+        end = start + self.page_size
+        lines: List[str] = []
+        for index, candidate in enumerate(self.candidates[start:end], start=start + 1):
+            data = candidate.get("data", {})
+            record = candidate.get("record", {})
+            name = str(data.get("name", "Pet"))
+            rarity = str(data.get("rarity", ""))
+            emoji = embeds._pet_emoji(name) if hasattr(embeds, "_pet_emoji") else ""
+            emoji_prefix = f"{emoji} " if emoji else ""
+            is_active = bool(data.get("is_active"))
+            is_gold = bool(data.get("is_gold"))
+            is_rainbow = bool(data.get("is_rainbow"))
+            income = scale_pet_value(int(data.get("base_income_per_hour", 0)))
+            acquired_at = record.get("acquired_at")
+            identifier = int(record.get("id") or 0)
+            acquired_text = ""
+            if isinstance(acquired_at, datetime):
+                acquired_text = acquired_at.strftime("%d/%m/%Y")
+            markers = ""
+            if is_rainbow:
+                markers += " 🌈"
+            elif is_gold:
+                markers += " 🥇"
+            status = "⭐ Actif" if is_active else "Disponible"
+            line = (
+                f"**{index}. {emoji_prefix}{name}{markers}** — {income:,} PB/h"
+            ).replace(",", " ")
+            if rarity:
+                line += f" ({rarity})"
+            line += f"\n{status}"
+            if identifier:
+                line += f" • ID: {identifier}"
+            if acquired_text:
+                line += f" • Obtenu le {acquired_text}"
+            lines.append(line)
+
+        body = self.description
+        if lines:
+            body = f"{self.description}\n\n" + "\n\n".join(lines)
+        embed = embeds.info_embed(body, title=self.title)
+        embed.set_author(name=self.ctx.author.display_name, icon_url=self.ctx.author.display_avatar.url)
+        if self.page_count > 1:
+            embed.set_footer(text=f"Page {self.page + 1}/{self.page_count}")
+        return embed
 
     def _sync_buttons(self) -> None:
         has_multiple_pages = self.page_count > 1
@@ -2469,56 +2530,6 @@ class Pets(commands.Cog):
         )
         return definition, list(rows), ordinal, variant
 
-    def _build_pet_choice_embed(
-        self,
-        ctx: commands.Context,
-        *,
-        title: str,
-        description: str,
-        candidates: Sequence[Mapping[str, Any]],
-    ) -> discord.Embed:
-        lines: List[str] = []
-        for index, candidate in enumerate(candidates, start=1):
-            data = candidate.get("data", {})
-            record = candidate.get("record", {})
-            name = str(data.get("name", "Pet"))
-            rarity = str(data.get("rarity", ""))
-            emoji = embeds._pet_emoji(name) if hasattr(embeds, "_pet_emoji") else ""
-            emoji_prefix = f"{emoji} " if emoji else ""
-            is_active = bool(data.get("is_active"))
-            is_gold = bool(data.get("is_gold"))
-            is_rainbow = bool(data.get("is_rainbow"))
-            income = scale_pet_value(int(data.get("base_income_per_hour", 0)))
-            acquired_at = record.get("acquired_at")
-            identifier = int(record.get("id") or 0)
-            acquired_text = ""
-            if isinstance(acquired_at, datetime):
-                acquired_text = acquired_at.strftime("%d/%m/%Y")
-            markers = ""
-            if is_rainbow:
-                markers += " 🌈"
-            elif is_gold:
-                markers += " 🥇"
-            status = "⭐ Actif" if is_active else "Disponible"
-            line = (
-                f"**{index}. {emoji_prefix}{name}{markers}** — {income:,} PB/h"
-            ).replace(",", " ")
-            if rarity:
-                line += f" ({rarity})"
-            line += f"\n{status}"
-            if identifier:
-                line += f" • ID: {identifier}"
-            if acquired_text:
-                line += f" • Obtenu le {acquired_text}"
-            lines.append(line)
-
-        body = description
-        if lines:
-            body = f"{description}\n\n" + "\n\n".join(lines)
-        embed = embeds.info_embed(body, title=title)
-        embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
-        return embed
-
     async def _prompt_pet_selection(
         self,
         ctx: commands.Context,
@@ -2530,14 +2541,13 @@ class Pets(commands.Cog):
         if not candidates:
             return None
 
-        view = PetSelectionView(ctx=ctx, candidates=candidates)
-        embed = self._build_pet_choice_embed(
-            ctx,
+        view = PetSelectionView(
+            ctx=ctx,
+            candidates=candidates,
             title=title,
             description=description,
-            candidates=candidates,
         )
-        message = await ctx.send(embed=embed, view=view)
+        message = await ctx.send(embed=view.build_embed(), view=view)
         view.message = message
         timed_out = await view.wait()
 

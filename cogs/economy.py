@@ -864,6 +864,8 @@ class MastermindView(discord.ui.View):
         return interaction.user.id == self.session.ctx.author.id
 
     async def on_timeout(self) -> None:
+        if self.session.finished:
+            return
         self.timed_out = True
         await self.session.timeout()
         await self.session.finalize()
