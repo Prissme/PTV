@@ -22,7 +22,7 @@ from utils.pet_formatting import pet_emoji
 
 logger = logging.getLogger(__name__)
 
-DROP_CHANNEL_ID = 1236724293631611022
+DROP_CHANNEL_ID = 1464700985506271365
 DROP_CHANCE = 1 / 3600
 GOOD_PET_RARITIES = {"Légendaire", "Mythique", "Secret"}
 

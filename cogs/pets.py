@@ -137,6 +137,9 @@ HUGE_RAINBOW_CHANCE = 0.01
 HUGE_SHINY_CHANCE = 0.004
 HUGE_GALAXY_CHANCE = 0.0001
 INDEX_SHINY_BONUS_PER_PET: Final[float] = 0.0005
+GOLD_MASTERY_POINTS: Final[int] = 10
+RAINBOW_MASTERY_POINTS: Final[int] = 100
+GALAXY_MASTERY_POINTS: Final[int] = 10_000
 
 
 
@@ -2186,7 +2189,7 @@ class Pets(commands.Cog):
                     f"⚙️ Auto Goldify : **{name}** passe directement en version or{shiny_suffix}!"
                 )
                 mastery_update = await self.database.add_mastery_experience(
-                    ctx.author.id, PET_MASTERY.slug, max(1, int(consumed))
+                    ctx.author.id, PET_MASTERY.slug, GOLD_MASTERY_POINTS
                 )
                 await self._handle_mastery_notifications(
                     ctx, mastery_update, mastery=PET_MASTERY
@@ -2212,7 +2215,7 @@ class Pets(commands.Cog):
                     f"🌈 Auto Rainbow : **{name}** se transforme en rainbow{shiny_suffix}!"
                 )
                 mastery_update = await self.database.add_mastery_experience(
-                    ctx.author.id, PET_MASTERY.slug, max(1, int(consumed))
+                    ctx.author.id, PET_MASTERY.slug, RAINBOW_MASTERY_POINTS
                 )
                 await self._handle_mastery_notifications(
                     ctx, mastery_update, mastery=PET_MASTERY
@@ -2405,8 +2408,6 @@ class Pets(commands.Cog):
         for row in rows:
             if bool(row.get("is_active")) or bool(row.get("on_market")):
                 continue
-            if bool(row.get("is_huge")):
-                continue
             is_gold = bool(row.get("is_gold"))
             is_rainbow = bool(row.get("is_rainbow"))
             is_galaxy = bool(row.get("is_galaxy"))
@@ -2427,7 +2428,7 @@ class Pets(commands.Cog):
         plan: list[tuple[PetDefinition, int, int]] = []
         for pet_id, count in counts.items():
             definition = self._definition_by_id.get(pet_id)
-            if definition is None or definition.is_huge:
+            if definition is None:
                 continue
             quantity = count // required
             if quantity > 0:
@@ -5818,6 +5819,7 @@ class Pets(commands.Cog):
             upgrade = self.database.upgrade_pet_to_gold
             title = "Fusion dorée — tout"
             variant_label = "or"
+            mastery_points = GOLD_MASTERY_POINTS
         elif mode == "rainbow":
             combine_required = RAINBOW_PET_COMBINE_REQUIRED
             cost = RAINBOWIFY_GEM_COST
@@ -5825,6 +5827,7 @@ class Pets(commands.Cog):
             upgrade = self.database.upgrade_pet_to_rainbow
             title = "🌈 Fusion Rainbow — tout"
             variant_label = "rainbow"
+            mastery_points = RAINBOW_MASTERY_POINTS
         elif mode == "galaxy":
             combine_required = GALAXY_PET_COMBINE_REQUIRED
             cost = GALAXY_GEM_COST
@@ -5832,6 +5835,7 @@ class Pets(commands.Cog):
             upgrade = self.database.upgrade_pet_to_galaxy
             title = "🌌 Fusion Galaxy — tout"
             variant_label = "galaxy"
+            mastery_points = GALAXY_MASTERY_POINTS
         else:
             await ctx.send(embed=embeds.error_embed("Mode de fusion inconnu."))
             return
@@ -5900,8 +5904,9 @@ class Pets(commands.Cog):
 
         await ctx.send(embed=embeds.success_embed("\n".join(lines), title=title))
 
+        total_mastery_points = max(1, total_fusions * mastery_points)
         mastery_update = await self.database.add_mastery_experience(
-            ctx.author.id, PET_MASTERY.slug, max(1, int(total_consumed))
+            ctx.author.id, PET_MASTERY.slug, total_mastery_points
         )
         await self._handle_mastery_notifications(
             ctx, mastery_update, mastery=PET_MASTERY
@@ -5936,9 +5941,6 @@ class Pets(commands.Cog):
         definition = self._definition_by_slug.get(lookup)
         if definition is None:
             await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
-            return
-        if definition.is_huge:
-            await ctx.send(embed=embeds.error_embed("Les énormes pets ne peuvent pas devenir or."))
             return
 
         pet_id = self._pet_ids.get(definition.name)
@@ -6048,7 +6050,7 @@ class Pets(commands.Cog):
             )
 
         mastery_update = await self.database.add_mastery_experience(
-            ctx.author.id, PET_MASTERY.slug, max(1, int(consumed))
+            ctx.author.id, PET_MASTERY.slug, max(1, int(quantity * GOLD_MASTERY_POINTS))
         )
         await self._handle_mastery_notifications(
             ctx, mastery_update, mastery=PET_MASTERY
@@ -6073,9 +6075,6 @@ class Pets(commands.Cog):
         definition = self._definition_by_slug.get(slug)
         if definition is None:
             await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
-            return
-        if definition.is_huge:
-            await ctx.send(embed=embeds.error_embed("Les Huge pets ne peuvent pas être rainbow."))
             return
 
         pet_id = self._pet_ids.get(definition.name)
@@ -6124,17 +6123,19 @@ class Pets(commands.Cog):
             return
 
         total_cost = RAINBOWIFY_GEM_COST * quantity
-        base_income = definition.base_income_per_hour
-        rainbow_income = base_income * RAINBOW_PET_MULTIPLIER
+        best_non_huge_income = None
+        if definition.is_huge:
+            best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
+        pet_data = self._convert_record(records[0], best_non_huge_income=best_non_huge_income)
+        rainbow_income = int(pet_data.get("base_income_per_hour", 0))
         display_rainbow_income = scale_pet_value(rainbow_income)
         if quantity == 1:
-            pet_data = self._convert_record(records[0], best_non_huge_income=None)
             embed = embeds.pet_reveal_embed(
                 name=definition.name,
                 rarity=definition.rarity,
                 image_url=definition.image_url,
                 income_per_hour=rainbow_income,
-                is_huge=False,
+                is_huge=bool(pet_data.get("is_huge", False)),
                 is_gold=False,
                 is_galaxy=False,
                 is_rainbow=True,
@@ -6169,7 +6170,7 @@ class Pets(commands.Cog):
             )
 
         mastery_update = await self.database.add_mastery_experience(
-            ctx.author.id, PET_MASTERY.slug, max(1, int(consumed))
+            ctx.author.id, PET_MASTERY.slug, max(1, int(quantity * RAINBOW_MASTERY_POINTS))
         )
         await self._handle_mastery_notifications(
             ctx, mastery_update, mastery=PET_MASTERY
@@ -6189,9 +6190,6 @@ class Pets(commands.Cog):
         definition = self._definition_by_slug.get(slug)
         if definition is None:
             await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
-            return
-        if definition.is_huge:
-            await ctx.send(embed=embeds.error_embed("Les Huge pets ne peuvent pas devenir galaxy."))
             return
 
         pet_id = self._pet_ids.get(definition.name)
@@ -6238,9 +6236,11 @@ class Pets(commands.Cog):
             await ctx.send(embed=embeds.error_embed(str(exc)))
             return
 
-        pet_data = self._convert_record(records[0], best_non_huge_income=None)
-        base_income = definition.base_income_per_hour
-        galaxy_income = base_income * GALAXY_PET_MULTIPLIER
+        best_non_huge_income = None
+        if definition.is_huge:
+            best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
+        pet_data = self._convert_record(records[0], best_non_huge_income=best_non_huge_income)
+        galaxy_income = int(pet_data.get("base_income_per_hour", 0))
         display_galaxy_income = scale_pet_value(galaxy_income)
         total_cost = GALAXY_GEM_COST
 
@@ -6249,7 +6249,7 @@ class Pets(commands.Cog):
             rarity=definition.rarity,
             image_url=definition.image_url,
             income_per_hour=galaxy_income,
-            is_huge=False,
+            is_huge=bool(pet_data.get("is_huge", False)),
             is_gold=False,
             is_galaxy=True,
             is_rainbow=False,
@@ -6270,7 +6270,7 @@ class Pets(commands.Cog):
         await ctx.send(embed=embed)
 
         mastery_update = await self.database.add_mastery_experience(
-            ctx.author.id, PET_MASTERY.slug, max(1, int(consumed))
+            ctx.author.id, PET_MASTERY.slug, max(1, int(GALAXY_MASTERY_POINTS))
         )
         await self._handle_mastery_notifications(
             ctx, mastery_update, mastery=PET_MASTERY

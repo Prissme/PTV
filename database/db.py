@@ -1479,6 +1479,19 @@ class Database:
             return 0
         return int(row.get("mastermind_wins") or 0)
 
+    async def get_mastermind_winstreak(self, user_id: int) -> tuple[int, int]:
+        await self.ensure_user(user_id)
+        row = await self.pool.fetchrow(
+            "SELECT mastermind_winstreak, mastermind_wins FROM users WHERE user_id = $1",
+            user_id,
+        )
+        if row is None:
+            return 0, 0
+        return (
+            int(row.get("mastermind_winstreak") or 0),
+            int(row.get("mastermind_wins") or 0),
+        )
+
     async def update_mastermind_winstreak(
         self, user_id: int, *, won: bool
     ) -> tuple[int, int]:
@@ -4384,6 +4397,12 @@ class Database:
             raise DatabaseError("Le nombre de flags shiny ne correspond pas à la quantité demandée.")
         total_cost = max(0, int(cost)) * quantity
         async with self.transaction() as connection:
+            pet_row = await connection.fetchrow(
+                "SELECT name FROM pets WHERE pet_id = $1",
+                pet_id,
+            )
+            pet_name = str(pet_row.get("name") or "") if pet_row else ""
+            is_huge = pet_name.lower() in _HUGE_PET_NAME_LOOKUP
             if total_cost > 0:
                 balance_row = await connection.fetchrow(
                     "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
@@ -4447,13 +4466,14 @@ class Database:
 
             inserted_rows = await connection.fetch(
                 """
-                INSERT INTO user_pets (user_id, pet_id, is_gold, is_shiny)
-                SELECT $1, $2, TRUE, shiny_flag
-                FROM unnest($3::bool[]) AS shiny_flag
+                INSERT INTO user_pets (user_id, pet_id, is_huge, is_gold, is_shiny)
+                SELECT $1, $2, $3, TRUE, shiny_flag
+                FROM unnest($4::bool[]) AS shiny_flag
                 RETURNING id
                 """,
                 user_id,
                 pet_id,
+                is_huge,
                 shiny_flags,
             )
             if not inserted_rows:
@@ -4510,6 +4530,12 @@ class Database:
             raise DatabaseError("Le nombre de flags shiny ne correspond pas à la quantité demandée.")
         total_cost = max(0, int(cost)) * quantity
         async with self.transaction() as connection:
+            pet_row = await connection.fetchrow(
+                "SELECT name FROM pets WHERE pet_id = $1",
+                pet_id,
+            )
+            pet_name = str(pet_row.get("name") or "") if pet_row else ""
+            is_huge = pet_name.lower() in _HUGE_PET_NAME_LOOKUP
             if total_cost > 0:
                 balance_row = await connection.fetchrow(
                     "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
@@ -4571,13 +4597,14 @@ class Database:
 
             inserted_rows = await connection.fetch(
                 """
-                INSERT INTO user_pets (user_id, pet_id, is_rainbow, is_shiny)
-                SELECT $1, $2, TRUE, shiny_flag
-                FROM unnest($3::bool[]) AS shiny_flag
+                INSERT INTO user_pets (user_id, pet_id, is_huge, is_rainbow, is_shiny)
+                SELECT $1, $2, $3, TRUE, shiny_flag
+                FROM unnest($4::bool[]) AS shiny_flag
                 RETURNING id
                 """,
                 user_id,
                 pet_id,
+                is_huge,
                 shiny_flags,
             )
 
@@ -4636,6 +4663,12 @@ class Database:
             raise DatabaseError("Le nombre de flags shiny ne correspond pas à la quantité demandée.")
         total_cost = max(0, int(cost)) * quantity
         async with self.transaction() as connection:
+            pet_row = await connection.fetchrow(
+                "SELECT name FROM pets WHERE pet_id = $1",
+                pet_id,
+            )
+            pet_name = str(pet_row.get("name") or "") if pet_row else ""
+            is_huge = pet_name.lower() in _HUGE_PET_NAME_LOOKUP
             if total_cost > 0:
                 balance_row = await connection.fetchrow(
                     "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
@@ -4695,13 +4728,14 @@ class Database:
 
             inserted_rows = await connection.fetch(
                 """
-                INSERT INTO user_pets (user_id, pet_id, is_galaxy, is_shiny)
-                SELECT $1, $2, TRUE, shiny_flag
-                FROM unnest($3::bool[]) AS shiny_flag
+                INSERT INTO user_pets (user_id, pet_id, is_huge, is_galaxy, is_shiny)
+                SELECT $1, $2, $3, TRUE, shiny_flag
+                FROM unnest($4::bool[]) AS shiny_flag
                 RETURNING id
                 """,
                 user_id,
                 pet_id,
+                is_huge,
                 shiny_flags,
             )
 

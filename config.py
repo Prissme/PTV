@@ -769,6 +769,13 @@ POTION_DEFINITIONS: Tuple[PotionDefinition, ...] = (
         "Double l'XP de maîtrise pendant 5 minutes.",
         duration_seconds=300,
     ),
+    PotionDefinition(
+        "slots_luck",
+        "Potion chance slots",
+        "slots_luck",
+        0.30,
+        "Augmente tes chances et tes gains à la machine à sous pendant une courte durée.",
+    ),
 )
 
 POTION_DEFINITION_MAP: Dict[str, PotionDefinition] = {
@@ -784,6 +791,7 @@ POTION_SELL_VALUES: Final[Dict[str, int]] = {
     "fortune_iii": 3_800,
     "fortune_iv": 5_500,
     "fortune_v": 7_500,
+    "slots_luck": 2_000,
 }
 
 RAFFLE_TICKET_SELL_VALUE: Final[int] = 500
