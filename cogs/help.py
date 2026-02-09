@@ -189,6 +189,11 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "description": "Résous le code secret pour remporter des PB 🪙 bonus.",
                 },
                 {
+                    "command": f"{PREFIX}winstrict",
+                    "description": "Affiche ta winstreak et le total de victoires Mastermind.",
+                    "aliases": ("winstreak", "mmwinstreak"),
+                },
+                {
                     "command": f"{PREFIX}raffle",
                     "description": "Gère tes tickets de tombola, mise-les et suis le prochain tirage.",
                 },
@@ -330,6 +335,48 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
             ),
         },
         {
+            "key": "auctions",
+            "label": "🔨 Enchères",
+            "description": "Vends ou achète via les enchères.",
+            "commands": (
+                {
+                    "command": f"{PREFIX}auction",
+                    "description": "Liste les enchères actives.",
+                    "aliases": ("enchere", "encheres", "enchères"),
+                },
+                {
+                    "command": f"{PREFIX}auction pet <mise> <durée_min> [achat_immédiat] <pet>",
+                    "description": "Crée une enchère pour un pet.",
+                },
+                {
+                    "command": f"{PREFIX}auction potion <slug> <quantité> <mise> <durée_min> [achat_immédiat]",
+                    "description": "Crée une enchère pour des potions.",
+                },
+                {
+                    "command": f"{PREFIX}auction enchant <slug> <puissance> <mise> <durée_min> [achat_immédiat]",
+                    "description": "Crée une enchère pour un enchantement.",
+                },
+                {
+                    "command": f"{PREFIX}auction ticket <quantité> <mise> <durée_min> [achat_immédiat]",
+                    "description": "Crée une enchère pour des tickets.",
+                },
+                {
+                    "command": f"{PREFIX}auction bid <id> <montant>",
+                    "description": "Fais une offre sur une enchère.",
+                    "aliases": ("mise", "parier"),
+                },
+                {
+                    "command": f"{PREFIX}auction mine",
+                    "description": "Affiche tes enchères en cours.",
+                    "aliases": ("mes",),
+                },
+                {
+                    "command": f"{PREFIX}auction cancel <id>",
+                    "description": "Annule une de tes enchères.",
+                },
+            ),
+        },
+        {
             "key": "leaderboards",
             "label": "📊 Classements",
             "description": "Accède aux différents classements économiques.",
@@ -415,6 +462,11 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 {
                     "command": f"{PREFIX}mastermind",
                     "description": "Solve the secret code to earn bonus PB 🪙.",
+                },
+                {
+                    "command": f"{PREFIX}winstrict",
+                    "description": "Show your Mastermind win streak and total wins.",
+                    "aliases": ("winstreak", "mmwinstreak"),
                 },
                 {
                     "command": f"{PREFIX}raffle",
@@ -545,6 +597,48 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 {
                     "command": f"{PREFIX}plaza",
                     "description": "Overview of all active booths.",
+                },
+            ),
+        },
+        {
+            "key": "auctions",
+            "label": "🔨 Auctions",
+            "description": "Sell or buy items through auctions.",
+            "commands": (
+                {
+                    "command": f"{PREFIX}auction",
+                    "description": "List active auctions.",
+                    "aliases": ("enchere", "encheres", "enchères"),
+                },
+                {
+                    "command": f"{PREFIX}auction pet <bid> <minutes> [buyout] <pet>",
+                    "description": "Create an auction for a pet.",
+                },
+                {
+                    "command": f"{PREFIX}auction potion <slug> <qty> <bid> <minutes> [buyout]",
+                    "description": "Create an auction for potions.",
+                },
+                {
+                    "command": f"{PREFIX}auction enchant <slug> <power> <bid> <minutes> [buyout]",
+                    "description": "Create an auction for an enchantment.",
+                },
+                {
+                    "command": f"{PREFIX}auction ticket <qty> <bid> <minutes> [buyout]",
+                    "description": "Create an auction for raffle tickets.",
+                },
+                {
+                    "command": f"{PREFIX}auction bid <id> <amount>",
+                    "description": "Place a bid on an auction.",
+                    "aliases": ("mise", "parier"),
+                },
+                {
+                    "command": f"{PREFIX}auction mine",
+                    "description": "Show your active auctions.",
+                    "aliases": ("mes",),
+                },
+                {
+                    "command": f"{PREFIX}auction cancel <id>",
+                    "description": "Cancel one of your auctions.",
                 },
             ),
         },

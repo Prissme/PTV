@@ -2316,7 +2316,11 @@ class Plaza(commands.Cog):
         if success and seller_id is not None:
             await self._refresh_active_stand_view(seller_id)
 
-    @commands.group(name="auction", invoke_without_command=True)
+    @commands.group(
+        name="auction",
+        aliases=("enchere", "encheres", "enchères", "auctions"),
+        invoke_without_command=True,
+    )
     async def auction_group(self, ctx: commands.Context) -> None:
         await self._open_auction_browser(ctx)
 
@@ -2445,7 +2449,7 @@ class Plaza(commands.Cog):
             return
         await self._send_auction_creation_embed(ctx, int(listing["id"]))
 
-    @auction_group.command(name="bid")
+    @auction_group.command(name="bid", aliases=("mise", "parier"))
     async def auction_bid(
         self, ctx: commands.Context, auction_id: int, amount: int
     ) -> None:

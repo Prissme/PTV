@@ -32,8 +32,8 @@ EGG_MASTERY = MasteryDefinition(
     slug=EGG_MASTERY_SLUG,
     display_name="Maîtrise des œufs",
     max_level=99,
-    base_xp=12,
-    growth_factor=1.26,
+    base_xp=18,
+    growth_factor=1.3,
     broadcast_levels=(10, 30, 50, 75, 90, 99),
 )
 
@@ -42,8 +42,8 @@ PET_MASTERY = MasteryDefinition(
     slug=PET_MASTERY_SLUG,
     display_name="Maîtrise des pets",
     max_level=99,
-    base_xp=16,
-    growth_factor=1.30,
+    base_xp=22,
+    growth_factor=1.33,
     broadcast_levels=(10, 30, 50, 75, 90, 99),
 )
 

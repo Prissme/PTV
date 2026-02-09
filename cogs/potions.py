@@ -81,6 +81,11 @@ class Potions(commands.Cog):
                 f"Ton XP de maîtrise est multiplié par {1 + definition.effect_value:g}"
                 f" pendant {_format_duration(duration_seconds)}."
             )
+        if definition.effect_type == "slots_luck":
+            return (
+                "Tes chances de gains au casino sont améliorées pendant "
+                f"{_format_duration(duration_seconds)}."
+            )
         return "Effet appliqué."  # Sécurité pour d'éventuels effets futurs
 
     async def _fetch_potion_state(
