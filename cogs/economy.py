@@ -395,10 +395,10 @@ MASTERMIND_CONFIG = MastermindConfig(colors=MASTERMIND_COLORS)
 MASTERMIND_HELPER = MastermindHelper(MASTERMIND_CONFIG)
 
 
-MASTERMIND_GUESS_XP = 6
-MASTERMIND_VICTORY_XP = 30
-MASTERMIND_FAILURE_XP = 15
-MASTERMIND_TIMEOUT_XP = 10
+MASTERMIND_GUESS_XP = 30
+MASTERMIND_VICTORY_XP = 150
+MASTERMIND_FAILURE_XP = 75
+MASTERMIND_TIMEOUT_XP = 50
 
 
 @dataclass(frozen=True)
@@ -2925,6 +2925,16 @@ class Economy(commands.Cog):
         await self.database.ensure_user(ctx.author.id)
         enchantments = await self.database.get_enchantment_powers(ctx.author.id)
         slots_power = int(enchantments.get("slots_luck", 0))
+        potion_bonus_power = 0
+        active_potion = await self.database.get_active_potion(ctx.author.id)
+        if active_potion is not None:
+            potion_definition, potion_expires_at = active_potion
+            if (
+                potion_definition.effect_type == "slots_luck"
+                and potion_expires_at > datetime.now(timezone.utc)
+            ):
+                potion_bonus_power = max(0, int(round(potion_definition.effect_value * 10)))
+        slots_power += potion_bonus_power
         balance = await self.database.fetch_balance(ctx.author.id)
         if balance < bet:
             await ctx.send(
@@ -3077,6 +3087,19 @@ class Economy(commands.Cog):
             await ctx.send(
                 embed=embeds.error_embed("Une erreur est survenue. Réessaie dans quelques instants.")
             )
+
+    @commands.command(name="winstrict", aliases=("winstreak", "mmwinstreak"))
+    async def mastermind_winstreak(self, ctx: commands.Context) -> None:
+        """Affiche la winstreak du Mastermind."""
+        streak, wins = await self.database.get_mastermind_winstreak(ctx.author.id)
+        streak_label = f"**{streak}** victoire{'s' if streak > 1 else ''} d'affilée"
+        wins_label = f"Total de wins : **{wins}**"
+        await ctx.send(
+            embed=embeds.info_embed(
+                f"{streak_label}\n{wins_label}",
+                title="Mastermind — Winstreak",
+            )
+        )
 
     @commands.cooldown(1, MILLIONAIRE_RACE_COOLDOWN, commands.BucketType.user)
     @commands.command(name="millionairerace", aliases=("millionaire", "race"))
