@@ -194,6 +194,11 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "aliases": ("winstreak", "mmwinstreak"),
                 },
                 {
+                    "command": f"{PREFIX}wslb",
+                    "description": "Affiche le classement des meilleures winstreaks Mastermind.",
+                    "aliases": ("winstreaklb", "mmwslb"),
+                },
+                {
                     "command": f"{PREFIX}raffle",
                     "description": "Gère tes tickets de tombola, mise-les et suis le prochain tirage.",
                 },
@@ -467,6 +472,11 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "command": f"{PREFIX}winstrict",
                     "description": "Show your Mastermind win streak and total wins.",
                     "aliases": ("winstreak", "mmwinstreak"),
+                },
+                {
+                    "command": f"{PREFIX}wslb",
+                    "description": "Show the leaderboard of best Mastermind win streaks.",
+                    "aliases": ("winstreaklb", "mmwslb"),
                 },
                 {
                     "command": f"{PREFIX}raffle",

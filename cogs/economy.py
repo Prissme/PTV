@@ -557,7 +557,7 @@ class MastermindSession:
         streak = 0
         streak_bonus_pct = 0
         try:
-            streak, _ = await self.database.update_mastermind_winstreak(
+            streak, _, _ = await self.database.update_mastermind_winstreak(
                 self.ctx.author.id,
                 won=True,
             )
@@ -3091,15 +3091,41 @@ class Economy(commands.Cog):
     @commands.command(name="winstrict", aliases=("winstreak", "mmwinstreak"))
     async def mastermind_winstreak(self, ctx: commands.Context) -> None:
         """Affiche la winstreak du Mastermind."""
-        streak, wins = await self.database.get_mastermind_winstreak(ctx.author.id)
+        streak, best_streak, wins = await self.database.get_mastermind_winstreak(ctx.author.id)
         streak_label = f"**{streak}** victoire{'s' if streak > 1 else ''} d'affilée"
+        best_label = f"Meilleure série : **{best_streak}**"
         wins_label = f"Total de wins : **{wins}**"
         await ctx.send(
             embed=embeds.info_embed(
-                f"{streak_label}\n{wins_label}",
+                f"{streak_label}\n{best_label}\n{wins_label}",
                 title="Mastermind — Winstreak",
             )
         )
+
+    @commands.command(name="wslb", aliases=("winstreaklb", "mastermindwslb", "mmwslb"))
+    async def mastermind_winstreak_leaderboard(self, ctx: commands.Context) -> None:
+        """Affiche le classement des meilleures winstreaks Mastermind."""
+        rows = await self.database.get_mastermind_winstreak_leaderboard(10)
+        if not rows:
+            await ctx.send(
+                embed=embeds.info_embed(
+                    "Aucune meilleure série Mastermind enregistrée pour le moment.",
+                    title="Mastermind — Classement des streaks",
+                )
+            )
+            return
+
+        embed = embeds.leaderboard_embed(
+            title="Top streaks Mastermind",
+            entries=[
+                (int(row["user_id"]), int(row["mastermind_best_winstreak"]))
+                for row in rows
+            ],
+            bot=self.bot,
+            symbol="wins",
+        )
+        embed.set_footer(text="Classement trié par meilleure série, puis par total de wins.")
+        await ctx.send(embed=embed)
 
     @commands.cooldown(1, MILLIONAIRE_RACE_COOLDOWN, commands.BucketType.user)
     @commands.command(name="millionairerace", aliases=("millionaire", "race"))
