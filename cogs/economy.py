@@ -1244,7 +1244,7 @@ class MillionaireRaceView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Continuer", emoji="🏃", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Continuer", style=discord.ButtonStyle.success)
     async def continue_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -1258,7 +1258,7 @@ class MillionaireRaceView(discord.ui.View):
             self._release()
             self.stop()
 
-    @discord.ui.button(label="Arrêter", emoji="🛑", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Arrêter", style=discord.ButtonStyle.danger)
     async def stop_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -1824,7 +1824,7 @@ class InventoryView(discord.ui.View):
         embed = self.build_embed()
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Précédent", style=discord.ButtonStyle.secondary, row=1)
     async def previous_page(
         self, interaction: discord.Interaction, _: discord.ui.Button
     ) -> None:
@@ -1835,7 +1835,7 @@ class InventoryView(discord.ui.View):
         embed = self.build_embed()
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Suivant", style=discord.ButtonStyle.secondary, row=1)
     async def next_page(
         self, interaction: discord.Interaction, _: discord.ui.Button
     ) -> None:

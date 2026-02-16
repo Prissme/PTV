@@ -166,25 +166,25 @@ def _compute_egg_mastery_perks(level: int) -> EggMasteryPerks:
     luck_bonus = 0.0
 
     if level >= 5:
-        double_chance = 0.05
+        double_chance = 0.03
     if level >= 10:
-        gold_chance = 0.03
+        gold_chance = 0.02
     if level >= 20:
-        rainbow_chance = 0.01
+        rainbow_chance = 0.005
         animation_speed = 2.0
     if level >= 30:
-        double_chance = 0.15
-        triple_chance = 0.01
+        double_chance = 0.10
+        triple_chance = 0.005
     if level >= 40:
-        double_chance = 0.20
+        double_chance = 0.12
+        triple_chance = 0.01
+        gold_chance = 0.03
+        rainbow_chance = 0.01
+    if level >= 50:
+        double_chance = 0.18
         triple_chance = 0.03
         gold_chance = 0.05
-        rainbow_chance = 0.02
-    if level >= 50:
-        double_chance = 0.35
-        triple_chance = 0.10
-        gold_chance = 0.10
-        rainbow_chance = 0.04
+        rainbow_chance = 0.015
     if level >= 64:
         luck_bonus = 1.0
 
@@ -264,7 +264,7 @@ GEMSHOP_ROLE_OFFERS: Final[tuple[GemshopRoleOffer, ...]] = (
         role_id=1388837886924685343,
         description="Rôle Bourgeois",
         price=rebase_gems_price(10_000),
-        stock=9_999,
+        stock=20,
         slug="bourgeois",
     ),
 )
@@ -278,27 +278,27 @@ class MasteryTier:
 
 
 _EGG_MASTERY_TIERS: tuple[MasteryTier, ...] = (
-    MasteryTier(5, "Ouverture double", "5% de chance supplémentaire d'ouvrir un œuf bonus."),
-    MasteryTier(10, "Reflets dorés", "+3% de chance qu'un œuf devienne gold."),
+    MasteryTier(5, "Ouverture double", "3% de chance supplémentaire d'ouvrir un œuf bonus."),
+    MasteryTier(10, "Reflets dorés", "+2% de chance qu'un œuf devienne gold."),
     MasteryTier(
         20,
         "Arc-en-ciel express",
-        "Animations deux fois plus rapides et +1% de chance d'œuf rainbow.",
+        "Animations deux fois plus rapides et +0.5% de chance d'œuf rainbow.",
     ),
     MasteryTier(
         30,
         "Session frénétique",
-        "15% de doubles ouvertures et 1% de triples coups d'œil.",
+        "10% de doubles ouvertures et 0.5% de triples coups d'œil.",
     ),
     MasteryTier(
         40,
         "Run légendaire",
-        "20% de doubles, 3% de triples, +5% or et +2% rainbow.",
+        "12% de doubles, 1% de triples, +3% or et +1% rainbow.",
     ),
     MasteryTier(
         50,
         "Jackpot permanent",
-        "35% de doubles, 10% de triples, +10% or et +4% rainbow.",
+        "18% de doubles, 3% de triples, +5% or et +1.5% rainbow.",
     ),
     MasteryTier(64, "Instinct cosmique", "+1.0 de luck constant sur tous les œufs."),
 )
@@ -589,7 +589,7 @@ class PetInventoryView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Précédent", style=discord.ButtonStyle.secondary)
     async def previous_page(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -598,7 +598,7 @@ class PetInventoryView(discord.ui.View):
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Suivant", style=discord.ButtonStyle.secondary)
     async def next_page(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -695,7 +695,7 @@ class ZoneOverviewView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Précédent", style=discord.ButtonStyle.secondary)
     async def previous_page(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -704,7 +704,7 @@ class ZoneOverviewView(discord.ui.View):
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.current_embed(), view=self)
 
-    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Suivant", style=discord.ButtonStyle.secondary)
     async def next_page(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -805,7 +805,7 @@ class HatchReplayView(discord.ui.View):
         await interaction.response.defer()
         await self.pets_cog._openbox_impl(self.ctx, self.egg_slug)
 
-    @discord.ui.button(label="AUTO", style=discord.ButtonStyle.primary, emoji="🤖")
+    @discord.ui.button(label="AUTO", style=discord.ButtonStyle.primary)
     async def auto_open(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -7110,7 +7110,7 @@ class TradePetSelectView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Précédent", style=discord.ButtonStyle.secondary)
     async def previous_page(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -7120,7 +7120,7 @@ class TradePetSelectView(discord.ui.View):
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Suivant", style=discord.ButtonStyle.secondary)
     async def next_page(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
