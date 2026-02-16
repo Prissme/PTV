@@ -156,7 +156,7 @@ class AdminPanelView(discord.ui.View):
         super().__init__(timeout=600)
         self.cog = cog
 
-    @discord.ui.button(label="🎁 Donner un pet", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Donner un pet", style=discord.ButtonStyle.success)
     async def open_grant_modal(
         self, interaction: discord.Interaction, _: discord.ui.Button
     ) -> None:

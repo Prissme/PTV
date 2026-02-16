@@ -1946,6 +1946,9 @@ class Database:
         if power < 1 or power > 10:
             raise ValueError("Le niveau d'enchantement doit être compris entre 1 et 10")
 
+        if connection is None:
+            await self.ensure_user(user_id)
+
         executor = connection or self.pool
         await executor.execute(
             """

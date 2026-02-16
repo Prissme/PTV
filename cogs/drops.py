@@ -113,6 +113,8 @@ class DropClaimView(discord.ui.View):
         await self.message.edit(view=self)
 
     async def _apply_reward(self, user: discord.abc.User) -> None:
+        await self.database.ensure_user(user.id)
+
         if self.reward.kind == "pet":
             pet = self.reward.data["pet"]
             pet_id = await self.database.get_pet_id_by_name(pet.name)
@@ -160,7 +162,7 @@ class DropClaimView(discord.ui.View):
 
         raise DatabaseError("Type de drop inconnu")
 
-    @discord.ui.button(label="Claim le drop", style=discord.ButtonStyle.success, emoji="🎁")
+    @discord.ui.button(label="Claim le drop", style=discord.ButtonStyle.success)
     async def claim(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if self.claimed_by is not None:
             await interaction.response.send_message(
