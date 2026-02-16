@@ -825,6 +825,7 @@ class Database:
                     last_daily TIMESTAMPTZ,
                     daily_streak INTEGER NOT NULL DEFAULT 0 CHECK (daily_streak >= 0),
                     mastermind_winstreak INTEGER NOT NULL DEFAULT 0 CHECK (mastermind_winstreak >= 0),
+                    mastermind_best_winstreak INTEGER NOT NULL DEFAULT 0 CHECK (mastermind_best_winstreak >= 0),
                     mastermind_wins INTEGER NOT NULL DEFAULT 0 CHECK (mastermind_wins >= 0),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     pet_last_claim TIMESTAMPTZ
@@ -851,6 +852,10 @@ class Database:
             await connection.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS mastermind_winstreak INTEGER NOT NULL DEFAULT 0"
                 " CHECK (mastermind_winstreak >= 0)"
+            )
+            await connection.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS mastermind_best_winstreak INTEGER NOT NULL DEFAULT 0"
+                " CHECK (mastermind_best_winstreak >= 0)"
             )
             await connection.execute(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS mastermind_wins INTEGER NOT NULL DEFAULT 0"
@@ -1479,27 +1484,31 @@ class Database:
             return 0
         return int(row.get("mastermind_wins") or 0)
 
-    async def get_mastermind_winstreak(self, user_id: int) -> tuple[int, int]:
+    async def get_mastermind_winstreak(self, user_id: int) -> tuple[int, int, int]:
         await self.ensure_user(user_id)
         row = await self.pool.fetchrow(
-            "SELECT mastermind_winstreak, mastermind_wins FROM users WHERE user_id = $1",
+            (
+                "SELECT mastermind_winstreak, mastermind_best_winstreak, mastermind_wins "
+                "FROM users WHERE user_id = $1"
+            ),
             user_id,
         )
         if row is None:
-            return 0, 0
+            return 0, 0, 0
         return (
             int(row.get("mastermind_winstreak") or 0),
+            int(row.get("mastermind_best_winstreak") or 0),
             int(row.get("mastermind_wins") or 0),
         )
 
     async def update_mastermind_winstreak(
         self, user_id: int, *, won: bool
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, int]:
         await self.ensure_user(user_id)
         async with self.transaction() as connection:
             row = await connection.fetchrow(
                 """
-                SELECT mastermind_winstreak, mastermind_wins
+                SELECT mastermind_winstreak, mastermind_best_winstreak, mastermind_wins
                 FROM users
                 WHERE user_id = $1
                 FOR UPDATE
@@ -1507,25 +1516,47 @@ class Database:
                 user_id,
             )
             current_streak = int(row.get("mastermind_winstreak") or 0) if row else 0
+            current_best_streak = int(row.get("mastermind_best_winstreak") or 0) if row else 0
             current_wins = int(row.get("mastermind_wins") or 0) if row else 0
             if won:
                 new_streak = current_streak + 1
                 new_wins = current_wins + 1
+                new_best_streak = max(current_best_streak, new_streak)
             else:
                 new_streak = 0
                 new_wins = current_wins
+                new_best_streak = current_best_streak
             await connection.execute(
                 """
                 UPDATE users
                 SET mastermind_winstreak = $2,
-                    mastermind_wins = $3
+                    mastermind_best_winstreak = $3,
+                    mastermind_wins = $4
                 WHERE user_id = $1
                 """,
                 user_id,
                 new_streak,
+                new_best_streak,
                 new_wins,
             )
-        return new_streak, new_wins
+        return new_streak, new_best_streak, new_wins
+
+    async def get_mastermind_winstreak_leaderboard(self, limit: int) -> Sequence[asyncpg.Record]:
+        clamped_limit = max(0, int(limit))
+        cache_key = ("leaderboard_mastermind_winstreak", clamped_limit)
+        cached = self._leaderboard_cache.get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+        query = """
+            SELECT user_id, mastermind_best_winstreak, mastermind_winstreak, mastermind_wins
+            FROM users
+            WHERE mastermind_best_winstreak > 0
+            ORDER BY mastermind_best_winstreak DESC, mastermind_wins DESC, mastermind_winstreak DESC, user_id ASC
+            LIMIT $1
+        """
+        rows = await self._fetch(query, clamped_limit)
+        self._leaderboard_cache.set(cache_key, rows)
+        return rows
 
     async def get_transaction_count(
         self, user_id: int, *, transaction_type: str
