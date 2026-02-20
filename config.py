@@ -432,8 +432,11 @@ DEBUG_CACHE = _get_balance_bool("debug_cache", False)
 # Paramètres Clans
 # ---------------------------------------------------------------------------
 
-CLAN_CREATION_COST: Final[int] = 25_000
-CLAN_BASE_CAPACITY: Final[int] = 3
+CLAN_CREATION_COST: Final[int] = 100_000
+CLAN_JOIN_COST: Final[int] = 100_000
+CLAN_BASE_CAPACITY: Final[int] = 5
+CLAN_MAX_MEMBERS: Final[int] = 5
+CLAN_WAR_MIN_MEMBERS: Final[int] = 3
 CLAN_CAPACITY_PER_LEVEL: Final[int] = 2
 CLAN_CAPACITY_UPGRADE_COSTS: Final[Tuple[int, ...]] = (
     15_000,
@@ -442,7 +445,9 @@ CLAN_CAPACITY_UPGRADE_COSTS: Final[Tuple[int, ...]] = (
     150_000,
     300_000,
 )
-CLAN_BOOST_INCREMENT: Final[float] = 0.03
+CLAN_LEVEL_BASE_COST: Final[int] = 100_000
+CLAN_LEVEL_COST_GROWTH: Final[float] = 1.2
+CLAN_BOOST_INCREMENT: Final[float] = 0.0005
 
 
 def _generate_clan_boost_costs(
