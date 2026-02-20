@@ -21,6 +21,9 @@ from config import (
     BASE_PET_SLOTS,
     PET_SLOT_MAX_CAPACITY,
     CLAN_BASE_CAPACITY,
+    CLAN_MAX_MEMBERS,
+    CLAN_LEVEL_BASE_COST,
+    CLAN_LEVEL_COST_GROWTH,
     CLAN_CAPACITY_PER_LEVEL,
     CLAN_CAPACITY_UPGRADE_COSTS,
     CLAN_BOOST_COSTS,
@@ -1242,6 +1245,8 @@ class Database:
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     capacity_level INTEGER NOT NULL DEFAULT 0 CHECK (capacity_level >= 0),
                     boost_level INTEGER NOT NULL DEFAULT 0 CHECK (boost_level >= 0),
+                    clan_level INTEGER NOT NULL DEFAULT 1 CHECK (clan_level >= 1),
+                    total_investment BIGINT NOT NULL DEFAULT 0 CHECK (total_investment >= 0),
                     pb_boost_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1 CHECK (pb_boost_multiplier >= 1),
                     banner_emoji TEXT NOT NULL DEFAULT '⚔️'
                 )
@@ -1260,6 +1265,18 @@ class Database:
                 """
                 ALTER TABLE clans ADD COLUMN IF NOT EXISTS boost_level INTEGER NOT NULL DEFAULT 0
                     CHECK (boost_level >= 0)
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clans ADD COLUMN IF NOT EXISTS clan_level INTEGER NOT NULL DEFAULT 1
+                    CHECK (clan_level >= 1)
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clans ADD COLUMN IF NOT EXISTS total_investment BIGINT NOT NULL DEFAULT 0
+                    CHECK (total_investment >= 0)
                 """
             )
             await connection.execute(
@@ -3178,7 +3195,13 @@ class Database:
     # ------------------------------------------------------------------
     @staticmethod
     def _clan_capacity_from_level(level: int) -> int:
-        return CLAN_BASE_CAPACITY + max(0, level) * CLAN_CAPACITY_PER_LEVEL
+        _ = level
+        return CLAN_MAX_MEMBERS
+
+    @staticmethod
+    def get_clan_next_level_cost(current_level: int) -> int:
+        safe_level = max(1, int(current_level))
+        return int(round(CLAN_LEVEL_BASE_COST * (CLAN_LEVEL_COST_GROWTH ** (safe_level - 1))))
 
     async def get_user_clan(self, user_id: int) -> Optional[asyncpg.Record]:
         row = await self.pool.fetchrow(
@@ -3231,6 +3254,17 @@ class Database:
             LIMIT $2
             """,
             clan_id,
+            max(1, limit),
+        )
+
+    async def get_clan_global_leaderboard(self, limit: int = 10) -> Sequence[asyncpg.Record]:
+        return await self.pool.fetch(
+            """
+            SELECT clan_id, name, total_investment, clan_level
+            FROM clans
+            ORDER BY total_investment DESC, clan_level DESC, created_at ASC
+            LIMIT $1
+            """,
             max(1, limit),
         )
 
@@ -3300,7 +3334,7 @@ class Database:
             capacity_level = int(clan_row.get("capacity_level", 0) or 0)
             capacity = self._clan_capacity_from_level(capacity_level)
             if int(member_count or 0) >= capacity:
-                raise DatabaseError("Ce clan est déjà complet. Achète plus de slots !")
+                raise DatabaseError("Ce clan est déjà complet (5 membres max).")
 
             inserted = await connection.fetchrow(
                 """
@@ -3315,6 +3349,22 @@ class Database:
                 raise DatabaseError("Impossible de rejoindre le clan pour le moment.")
 
         return inserted
+
+    async def remove_member_from_clan(self, clan_id: int, user_id: int) -> bool:
+        async with self.transaction() as connection:
+            membership = await connection.fetchrow(
+                "SELECT role FROM clan_members WHERE clan_id = $1 AND user_id = $2 FOR UPDATE",
+                clan_id,
+                user_id,
+            )
+            if membership is None or str(membership.get("role")) == "leader":
+                return False
+            await connection.execute(
+                "DELETE FROM clan_members WHERE clan_id = $1 AND user_id = $2",
+                clan_id,
+                user_id,
+            )
+            return True
 
     async def leave_clan(self, user_id: int) -> bool:
         async with self.transaction() as connection:
@@ -3404,34 +3454,31 @@ class Database:
     async def upgrade_clan_boost(self, clan_id: int) -> asyncpg.Record:
         async with self.transaction() as connection:
             row = await connection.fetchrow(
-                "SELECT boost_level FROM clans WHERE clan_id = $1 FOR UPDATE",
+                "SELECT clan_level FROM clans WHERE clan_id = $1 FOR UPDATE",
                 clan_id,
             )
             if row is None:
                 raise DatabaseError("Clan introuvable.")
 
-            current_level = int(row["boost_level"] or 0)
-            if current_level >= len(CLAN_BOOST_COSTS):
-                raise DatabaseError("Le boost PB du clan est déjà maxé.")
-
+            current_level = int(row.get("clan_level") or 1)
+            cost = self.get_clan_next_level_cost(current_level)
             new_level = current_level + 1
-            multiplier = 1 + new_level * CLAN_BOOST_INCREMENT
-            shiny_multiplier = 1 + new_level * CLAN_SHINY_LUCK_INCREMENT
+            multiplier = 1 + (new_level - 1) * CLAN_BOOST_INCREMENT
 
             updated = await connection.fetchrow(
                 """
                 UPDATE clans
-                SET boost_level = $2, pb_boost_multiplier = $3, shiny_luck_multiplier = $4
+                SET clan_level = $2, boost_level = GREATEST(boost_level, $2 - 1), pb_boost_multiplier = $3, total_investment = total_investment + $4
                 WHERE clan_id = $1
-                RETURNING *
+                RETURNING *, $4::BIGINT AS level_cost
                 """,
                 clan_id,
                 new_level,
                 multiplier,
-                shiny_multiplier,
+                cost,
             )
             if updated is None:
-                raise DatabaseError("Impossible d'améliorer le boost maintenant.")
+                raise DatabaseError("Impossible d'améliorer le clan maintenant.")
 
         return updated
 
