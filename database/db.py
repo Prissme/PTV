@@ -3230,7 +3230,7 @@ class Database:
             SELECT clan_id, user_id, role, contribution, joined_at
             FROM clan_members
             WHERE clan_id = $1
-            ORDER BY (role = 'leader') DESC, contribution DESC, joined_at
+            ORDER BY contribution DESC, joined_at
             """,
             clan_id,
         )
