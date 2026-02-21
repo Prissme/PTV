@@ -20,6 +20,20 @@ CLAN_NAME_MIN_LENGTH = 3
 CLAN_NAME_MAX_LENGTH = 24
 
 
+def _is_clan_war_active(now: datetime) -> bool:
+    """Retourne True si l'horodatage UTC est dans la fenêtre de guerre du week-end."""
+
+    normalized = now if now.tzinfo is None else now.astimezone(tz=None).replace(tzinfo=None)
+    weekday = normalized.weekday()
+    minutes = normalized.hour * 60 + normalized.minute
+
+    if weekday == 5:  # Samedi
+        return minutes >= (10 * 60)
+    if weekday == 6:  # Dimanche
+        return minutes < (20 * 60)
+    return False
+
+
 def _rank_bonus_percent(rank: int) -> float:
     if rank == 1:
         return 0.10
@@ -173,7 +187,6 @@ class Clans(commands.Cog):
         members = await self.database.get_clan_members(clan_id)
         can_war = len(members) >= CLAN_WAR_MIN_MEMBERS
         now = datetime.utcnow()
-        weekend_active = now.weekday() in {5, 6}
         lines = [
             "Ouvrir 5 œufs → 1 point",
             "Faire 2 Master Mind → 1 point",
@@ -181,9 +194,11 @@ class Clans(commands.Cog):
             "Obtenir un Titanic → 1000 points",
             "Chaque validation augmente difficulté/récompense de 20%.",
         ]
+        weekend_active = _is_clan_war_active(now)
         status = "active" if weekend_active else "inactive"
         elig = "oui" if can_war else "non"
         embed = embeds.info_embed("\n".join(lines), title="⚔️ Quêtes de Guerre des Clans")
+        embed.add_field(name="Fenêtre", value="Samedi 10h → Dimanche 20h (UTC)", inline=False)
         embed.add_field(name="Statut week-end", value=status)
         embed.add_field(name="Clan éligible", value=elig)
         await ctx.send(embed=embed)
