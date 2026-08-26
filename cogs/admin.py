@@ -536,14 +536,110 @@ class Admin(commands.Cog):
                 )
             )
 
-    async def _log_reset_operation(self, log_entry: dict[str, Any]) -> None:
+    @commands.command(name="resetserver", aliases=("resetprogression", "resetall"))
+    @commands.is_owner()
+    async def reset_server(self, ctx: commands.Context) -> None:
+        """Admin: Réinitialise TOUTE la progression de TOUS les utilisateurs.
+
+        Supprime soldes, gemmes, pets, grades, clans, potions, enchantements,
+        tombola, historique de transactions, etc. Action IRRÉVERSIBLE.
+        """
+
+        warning_text = (
+            "🚨 **DANGER — RESET COMPLET DU SERVEUR** 🚨\n\n"
+            "Cette action va supprimer **DÉFINITIVEMENT** pour **TOUS** les "
+            "utilisateurs :\n"
+            f"• Soldes et {Emojis.GEM}\n"
+            "• Tous les pets possédés\n"
+            "• Grades, zones débloquées et masteries\n"
+            "• Clans et adhésions\n"
+            "• Potions, enchantements équipés\n"
+            "• Listings marché/plaza, enchères en cours\n"
+            "• Tickets et entrées de tombola\n"
+            "• Historique complet des transactions\n"
+            "• L'état du King of the Hill\n\n"
+            "**Il n'existe aucune sauvegarde automatique. Cette opération est "
+            "irréversible.**\n\n"
+            f"Pour confirmer, tape exactement `CONFIRMER {ctx.guild.id if ctx.guild else 0}` "
+            "dans les 30 prochaines secondes."
+        )
+        await ctx.send(warning_text)
+
+        expected = f"CONFIRMER {ctx.guild.id if ctx.guild else 0}"
+
+        def check(message: discord.Message) -> bool:
+            return (
+                message.author.id == ctx.author.id
+                and message.channel.id == ctx.channel.id
+                and message.content.strip() == expected
+            )
+
+        try:
+            await self.bot.wait_for("message", check=check, timeout=30.0)
+        except asyncio.TimeoutError:
+            await ctx.send(embed=embeds.warning_embed("⏱️ Reset annulé (timeout ou texte incorrect)."))
+            return
+
+        confirm_msg = await ctx.send(
+            "Dernière confirmation : réagis avec ✅ pour lancer le reset (15s)."
+        )
+        await confirm_msg.add_reaction("✅")
+
+        def reaction_check(reaction: discord.Reaction, user: discord.User) -> bool:
+            return (
+                user.id == ctx.author.id
+                and reaction.message.id == confirm_msg.id
+                and str(reaction.emoji) == "✅"
+            )
+
+        try:
+            await self.bot.wait_for("reaction_add", check=reaction_check, timeout=15.0)
+        except asyncio.TimeoutError:
+            await ctx.send(embed=embeds.warning_embed("⏱️ Reset annulé (timeout)."))
+            return
+
+        status_msg = await ctx.send(embed=embeds.info_embed("⏳ Reset complet en cours..."))
+
+        try:
+            result = await self.database.reset_all_progress()
+
+            log_entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "executor": str(ctx.author),
+                "executor_id": ctx.author.id,
+                "guild_id": ctx.guild.id if ctx.guild else None,
+                "users_removed": result["users_removed"],
+            }
+            await self._log_reset_operation(log_entry, prefix="server_reset")
+
+            await status_msg.edit(
+                content=None,
+                embed=embeds.success_embed(
+                    f"**{result['users_removed']}** utilisateur(s) réinitialisé(s). "
+                    "Toute la progression du serveur a été effacée.",
+                    title="✅ Reset serveur effectué",
+                ),
+            )
+            logger.warning(
+                "Admin reset_server exécuté",
+                extra={"admin_id": ctx.author.id, "users_removed": result["users_removed"]},
+            )
+        except Exception as exc:
+            logger.exception("Erreur lors du reset complet du serveur")
+            await status_msg.edit(
+                embed=embeds.error_embed(f"❌ Erreur : {exc}\n\nVoir les logs pour détails.")
+            )
+
+    async def _log_reset_operation(
+        self, log_entry: dict[str, Any], *, prefix: str = "rich_reset"
+    ) -> None:
         """Sauvegarde l'opération dans un fichier JSON."""
 
         log_dir = Path("admin_logs")
         log_dir.mkdir(exist_ok=True)
 
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        log_file = log_dir / f"rich_reset_{timestamp}.json"
+        log_file = log_dir / f"{prefix}_{timestamp}.json"
         log_file.write_text(
             json.dumps(log_entry, indent=2, ensure_ascii=False),
             encoding="utf-8",
