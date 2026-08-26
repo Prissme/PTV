@@ -1623,17 +1623,17 @@ HUGE_PET_NAMES: Final[frozenset[str]] = frozenset(
     pet.name for pet in PET_DEFINITIONS if getattr(pet, "is_huge", False)
 )
 
-_ROSA_EMOJI: Final[str] = os.getenv("PET_EMOJI_ROSA", "<:Rosa:1430584871406928075>")
+_ROSA_EMOJI: Final[str] = os.getenv("PET_EMOJI_ROSA", "<:Rosa:1542051436030984192>")
 
 
 PET_EMOJIS: Final[dict[str, str]] = {
-    "Shelly": os.getenv("PET_EMOJI_SHELLY", "<:Shelly:1430584949215596654>"),
-    "Colt": os.getenv("PET_EMOJI_COLT", "<:Colt:1430585480394838196>"),
-    "Barley": os.getenv("PET_EMOJI_BARLEY", "<:Barley:1430586754041381036>"),
-    "Poco": os.getenv("PET_EMOJI_POCO", "<:Poco:1430586108336672878>"),
+    "Shelly": os.getenv("PET_EMOJI_SHELLY", "<:Shelly:1542049349511413800>"),
+    "Colt": os.getenv("PET_EMOJI_COLT", "<:Colt:1542051440783138936>"),
+    "Barley": os.getenv("PET_EMOJI_BARLEY", "<:Barley:1542051439591825508>"),
+    "Poco": os.getenv("PET_EMOJI_POCO", "<:Poco:1542051438421737563>"),
     "Rosa": _ROSA_EMOJI,
     "Mina": os.getenv("PET_EMOJI_MINA", "<:Mina:1437826273673089238>"),
-    HUGE_PET_NAME: os.getenv("PET_EMOJI_HUGE_SHELLY", "<:HugeShelly:1430587331819212831>"),
+    HUGE_PET_NAME: os.getenv("PET_EMOJI_HUGE_SHELLY", "<:HugeShelly:1542051433367732305>"),
     "Angelo": os.getenv("PET_EMOJI_ANGELO", "<:Angelo:1430873772583289054>"),
     "Lily": os.getenv("PET_EMOJI_LILY", "<:Lily:1430874351309422674>"),
     "Cordelius": os.getenv("PET_EMOJI_CORDELIUS", "<:Cordelius:1430874643572719728>"),
