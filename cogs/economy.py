@@ -116,7 +116,21 @@ SLOT_SPECIAL_COMBOS: dict[tuple[str, ...], tuple[int, str]] = {
 MASTERMIND_HUGE_MIN_CHANCE = 0.0055
 MASTERMIND_HUGE_MAX_CHANCE = 0.022
 # FIX: Allow high-grade players to bypass Mastermind cooldown restrictions.
-MASTERMIND_COOLDOWN_GRADE_THRESHOLD = 10
+MASTERMIND_COOLDOWN_GRADE_THRESHOLD = 10  # conservé pour compat, plus utilisé en bypass binaire
+# FIX: réduction progressive du cooldown Mastermind par grade au lieu d'un bypass total à un seuil fixe.
+MASTERMIND_COOLDOWN_MIN_SECONDS = 20
+MASTERMIND_COOLDOWN_REDUCTION_PER_GRADE = 12
+
+
+def _mastermind_cooldown_for_grade(grade_level: int, base_cooldown: int) -> int:
+    """Calcule le cooldown Mastermind effectif : -12s par grade, plancher à 20s."""
+
+    safe_grade = max(0, int(grade_level))
+    reduction = min(
+        safe_grade * MASTERMIND_COOLDOWN_REDUCTION_PER_GRADE,
+        max(0, base_cooldown - MASTERMIND_COOLDOWN_MIN_SECONDS),
+    )
+    return max(MASTERMIND_COOLDOWN_MIN_SECONDS, base_cooldown - reduction)
 
 POTION_DROP_RATES: dict[str, float] = {
     "slots": 0.05,
@@ -1863,10 +1877,9 @@ class Economy(commands.Cog):
         )
         self._message_reward_lock_guard = asyncio.Lock()
         self._inventory_cache = TTLCache[InventorySnapshot](CACHE_TTL_INVENTORY)
-        # FIX: Manage Mastermind cooldown manually to support grade-based bypass.
-        self._mastermind_cooldown = commands.CooldownMapping.from_cooldown(
-            1, MASTERMIND_CONFIG.cooldown, commands.BucketType.user
-        )
+        # FIX: cooldown Mastermind géré manuellement pour permettre une réduction
+        # progressive par grade (au lieu d'un bypass binaire au grade 10).
+        self._mastermind_cooldown_expiry: dict[int, float] = {}
         self._mastermind_cooldown_lock = asyncio.Lock()
         self._raffle_task: asyncio.Task[None] | None = None
         self._raffle_interval = TOMBOLA_DRAW_INTERVAL
@@ -1922,6 +1935,15 @@ class Economy(commands.Cog):
         while True:
             await asyncio.sleep(300)
             self.message_cooldown.cleanup()
+            now = time.monotonic()
+            async with self._mastermind_cooldown_lock:
+                expired = [
+                    user_id
+                    for user_id, expiry in self._mastermind_cooldown_expiry.items()
+                    if expiry <= now
+                ]
+                for user_id in expired:
+                    self._mastermind_cooldown_expiry.pop(user_id, None)
 
     def get_next_raffle_datetime(self) -> datetime | None:
         return self._next_raffle_draw
@@ -3017,18 +3039,19 @@ class Economy(commands.Cog):
             )
             return
 
-        bypass_cooldown = grade_level >= MASTERMIND_COOLDOWN_GRADE_THRESHOLD
-        if not bypass_cooldown:
-            async with self._mastermind_cooldown_lock:
-                bucket = self._mastermind_cooldown.get_bucket(ctx.message)
-                current = time.monotonic()
-                retry_after = bucket.get_retry_after(current)
-                if retry_after:
-                    await ctx.send(
-                        embed=embeds.cooldown_embed(f"{PREFIX}mastermind", retry_after)
-                    )
-                    return
-                bucket.update_rate_limit(current)
+        effective_cooldown = _mastermind_cooldown_for_grade(
+            grade_level, MASTERMIND_CONFIG.cooldown
+        )
+        async with self._mastermind_cooldown_lock:
+            current = time.monotonic()
+            expires_at = self._mastermind_cooldown_expiry.get(ctx.author.id, 0.0)
+            retry_after = expires_at - current
+            if retry_after > 0:
+                await ctx.send(
+                    embed=embeds.cooldown_embed(f"{PREFIX}mastermind", retry_after)
+                )
+                return
+            self._mastermind_cooldown_expiry[ctx.author.id] = current + effective_cooldown
 
         await self.database.ensure_user(ctx.author.id)
         progress = await self.database.get_mastery_progress(
