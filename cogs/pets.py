@@ -5018,11 +5018,13 @@ class Pets(commands.Cog):
     async def daycare(self, ctx: commands.Context, *, action: str | None = None) -> None:
         await self.database.ensure_user(ctx.author.id)
 
-        unlocked = await self.database.has_unlocked_zone(ctx.author.id, CELESTE_ZONE_SLUG)
+        # FIX: la Citadelle Céleste a été retirée du jeu (grade requis inatteignable) ;
+        # la garderie est désormais débloquée via la zone Mexico (fin de contenu actuelle).
+        unlocked = await self.database.has_unlocked_zone(ctx.author.id, MEXICO_ZONE_SLUG)
         if not unlocked:
             await ctx.send(
                 embed=embeds.error_embed(
-                    "Tu dois débloquer la Citadelle Céleste pour accéder à la garderie."
+                    "Tu dois débloquer Mexico pour accéder à la garderie."
                 )
             )
             return
@@ -6518,6 +6520,9 @@ class Pets(commands.Cog):
 
         await ctx.send(embed=embed)
 
+    # FIX: cooldown anti-spam ; le revenu passif continue de s'accumuler entre
+    # deux claims donc ceci ne pénalise pas les gains, ça protège juste l'API Discord.
+    @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.command(name="claim")
     async def claim(self, ctx: commands.Context) -> None:
         lock = self._claim_locks.get(ctx.author.id)
