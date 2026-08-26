@@ -6903,6 +6903,32 @@ class Database:
             "users": users_details,
         }
 
+    async def reset_all_progress(self) -> dict[str, int]:
+        """Réinitialise TOUTE la progression du serveur.
+
+        Supprime la ligne de chaque utilisateur dans `users` : grâce aux
+        contraintes `ON DELETE CASCADE`, cela vide en cascade toutes les
+        tables liées à la progression individuelle (grades, zones, pets
+        possédés, historique d'ouvertures, masteries, préférences, listings
+        de marché/plaza, clans, membres de clan, activité, potions,
+        enchantements, tickets/entrées de tombola, transactions...).
+
+        Les tables de catalogue globales (`pets`, `pet_market_values`,
+        `pet_trade_history`, `gemshop_roles`, `config_flags`) ne sont pas
+        affectées : elles décrivent le jeu lui-même, pas la progression
+        d'un joueur. Le KOTH (`koth_states`) est vidé séparément car il
+        référence un `king_user_id` sans contrainte de clé étrangère.
+
+        Retourne un résumé (nombre d'utilisateurs supprimés) pour le log.
+        """
+
+        async with self.transaction() as connection:
+            user_count = await connection.fetchval("SELECT COUNT(*) FROM users")
+            await connection.execute("TRUNCATE TABLE users CASCADE")
+            await connection.execute("DELETE FROM koth_states")
+
+        return {"users_removed": int(user_count or 0)}
+
     async def get_config_flag(self, flag_name: str) -> bool:
         """Récupère un flag de configuration booléen."""
 
