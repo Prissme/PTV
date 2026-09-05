@@ -182,11 +182,17 @@ def info_embed(message: str, *, title: str = "Information") -> discord.Embed:
 
 
 def balance_embed(
-    member: discord.Member, *, balance: int, gems: int | None = None
+    member: discord.Member,
+    *,
+    balance: int,
+    gems: int | None = None,
+    festive_coins: int | None = None,
 ) -> discord.Embed:
     lines = [f"**Solde :** {format_currency(balance)}"]
     if gems is not None:
         lines.append(f"**{Emojis.GEM} :** {format_compact(gems)}")
+    if festive_coins is not None:
+        lines.append(f"**🎉 Festive Coins :** {format_compact(festive_coins)}")
     description = "\n".join(lines)
     embed = _base_embed("Solde", description, color=Colors.SUCCESS if balance else Colors.NEUTRAL)
     _set_member_author(embed, member)
