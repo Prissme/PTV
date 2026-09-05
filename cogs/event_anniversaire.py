@@ -88,6 +88,13 @@ class EventAnniversaire(commands.Cog):
                 )
                 """
             )
+            # Ancienne version de la table créée sans cette colonne : on la rajoute si besoin.
+            await connection.execute(
+                """
+                ALTER TABLE festive_event_wallet
+                ADD COLUMN IF NOT EXISTS last_income_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                """
+            )
             await connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS festive_event_pets (
