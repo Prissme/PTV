@@ -61,6 +61,7 @@ class EcoBot(commands.Bot):
             "stats",
             "language",
             "clans",
+            "event_anniversaire",
         )
         self._market_tip_cooldowns: Dict[int, float] = {}
         self._dm_tip_cooldowns: Dict[int, float] = {}
