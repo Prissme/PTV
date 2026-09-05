@@ -301,7 +301,7 @@ class EventAnniversaire(commands.Cog):
             f"Festive Coin{'s' if pet.income_per_second > 1 else ''}/seconde)",
             title="🥚 Œuf festif ouvert !",
         )
-        embed.set_thumbnail(url=pet.image_url)
+        embed.set_image(url=pet.image_url)
         await message.edit(content=None, embed=embed)
 
 
