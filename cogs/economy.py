@@ -2461,7 +2461,13 @@ class Economy(commands.Cog):
             self.database.fetch_balance(target.id),
             self.database.fetch_gems(target.id),
         )
-        embed = embeds.balance_embed(target, balance=balance, gems=gems)
+        festive_coins = None
+        event_cog = self.bot.get_cog("EventAnniversaire")
+        if event_cog is not None:
+            festive_coins = await event_cog.get_balance(target.id)
+        embed = embeds.balance_embed(
+            target, balance=balance, gems=gems, festive_coins=festive_coins
+        )
         await ctx.send(embed=embed)
 
     @commands.command(name="raffle", aliases=("tombola",))
