@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import random
-import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 from utils import embeds
 
@@ -18,7 +17,6 @@ from utils import embeds
 FESTIVE_COIN_EMOJI: str = "🎉"
 STARTING_FESTIVE_COINS: int = 100
 FESTIVE_EGG_PRICE: int = 100
-INCOME_TICK_SECONDS: int = 60  # on crédite les gains toutes les 60s pour limiter les écritures DB
 
 
 @dataclass(frozen=True)
@@ -28,10 +26,6 @@ class FestivePetDefinition:
     drop_rate: float  # entre 0 et 1
     income_per_second: int
 
-
-# NOTE : l'émoji d'Ollie n'a pas encore été fourni/uploadé sur le serveur.
-# Remplace OLLIE_EMOJI_ID ci-dessous dès que l'émoji "Ollie" existe.
-OLLIE_EMOJI_ID: str = "REMPLACE_MOI"
 
 FESTIVE_PETS: Tuple[FestivePetDefinition, ...] = (
     FestivePetDefinition(
@@ -48,7 +42,7 @@ FESTIVE_PETS: Tuple[FestivePetDefinition, ...] = (
     ),
     FestivePetDefinition(
         name="Ollie",
-        image_url=f"https://cdn.discordapp.com/emojis/{OLLIE_EMOJI_ID}.png",
+        image_url="https://cdn.discordapp.com/emojis/1545752797482459237.png",
         drop_rate=0.05,
         income_per_second=7,
     ),
@@ -76,14 +70,9 @@ class EventAnniversaire(commands.Cog):
         self.bot = bot
         self.database = bot.database
         self._tables_ready = False
-        self._last_tick_monotonic: float = time.monotonic()
 
     async def cog_load(self) -> None:
         await self._ensure_tables()
-        self._income_tick.start()
-
-    async def cog_unload(self) -> None:
-        self._income_tick.cancel()
 
     async def _ensure_tables(self) -> None:
         if self._tables_ready:
@@ -94,7 +83,8 @@ class EventAnniversaire(commands.Cog):
                 """
                 CREATE TABLE IF NOT EXISTS festive_event_wallet (
                     user_id BIGINT PRIMARY KEY,
-                    festive_coins BIGINT NOT NULL DEFAULT 0
+                    festive_coins BIGINT NOT NULL DEFAULT 0,
+                    last_income_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 )
                 """
             )
@@ -110,28 +100,61 @@ class EventAnniversaire(commands.Cog):
             )
         self._tables_ready = True
 
-    async def _ensure_wallet(self, connection, user_id: int) -> int:
+    async def _income_per_second_for_connection(self, connection, user_id: int) -> int:
+        rows = await connection.fetch(
+            "SELECT pet_name, quantity FROM festive_event_pets WHERE user_id = $1",
+            user_id,
+        )
+        total = 0
+        for row in rows:
+            definition = FESTIVE_PET_MAP.get(row["pet_name"])
+            if definition:
+                total += definition.income_per_second * int(row["quantity"])
+        return total
+
+    async def _settle_income(self, connection, user_id: int) -> int:
+        """Crédite les Festive Coins accumulés depuis la dernière visite et renvoie le solde à jour."""
         row = await connection.fetchrow(
-            "SELECT festive_coins FROM festive_event_wallet WHERE user_id = $1",
+            """
+            SELECT festive_coins, EXTRACT(EPOCH FROM (now() - last_income_at)) AS elapsed
+            FROM festive_event_wallet
+            WHERE user_id = $1
+            """,
             user_id,
         )
         if row is None:
             await connection.execute(
                 """
-                INSERT INTO festive_event_wallet (user_id, festive_coins)
-                VALUES ($1, $2)
+                INSERT INTO festive_event_wallet (user_id, festive_coins, last_income_at)
+                VALUES ($1, $2, now())
                 ON CONFLICT (user_id) DO NOTHING
                 """,
                 user_id,
                 STARTING_FESTIVE_COINS,
             )
             return STARTING_FESTIVE_COINS
-        return int(row["festive_coins"])
 
-    async def _get_balance(self, user_id: int) -> int:
+        elapsed = max(0.0, float(row["elapsed"] or 0.0))
+        income_per_second = await self._income_per_second_for_connection(connection, user_id)
+        gained = int(income_per_second * elapsed)
+        new_balance = int(row["festive_coins"]) + gained
+
+        await connection.execute(
+            """
+            UPDATE festive_event_wallet
+            SET festive_coins = $2, last_income_at = now()
+            WHERE user_id = $1
+            """,
+            user_id,
+            new_balance,
+        )
+        return new_balance
+
+    async def get_balance(self, user_id: int) -> int:
         pool = self.database.pool
         async with pool.acquire() as connection:
-            return await self._ensure_wallet(connection, user_id)
+            async with connection.transaction():
+                return await self._settle_income(connection, user_id)
 
     async def _get_pets(self, user_id: int) -> Dict[str, int]:
         pool = self.database.pool
@@ -151,46 +174,6 @@ class EventAnniversaire(commands.Cog):
                 total += definition.income_per_second * quantity
         return total
 
-    @tasks.loop(seconds=INCOME_TICK_SECONDS)
-    async def _income_tick(self) -> None:
-        elapsed = time.monotonic() - self._last_tick_monotonic
-        self._last_tick_monotonic = time.monotonic()
-        pool = self.database.pool
-        async with pool.acquire() as connection:
-            rows = await connection.fetch(
-                """
-                SELECT p.user_id AS user_id,
-                       SUM(p.quantity * f.income_per_second) AS income_per_second
-                FROM festive_event_pets p
-                JOIN (VALUES
-                    ('Festive Mandy', 1),
-                    ('Festive Piper', 3),
-                    ('Ollie', 7)
-                ) AS f(pet_name, income_per_second)
-                ON f.pet_name = p.pet_name
-                GROUP BY p.user_id
-                """
-            )
-            for row in rows:
-                gain = int(row["income_per_second"]) * elapsed
-                if gain <= 0:
-                    continue
-                await connection.execute(
-                    """
-                    INSERT INTO festive_event_wallet (user_id, festive_coins)
-                    VALUES ($1, $2)
-                    ON CONFLICT (user_id)
-                    DO UPDATE SET festive_coins = festive_event_wallet.festive_coins + EXCLUDED.festive_coins
-                    """,
-                    int(row["user_id"]),
-                    int(gain),
-                )
-
-    @_income_tick.before_loop
-    async def _before_income_tick(self) -> None:
-        await self.bot.wait_until_ready()
-        self._last_tick_monotonic = time.monotonic()
-
     def _pet_summary_lines(self, pets: Dict[str, int]) -> list[str]:
         lines: list[str] = []
         for definition in FESTIVE_PETS:
@@ -206,7 +189,7 @@ class EventAnniversaire(commands.Cog):
     @commands.command(name="festivecoins", aliases=("festif", "fcoins"))
     async def festivecoins(self, ctx: commands.Context) -> None:
         """Affiche ton solde de Festive Coins et tes pets festifs."""
-        balance = await self._get_balance(ctx.author.id)
+        balance = await self.get_balance(ctx.author.id)
         pets = await self._get_pets(ctx.author.id)
         income = await self._income_per_second_for(ctx.author.id)
 
@@ -230,6 +213,39 @@ class EventAnniversaire(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    async def _play_egg_animation(
+        self, ctx: commands.Context, *, egg_emoji: str = "🥚"
+    ) -> discord.Message:
+        """Reproduit l'animation d'ouverture standard utilisée pour les autres œufs."""
+        animation_steps = (
+            ("Œuf festif", "L'œuf commence à bouger…"),
+            ("Œuf festif", "Des fissures apparaissent !"),
+            ("Œuf festif", "Ça y est, il est sur le point d'éclore !"),
+        )
+        step_delay = 1.1
+        reveal_delay = 1.2
+
+        message = await ctx.send(
+            content=egg_emoji,
+            embed=embeds.pet_animation_embed(
+                title=animation_steps[0][0],
+                description=animation_steps[0][1],
+                emoji=egg_emoji,
+            ),
+        )
+        for title, description in animation_steps[1:]:
+            await asyncio.sleep(step_delay)
+            await message.edit(
+                content=egg_emoji,
+                embed=embeds.pet_animation_embed(
+                    title=title,
+                    description=description,
+                    emoji=egg_emoji,
+                ),
+            )
+        await asyncio.sleep(reveal_delay)
+        return message
+
     @commands.command(name="oeuffestif", aliases=("festivegg", "oeufanniversaire"))
     async def oeuffestif(self, ctx: commands.Context) -> None:
         """Achète et ouvre un œuf festif pour 100 Festive Coins."""
@@ -237,7 +253,7 @@ class EventAnniversaire(commands.Cog):
         pool = self.database.pool
         async with pool.acquire() as connection:
             async with connection.transaction():
-                balance = await self._ensure_wallet(connection, user_id)
+                balance = await self._settle_income(connection, user_id)
                 if balance < FESTIVE_EGG_PRICE:
                     await ctx.send(
                         embed=embeds.error_embed(
@@ -270,6 +286,8 @@ class EventAnniversaire(commands.Cog):
                     pet.name,
                 )
 
+        message = await self._play_egg_animation(ctx)
+
         embed = embeds.success_embed(
             f"Tu as obtenu **{pet.name}** ! "
             f"({int(pet.drop_rate * 100)}% de chance — {pet.income_per_second} "
@@ -277,7 +295,7 @@ class EventAnniversaire(commands.Cog):
             title="🥚 Œuf festif ouvert !",
         )
         embed.set_thumbnail(url=pet.image_url)
-        await ctx.send(embed=embed)
+        await message.edit(content=None, embed=embed)
 
 
 async def setup(bot: commands.Bot) -> None:
