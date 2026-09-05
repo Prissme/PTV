@@ -1614,9 +1614,53 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Event Anniversaire — pets festifs (obtenus via l'œuf festif, hors PB normal)
+# ---------------------------------------------------------------------------
+
+FESTIVE_EGG_PRICE: Final[int] = 100
+FESTIVE_COIN_INCOME_PER_SECOND: Final[Dict[str, int]] = {
+    "Festive Mandy": 1,
+    "Festive Piper": 3,
+    "Ollie": 7,
+}
+FESTIVE_PET_DROP_RATES: Final[Dict[str, float]] = {
+    "Festive Mandy": 0.70,
+    "Festive Piper": 0.25,
+    "Ollie": 0.05,
+}
+FESTIVE_EVENT_PET_NAMES: Final[Tuple[str, ...]] = tuple(FESTIVE_COIN_INCOME_PER_SECOND)
+
+# NOTE : base_income_per_hour = 0 volontairement — ces pets ne rapportent pas de PB
+# via e!claim, uniquement des Festive Coins via le système d'event dédié.
+_FESTIVE_EVENT_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="Festive Mandy",
+        rarity="Festif",
+        image_url="https://cdn.discordapp.com/emojis/1545748676012544070.png",
+        base_income_per_hour=0,
+        drop_rate=0.0,
+    ),
+    PetDefinition(
+        name="Festive Piper",
+        rarity="Festif",
+        image_url="https://cdn.discordapp.com/emojis/1545751609743642725.png",
+        base_income_per_hour=0,
+        drop_rate=0.0,
+    ),
+    PetDefinition(
+        name="Ollie",
+        rarity="Festif",
+        image_url="https://cdn.discordapp.com/emojis/1545752797482459237.png",
+        base_income_per_hour=0,
+        drop_rate=0.0,
+    ),
+)
+
+
 PET_DEFINITIONS: Tuple[PetDefinition, ...] = tuple(
     pet for egg in PET_EGG_DEFINITIONS for pet in egg.pets
-) + _EXCLUSIVE_PETS
+) + _EXCLUSIVE_PETS + _FESTIVE_EVENT_PETS
 
 # Ensemble utilitaire pour identifier rapidement les pets considérés comme "Huge".
 HUGE_PET_NAMES: Final[frozenset[str]] = frozenset(
