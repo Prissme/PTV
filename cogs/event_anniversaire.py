@@ -2,69 +2,47 @@ from __future__ import annotations
 
 import asyncio
 import random
-from dataclasses import dataclass
-from typing import Dict, Tuple
 
 import discord
 from discord.ext import commands
 
+from config import (
+    FESTIVE_COIN_INCOME_PER_SECOND,
+    FESTIVE_EGG_PRICE,
+    FESTIVE_EVENT_PET_NAMES,
+    FESTIVE_PET_DROP_RATES,
+)
 from utils import embeds
-
-# ---------------------------------------------------------------------------
-# Configuration de l'event Anniversaire
-# ---------------------------------------------------------------------------
 
 FESTIVE_COIN_EMOJI: str = "🎉"
 STARTING_FESTIVE_COINS: int = 100
-FESTIVE_EGG_PRICE: int = 100
 
-
-@dataclass(frozen=True)
-class FestivePetDefinition:
-    name: str
-    image_url: str
-    drop_rate: float  # entre 0 et 1
-    income_per_second: int
-
-
-FESTIVE_PETS: Tuple[FestivePetDefinition, ...] = (
-    FestivePetDefinition(
-        name="Festive Mandy",
-        image_url="https://cdn.discordapp.com/emojis/1545748676012544070.png",
-        drop_rate=0.70,
-        income_per_second=1,
-    ),
-    FestivePetDefinition(
-        name="Festive Piper",
-        image_url="https://cdn.discordapp.com/emojis/1545751609743642725.png",
-        drop_rate=0.25,
-        income_per_second=3,
-    ),
-    FestivePetDefinition(
-        name="Ollie",
-        image_url="https://cdn.discordapp.com/emojis/1545752797482459237.png",
-        drop_rate=0.05,
-        income_per_second=7,
-    ),
-)
-
-FESTIVE_PET_MAP: Dict[str, FestivePetDefinition] = {
-    pet.name: pet for pet in FESTIVE_PETS
+_FESTIVE_PET_IMAGES = {
+    "Festive Mandy": "https://cdn.discordapp.com/emojis/1545748676012544070.png",
+    "Festive Piper": "https://cdn.discordapp.com/emojis/1545751609743642725.png",
+    "Ollie": "https://cdn.discordapp.com/emojis/1545752797482459237.png",
 }
 
 
-def _roll_festive_pet() -> FestivePetDefinition:
+def _roll_festive_pet_name() -> str:
     roll = random.random()
     cumulative = 0.0
-    for pet in FESTIVE_PETS:
-        cumulative += pet.drop_rate
+    for name in FESTIVE_EVENT_PET_NAMES:
+        cumulative += FESTIVE_PET_DROP_RATES[name]
         if roll <= cumulative:
-            return pet
-    return FESTIVE_PETS[-1]
+            return name
+    return FESTIVE_EVENT_PET_NAMES[-1]
 
 
 class EventAnniversaire(commands.Cog):
-    """Event Anniversaire : Festive Coins, œuf festif et pets festifs."""
+    """Event Anniversaire : Festive Coins + œuf festif.
+
+    Les pets festifs sont de vrais pets du catalogue (voir config._FESTIVE_EVENT_PETS) :
+    ils sont ajoutés via `add_user_pet` comme n'importe quel autre pet, et doivent être
+    équipés avec les commandes normales `e!equip` / `e!unequip` (mêmes slots actifs que
+    les pets classiques). Seuls les pets festifs actuellement ÉQUIPÉS rapportent des
+    Festive Coins ; leur `base_income_per_hour` est à 0 donc ils ne touchent pas au PB.
+    """
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -88,39 +66,67 @@ class EventAnniversaire(commands.Cog):
                 )
                 """
             )
-            # Ancienne version de la table créée sans cette colonne : on la rajoute si besoin.
             await connection.execute(
                 """
                 ALTER TABLE festive_event_wallet
                 ADD COLUMN IF NOT EXISTS last_income_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 """
             )
-            await connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS festive_event_pets (
-                    user_id BIGINT NOT NULL,
-                    pet_name TEXT NOT NULL,
-                    quantity BIGINT NOT NULL DEFAULT 0,
-                    PRIMARY KEY (user_id, pet_name)
-                )
-                """
-            )
         self._tables_ready = True
 
-    async def _income_per_second_for_connection(self, connection, user_id: int) -> int:
+    # ------------------------------------------------------------------
+    # Pets festifs équipés — lecture directe dans la vraie table user_pets
+    # ------------------------------------------------------------------
+
+    async def _equipped_festive_counts_connection(self, connection, user_id: int) -> dict[str, int]:
         rows = await connection.fetch(
-            "SELECT pet_name, quantity FROM festive_event_pets WHERE user_id = $1",
+            """
+            SELECT p.name AS name, COUNT(*) AS active_count
+            FROM user_pets AS up
+            JOIN pets AS p ON p.pet_id = up.pet_id
+            WHERE up.user_id = $1 AND up.is_active AND p.name = ANY($2::text[])
+            GROUP BY p.name
+            """,
             user_id,
+            list(FESTIVE_EVENT_PET_NAMES),
         )
-        total = 0
-        for row in rows:
-            definition = FESTIVE_PET_MAP.get(row["pet_name"])
-            if definition:
-                total += definition.income_per_second * int(row["quantity"])
-        return total
+        return {row["name"]: int(row["active_count"]) for row in rows}
+
+    async def _owned_festive_counts(self, user_id: int) -> dict[str, tuple[int, int]]:
+        """Renvoie {nom: (possédés, équipés)} pour chaque pet festif."""
+        pool = self.database.pool
+        async with pool.acquire() as connection:
+            owned_rows = await connection.fetch(
+                """
+                SELECT p.name AS name, COUNT(*) AS owned_count
+                FROM user_pets AS up
+                JOIN pets AS p ON p.pet_id = up.pet_id
+                WHERE up.user_id = $1 AND p.name = ANY($2::text[])
+                GROUP BY p.name
+                """,
+                user_id,
+                list(FESTIVE_EVENT_PET_NAMES),
+            )
+            equipped = await self._equipped_festive_counts_connection(connection, user_id)
+        owned = {row["name"]: int(row["owned_count"]) for row in owned_rows}
+        return {
+            name: (owned.get(name, 0), equipped.get(name, 0))
+            for name in FESTIVE_EVENT_PET_NAMES
+        }
+
+    async def _income_per_second_for_connection(self, connection, user_id: int) -> int:
+        equipped = await self._equipped_festive_counts_connection(connection, user_id)
+        return sum(
+            FESTIVE_COIN_INCOME_PER_SECOND[name] * count
+            for name, count in equipped.items()
+        )
+
+    # ------------------------------------------------------------------
+    # Solde / gains
+    # ------------------------------------------------------------------
 
     async def _settle_income(self, connection, user_id: int) -> int:
-        """Crédite les Festive Coins accumulés depuis la dernière visite et renvoie le solde à jour."""
+        """Crédite les Festive Coins gagnés depuis la dernière visite (pets équipés uniquement)."""
         row = await connection.fetchrow(
             """
             SELECT festive_coins, EXTRACT(EPOCH FROM (now() - last_income_at)) AS elapsed
@@ -163,51 +169,33 @@ class EventAnniversaire(commands.Cog):
             async with connection.transaction():
                 return await self._settle_income(connection, user_id)
 
-    async def _get_pets(self, user_id: int) -> Dict[str, int]:
-        pool = self.database.pool
-        async with pool.acquire() as connection:
-            rows = await connection.fetch(
-                "SELECT pet_name, quantity FROM festive_event_pets WHERE user_id = $1",
-                user_id,
-            )
-        return {row["pet_name"]: int(row["quantity"]) for row in rows}
-
-    async def _income_per_second_for(self, user_id: int) -> int:
-        pets = await self._get_pets(user_id)
-        total = 0
-        for name, quantity in pets.items():
-            definition = FESTIVE_PET_MAP.get(name)
-            if definition:
-                total += definition.income_per_second * quantity
-        return total
-
-    def _pet_summary_lines(self, pets: Dict[str, int]) -> list[str]:
-        lines: list[str] = []
-        for definition in FESTIVE_PETS:
-            quantity = pets.get(definition.name, 0)
-            if quantity <= 0:
-                continue
-            lines.append(
-                f"• {definition.name} x{quantity} "
-                f"({definition.income_per_second}/s chacun)"
-            )
-        return lines
-
     @commands.command(name="festivecoins", aliases=("festif", "fcoins"))
     async def festivecoins(self, ctx: commands.Context) -> None:
-        """Affiche ton solde de Festive Coins et tes pets festifs."""
+        """Affiche ton solde de Festive Coins et l'état de tes pets festifs."""
         balance = await self.get_balance(ctx.author.id)
-        pets = await self._get_pets(ctx.author.id)
-        income = await self._income_per_second_for(ctx.author.id)
+        counts = await self._owned_festive_counts(ctx.author.id)
+        income = sum(
+            FESTIVE_COIN_INCOME_PER_SECOND[name] * equipped
+            for name, (_, equipped) in counts.items()
+        )
 
         lines = [f"{FESTIVE_COIN_EMOJI} Solde : **{balance}** Festive Coins"]
-        pet_lines = self._pet_summary_lines(pets)
+        pet_lines = [
+            f"• {name} : {owned} possédé(s), {equipped} équipé(s) "
+            f"({FESTIVE_COIN_INCOME_PER_SECOND[name]}/s chacun)"
+            for name, (owned, equipped) in counts.items()
+            if owned > 0
+        ]
         if pet_lines:
             lines.append("")
             lines.append("🐾 Tes pets festifs :")
             lines.extend(pet_lines)
             lines.append("")
             lines.append(f"Gains totaux : **{income}** Festive Coins / seconde")
+            lines.append(
+                "Utilise `e!equip <pet>` / `e!unequip <pet>` (comme pour tes autres "
+                "pets) pour gérer lesquels sont actifs."
+            )
         else:
             lines.append("")
             lines.append(
@@ -215,10 +203,12 @@ class EventAnniversaire(commands.Cog):
                 f"pour en obtenir un ({FESTIVE_EGG_PRICE} Festive Coins)."
             )
 
-        embed = embeds.info_embed(
-            "\n".join(lines), title="🎂 Event Anniversaire"
-        )
+        embed = embeds.info_embed("\n".join(lines), title="🎂 Event Anniversaire")
         await ctx.send(embed=embed)
+
+    # ------------------------------------------------------------------
+    # Œuf festif
+    # ------------------------------------------------------------------
 
     async def _play_egg_animation(
         self, ctx: commands.Context, *, egg_emoji: str = "🥚"
@@ -258,6 +248,17 @@ class EventAnniversaire(commands.Cog):
         """Achète et ouvre un œuf festif pour 100 Festive Coins."""
         user_id = ctx.author.id
         pool = self.database.pool
+
+        pet_name = _roll_festive_pet_name()
+        pet_id = await self.database.get_pet_id_by_name(pet_name)
+        if pet_id is None:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Le catalogue des pets festifs n'est pas encore synchronisé, réessaie dans un instant."
+                )
+            )
+            return
+
         async with pool.acquire() as connection:
             async with connection.transaction():
                 balance = await self._settle_income(connection, user_id)
@@ -280,28 +281,23 @@ class EventAnniversaire(commands.Cog):
                     FESTIVE_EGG_PRICE,
                 )
 
-                pet = _roll_festive_pet()
-
-                await connection.execute(
-                    """
-                    INSERT INTO festive_event_pets (user_id, pet_name, quantity)
-                    VALUES ($1, $2, 1)
-                    ON CONFLICT (user_id, pet_name)
-                    DO UPDATE SET quantity = festive_event_pets.quantity + 1
-                    """,
-                    user_id,
-                    pet.name,
-                )
+        # Ajouté via le système de pets standard (mêmes tables que les autres œufs).
+        await self.database.add_user_pet(user_id, pet_id)
 
         message = await self._play_egg_animation(ctx)
 
+        income_per_second = FESTIVE_COIN_INCOME_PER_SECOND[pet_name]
+        drop_rate = FESTIVE_PET_DROP_RATES[pet_name]
         embed = embeds.success_embed(
-            f"Tu as obtenu **{pet.name}** ! "
-            f"({int(pet.drop_rate * 100)}% de chance — {pet.income_per_second} "
-            f"Festive Coin{'s' if pet.income_per_second > 1 else ''}/seconde)",
+            f"Tu as obtenu **{pet_name}** ! "
+            f"({int(drop_rate * 100)}% de chance — {income_per_second} "
+            f"Festive Coin{'s' if income_per_second > 1 else ''}/seconde une fois équipé)\n\n"
+            f"Il est dans ton inventaire mais pas encore équipé : utilise "
+            f"`e!equip {pet_name}` pour qu'il commence à rapporter des Festive Coins "
+            f"(mêmes emplacements que tes autres pets).",
             title="🥚 Œuf festif ouvert !",
         )
-        embed.set_image(url=pet.image_url)
+        embed.set_image(url=_FESTIVE_PET_IMAGES[pet_name])
         await message.edit(content=None, embed=embed)
 
 
