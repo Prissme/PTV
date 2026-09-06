@@ -1782,6 +1782,13 @@ PET_EMOJIS: Final[dict[str, str]] = {
     ),
     HUGE_ROSA_NAME: os.getenv("PET_EMOJI_HUGE_ROSA", "<:HugeRosa:1437826071503311010>"),
     TITANIC_POCO_NAME: os.getenv("PET_EMOJI_TITANIC_POCO", "<:TITANICPOCO:1437826145486770176>"),
+    # Pets festifs (event anniversaire)
+    "Festive Mandy": os.getenv("PET_EMOJI_FESTIVE_MANDY", "<:FestiveMandy:1545748676012544070>"),
+    "Festive Piper": os.getenv("PET_EMOJI_FESTIVE_PIPER", "<:FestivePiper:1545751609743642725>"),
+    "Ollie": os.getenv("PET_EMOJI_OLLIE", "<:Ollie:1545752797482459237>"),
+    HUGE_FESTIVE_MANDY_NAME: os.getenv("PET_EMOJI_FESTIVE_MANDY", "<:FestiveMandy:1545748676012544070>"),
+    HUGE_FESTIVE_PIPER_NAME: os.getenv("PET_EMOJI_FESTIVE_PIPER", "<:FestivePiper:1545751609743642725>"),
+    HUGE_OLLIE_NAME: os.getenv("PET_EMOJI_OLLIE", "<:Ollie:1545752797482459237>"),
     # FIX: Ensure default emoji falls back when the environment variable is empty.
     "default": os.getenv("PET_EMOJI_DEFAULT") or "🐾",
 }
