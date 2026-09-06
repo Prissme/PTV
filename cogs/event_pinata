@@ -30,7 +30,7 @@ MAX_CASH_UPGRADES: int = 50  # -> +500% max
 UPGRADE_BASE_COSTS: dict[str, float] = {
     "cooldown": 50.0,
     "chance": 100.0,
-    "cash": 30.0,
+    "cash": 21_350.0,  # calibré pour ~1 semaine de grind total (voir calcul), même durée que l'event
 }
 UPGRADE_COST_RATIO: float = 1.15
 
@@ -80,8 +80,15 @@ class EventPinata(commands.Cog):
                     last_attempt_at TIMESTAMPTZ,
                     cooldown_upgrades INT NOT NULL DEFAULT 0,
                     chance_upgrades INT NOT NULL DEFAULT 0,
-                    cash_upgrades INT NOT NULL DEFAULT 0
+                    cash_upgrades INT NOT NULL DEFAULT 0,
+                    gift_announced BOOLEAN NOT NULL DEFAULT FALSE
                 )
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE pinata_event
+                ADD COLUMN IF NOT EXISTS gift_announced BOOLEAN NOT NULL DEFAULT FALSE
                 """
             )
         self._tables_ready = True
@@ -289,6 +296,23 @@ class EventPinata(commands.Cog):
                     cost,
                 )
 
+                new_counts = {
+                    "cooldown": int(row["cooldown_upgrades"]) + (1 if choice == "cooldown" else 0),
+                    "chance": int(row["chance_upgrades"]) + (1 if choice == "chance" else 0),
+                    "cash": int(row["cash_upgrades"]) + (1 if choice == "cash" else 0),
+                }
+                fully_maxed = (
+                    new_counts["cooldown"] >= MAX_COOLDOWN_UPGRADES
+                    and new_counts["chance"] >= MAX_CHANCE_UPGRADES
+                    and new_counts["cash"] >= MAX_CASH_UPGRADES
+                )
+                already_announced = bool(row["gift_announced"])
+                if fully_maxed and not already_announced:
+                    await connection.execute(
+                        "UPDATE pinata_event SET gift_announced = TRUE WHERE user_id = $1",
+                        user_id,
+                    )
+
         await ctx.send(
             embed=embeds.success_embed(
                 f"Upgrade **{UPGRADE_LABELS[choice]}** acheté pour **{cost}$** "
@@ -296,6 +320,16 @@ class EventPinata(commands.Cog):
                 title="🪅 Piñata améliorée !",
             )
         )
+
+        if fully_maxed and not already_announced:
+            await ctx.send(
+                embed=embeds.success_embed(
+                    "🎉 **Félicitations !** Tu as maxé les 3 upgrades de ta piñata !\n\n"
+                    "Tu débloques l'**œuf cadeau** (`e!oeufcadeau`) — 1 000 000 Festive Coins "
+                    "pour tenter d'obtenir un pet Huge festif exclusif.",
+                    title="🏆 Piñata entièrement maîtrisée !",
+                )
+            )
 
 
 async def setup(bot: commands.Bot) -> None:
