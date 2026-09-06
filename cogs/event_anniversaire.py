@@ -10,7 +10,10 @@ from config import (
     FESTIVE_COIN_INCOME_PER_SECOND,
     FESTIVE_EGG_PRICE,
     FESTIVE_EVENT_PET_NAMES,
+    FESTIVE_GIFT_EGG_PRICE,
+    FESTIVE_GIFT_PET_DROP_RATES,
     FESTIVE_PET_DROP_RATES,
+    get_huge_multiplier,
 )
 from database.db import ActivePetLimitError, DatabaseError
 from utils import embeds
@@ -22,17 +25,30 @@ _FESTIVE_PET_IMAGES = {
     "Festive Mandy": "https://cdn.discordapp.com/emojis/1545748676012544070.png",
     "Festive Piper": "https://cdn.discordapp.com/emojis/1545751609743642725.png",
     "Ollie": "https://cdn.discordapp.com/emojis/1545752797482459237.png",
+    "Huge Festive Mandy": "https://cdn.discordapp.com/emojis/1545748676012544070.png",
+    "Huge Festive Piper": "https://cdn.discordapp.com/emojis/1545751609743642725.png",
+    "Huge Ollie": "https://cdn.discordapp.com/emojis/1545752797482459237.png",
 }
 
 
 def _roll_festive_pet_name() -> str:
     roll = random.random()
     cumulative = 0.0
-    for name in FESTIVE_EVENT_PET_NAMES:
-        cumulative += FESTIVE_PET_DROP_RATES[name]
+    for name, rate in FESTIVE_PET_DROP_RATES.items():
+        cumulative += rate
         if roll <= cumulative:
             return name
-    return FESTIVE_EVENT_PET_NAMES[-1]
+    return next(iter(FESTIVE_PET_DROP_RATES))
+
+
+def _roll_festive_gift_pet_name() -> str:
+    roll = random.random()
+    cumulative = 0.0
+    for name, rate in FESTIVE_GIFT_PET_DROP_RATES.items():
+        cumulative += rate
+        if roll <= cumulative:
+            return name
+    return next(iter(FESTIVE_GIFT_PET_DROP_RATES))
 
 
 class EventAnniversaire(commands.Cog):
@@ -388,6 +404,96 @@ class EventAnniversaire(commands.Cog):
             f"`e!equip {pet_name}` pour qu'il commence à rapporter des Festive Coins "
             f"(mêmes emplacements que tes autres pets).",
             title="🥚 Œuf festif ouvert !",
+        )
+        embed.set_image(url=_FESTIVE_PET_IMAGES[pet_name])
+        await message.edit(content=None, embed=embed)
+
+
+    async def _pinata_maxed(self, user_id: int) -> bool:
+        """Vérifie si les 3 upgrades de la piñata (cog EventPinata) sont maxées."""
+        pool = self.database.pool
+        row = await pool.fetchrow(
+            "SELECT cooldown_upgrades, chance_upgrades, cash_upgrades FROM pinata_event WHERE user_id = $1",
+            user_id,
+        )
+        if row is None:
+            return False
+        pinata_cog = self.bot.get_cog("EventPinata")
+        if pinata_cog is not None:
+            from cogs.event_pinata import (
+                MAX_CASH_UPGRADES,
+                MAX_CHANCE_UPGRADES,
+                MAX_COOLDOWN_UPGRADES,
+            )
+        else:
+            MAX_COOLDOWN_UPGRADES, MAX_CHANCE_UPGRADES, MAX_CASH_UPGRADES = 20, 20, 50
+        return (
+            int(row["cooldown_upgrades"]) >= MAX_COOLDOWN_UPGRADES
+            and int(row["chance_upgrades"]) >= MAX_CHANCE_UPGRADES
+            and int(row["cash_upgrades"]) >= MAX_CASH_UPGRADES
+        )
+
+    @commands.command(name="oeufcadeau", aliases=("giftegg", "oeufsecret"))
+    async def oeufcadeau(self, ctx: commands.Context) -> None:
+        """Œuf cadeau (1 000 000 Festive Coins) — débloqué en maxant les upgrades de la piñata."""
+        user_id = ctx.author.id
+
+        if not await self._pinata_maxed(user_id):
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "L'œuf cadeau est réservé à ceux qui ont maxé les 3 upgrades de la "
+                    "piñata (`e!pinatashop`). Continue à améliorer ta piñata !"
+                )
+            )
+            return
+
+        pet_name = _roll_festive_gift_pet_name()
+        pet_id = await self.database.get_pet_id_by_name(pet_name)
+        if pet_id is None:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Le catalogue des pets festifs n'est pas encore synchronisé, réessaie dans un instant."
+                )
+            )
+            return
+
+        pool = self.database.pool
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                balance = await self._settle_income(connection, user_id)
+                if balance < FESTIVE_GIFT_EGG_PRICE:
+                    await ctx.send(
+                        embed=embeds.error_embed(
+                            f"Il te faut **{FESTIVE_GIFT_EGG_PRICE:,}** Festive Coins pour "
+                            f"acheter l'œuf cadeau (tu as {balance:,})."
+                        )
+                    )
+                    return
+
+                await connection.execute(
+                    """
+                    UPDATE festive_event_wallet
+                    SET festive_coins = festive_coins - $2
+                    WHERE user_id = $1
+                    """,
+                    user_id,
+                    FESTIVE_GIFT_EGG_PRICE,
+                )
+
+        await self.database.add_user_pet(user_id, pet_id, is_huge=True)
+
+        message = await self._play_egg_animation(ctx, egg_emoji="🎁")
+
+        drop_rate = FESTIVE_GIFT_PET_DROP_RATES[pet_name]
+        multiplier = get_huge_multiplier(pet_name)
+        embed = embeds.success_embed(
+            f"Tu as obtenu **{pet_name}** ! ({drop_rate * 100:.0f}% de chance)\n\n"
+            f"C'est un **vrai Huge** : il rapporte du PB via `e!claim`, avec un "
+            f"multiplicateur montant jusqu'à **x{multiplier:.0f}** au niveau max "
+            f"(scalé sur ton meilleur pet non-huge, comme tes autres Huges).\n\n"
+            f"Il est dans ton inventaire mais pas encore équipé : utilise "
+            f"`e!equip {pet_name}` pour l'activer.",
+            title="🎁 Œuf cadeau ouvert !",
         )
         embed.set_image(url=_FESTIVE_PET_IMAGES[pet_name])
         await message.edit(content=None, embed=embed)
