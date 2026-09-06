@@ -51,6 +51,37 @@ def _roll_festive_gift_pet_name() -> str:
     return next(iter(FESTIVE_GIFT_PET_DROP_RATES))
 
 
+class FestiveEggReplayView(discord.ui.View):
+    """Bouton 'Encore!' après l'ouverture d'un œuf festif."""
+
+    def __init__(self, cog: "EventAnniversaire", ctx: commands.Context) -> None:
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.ctx = ctx
+        self.message: discord.Message | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul l'acheteur peut relancer l'ouverture.", ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Encore!", style=discord.ButtonStyle.success)
+    async def replay(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        await self.cog.oeuffestif(self.ctx)
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            import contextlib
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=self)
+
+
 class EventAnniversaire(commands.Cog):
     """Event Anniversaire : Festive Coins + œuf festif.
 
@@ -406,7 +437,9 @@ class EventAnniversaire(commands.Cog):
             title="🥚 Œuf festif ouvert !",
         )
         embed.set_image(url=_FESTIVE_PET_IMAGES[pet_name])
-        await message.edit(content=None, embed=embed)
+        replay_view = FestiveEggReplayView(self, ctx)
+        replay_view.message = message
+        await message.edit(content=None, embed=embed, view=replay_view)
 
 
     async def _pinata_maxed(self, user_id: int) -> bool:
