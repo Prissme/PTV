@@ -932,6 +932,12 @@ HUGE_WISHED_NAME: Final[str] = "Huge Wished"
 HUGE_WISHED_MULTIPLIER: Final[float] = 20
 HUGE_VIRGO_COLLETTE_MULTIPLIER: Final[float] = 25
 TITANIC_CAPRICORN_STU_MULTIPLIER: Final[float] = 100
+HUGE_FESTIVE_MANDY_NAME: Final[str] = "Huge Festive Mandy"
+HUGE_FESTIVE_PIPER_NAME: Final[str] = "Huge Festive Piper"
+HUGE_OLLIE_NAME: Final[str] = "Huge Ollie"
+HUGE_FESTIVE_MANDY_MULTIPLIER: Final[float] = 15
+HUGE_FESTIVE_PIPER_MULTIPLIER: Final[float] = 25
+HUGE_OLLIE_MULTIPLIER: Final[float] = 40
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
 HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
@@ -953,6 +959,9 @@ TITANIC_MEEPLE_NAME: TITANIC_MEEPLE_MULTIPLIER,
     HUGE_WISHED_NAME: HUGE_WISHED_MULTIPLIER,
     TITANIC_POCO_NAME: TITANIC_POCO_MULTIPLIER,
     HUGE_RED_KING_FRANK_NAME: HUGE_RED_KING_FRANK_MULTIPLIER,
+    HUGE_FESTIVE_MANDY_NAME: HUGE_FESTIVE_MANDY_MULTIPLIER,
+    HUGE_FESTIVE_PIPER_NAME: HUGE_FESTIVE_PIPER_MULTIPLIER,
+    HUGE_OLLIE_NAME: HUGE_OLLIE_MULTIPLIER,
 }
 
 HUGE_PET_MIN_LEVEL_MULTIPLIERS: Final[Dict[str, float]] = {
@@ -1655,7 +1664,45 @@ _FESTIVE_EVENT_PETS: Tuple[PetDefinition, ...] = (
         base_income_per_hour=0,
         drop_rate=0.0,
     ),
+    # Versions "Huge" de l'œuf cadeau, débloquées après avoir maxé les 3 upgrades de la piñata.
+    # Ce sont de VRAIS Huges (is_huge=True) : ils rapportent du PB via le système normal
+    # (e!claim), scalé sur le meilleur pet non-huge du joueur, comme n'importe quel Huge.
+    # base_income_per_hour sert uniquement de fallback si le joueur n'a aucun pet non-huge.
+    PetDefinition(
+        name=HUGE_FESTIVE_MANDY_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1545748676012544070.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=HUGE_FESTIVE_PIPER_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1545751609743642725.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=HUGE_OLLIE_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1545752797482459237.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
 )
+
+# Œuf cadeau (débloqué après avoir maxé les 3 upgrades de la piñata).
+# Ces pets sont des Huges normaux niveau PB : leur revenu suit le système existant
+# (voir HUGE_PET_CUSTOM_MULTIPLIERS ci-dessus), pas les Festive Coins.
+FESTIVE_GIFT_EGG_PRICE: Final[int] = 1_000_000
+FESTIVE_GIFT_PET_DROP_RATES: Final[Dict[str, float]] = {
+    HUGE_FESTIVE_MANDY_NAME: 0.85,
+    HUGE_FESTIVE_PIPER_NAME: 0.13,
+    HUGE_OLLIE_NAME: 0.02,
+}
 
 
 PET_DEFINITIONS: Tuple[PetDefinition, ...] = tuple(
