@@ -52,7 +52,7 @@ def _roll_festive_gift_pet_name() -> str:
 
 
 class FestiveEggReplayView(discord.ui.View):
-    """Bouton 'Encore!' après l'ouverture d'un œuf festif."""
+    """Boutons 'Encore!' et 'AUTO' après l'ouverture d'un œuf festif."""
 
     def __init__(self, cog: "EventAnniversaire", ctx: commands.Context) -> None:
         super().__init__(timeout=60)
@@ -72,6 +72,15 @@ class FestiveEggReplayView(discord.ui.View):
     async def replay(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.defer()
         await self.cog.oeuffestif(self.ctx)
+
+    @discord.ui.button(label="AUTO", style=discord.ButtonStyle.primary)
+    async def auto_open(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_message(
+            "Ouverture automatique lancée dans un fil dédié.", ephemeral=True
+        )
+        if self.message is None:
+            return
+        await self.cog._start_auto_festive_hatch(self.ctx, self.message)
 
     async def on_timeout(self) -> None:
         for child in self.children:
@@ -441,6 +450,96 @@ class EventAnniversaire(commands.Cog):
         replay_view.message = message
         await message.edit(content=None, embed=embed, view=replay_view)
 
+
+    async def _start_auto_festive_hatch(
+        self,
+        ctx: commands.Context,
+        parent_message: discord.Message,
+    ) -> None:
+        channel = parent_message.channel
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Le mode AUTO n'est disponible que dans un salon textuel."
+                )
+            )
+            return
+
+        try:
+            thread = await parent_message.create_thread(
+                name=f"Auto œufs festifs — {ctx.author.display_name}",
+                auto_archive_duration=60,
+            )
+        except discord.HTTPException:
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "Impossible de créer un fil pour l'ouverture automatique."
+                )
+            )
+            return
+
+        stop_event = asyncio.Event()
+
+        def _message_check(message: discord.Message) -> bool:
+            return message.author.id == ctx.author.id and not message.author.bot
+
+        async def _wait_for_user_message() -> None:
+            try:
+                await ctx.bot.wait_for("message", check=_message_check)
+            except asyncio.CancelledError:
+                return
+            stop_event.set()
+
+        wait_task = asyncio.create_task(_wait_for_user_message())
+
+        async def _runner() -> None:
+            await thread.send(
+                embed=embeds.info_embed(
+                    "Ouverture automatique activée. Envoie n'importe quel message pour arrêter.",
+                    title="AUTO en cours",
+                )
+            )
+            try:
+                while not stop_event.is_set():
+                    pool = self.database.pool
+                    async with pool.acquire() as connection:
+                        async with connection.transaction():
+                            balance = await self._settle_income(connection, ctx.author.id)
+                    if balance < FESTIVE_EGG_PRICE:
+                        await thread.send(
+                            embed=embeds.warning_embed(
+                                f"Tu n'as plus assez de Festive Coins (solde : {balance}, coût : {FESTIVE_EGG_PRICE})."
+                            )
+                        )
+                        stop_event.set()
+                        break
+                    # Réutilise la commande principale mais dans le thread
+                    original_channel = ctx.channel
+                    ctx.__dict__["channel"] = thread  # type: ignore[assignment]
+                    try:
+                        await self.oeuffestif(ctx)
+                    finally:
+                        ctx.__dict__["channel"] = original_channel
+                    try:
+                        await asyncio.wait_for(asyncio.shield(wait_task), timeout=1.5)
+                    except asyncio.TimeoutError:
+                        continue
+            finally:
+                stop_event.set()
+                if not wait_task.done():
+                    wait_task.cancel()
+                import contextlib
+                with contextlib.suppress(asyncio.CancelledError):
+                    await wait_task
+                with contextlib.suppress(discord.HTTPException):
+                    await thread.send(
+                        embed=embeds.warning_embed(
+                            "Ouverture automatique arrêtée. Le fil va être supprimé."
+                        )
+                    )
+                    await thread.delete()
+
+        asyncio.create_task(_runner())
 
     async def _pinata_maxed(self, user_id: int) -> bool:
         """Vérifie si les 3 upgrades de la piñata (cog EventPinata) sont maxées."""
