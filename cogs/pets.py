@@ -4333,7 +4333,13 @@ class Pets(commands.Cog):
         view.message = message
 
     @commands.command(name="equipbest", aliases=("bestpets", "autoequip"))
-    async def equip_best_pets(self, ctx: commands.Context) -> None:
+    async def equip_best_pets(self, ctx: commands.Context, *, scope: str | None = None) -> None:
+        if scope and scope.strip().lower() in ("event", "festif", "festive", "anniversaire"):
+            event_cog = self.bot.get_cog("EventAnniversaire")
+            if event_cog is not None:
+                await event_cog._run_autoequip_event(ctx)
+                return
+
         await self.database.ensure_user(ctx.author.id)
         rows = await self.database.get_user_pets(ctx.author.id)
         if not rows:
