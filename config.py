@@ -1704,6 +1704,32 @@ FESTIVE_GIFT_PET_DROP_RATES: Final[Dict[str, float]] = {
     HUGE_OLLIE_NAME: 0.02,
 }
 
+# Ces définitions utilisent les taux festifs tout en pouvant passer par le
+# pipeline standard (maîtrises, potions, Egg Frenzy et variantes). La monnaie
+# est débitée par le cog de l'événement, pas par le cog des pets.
+FESTIVE_EGG_DEFINITION: Final[PetEggDefinition] = PetEggDefinition(
+    name="Œuf festif",
+    slug="festif",
+    price=FESTIVE_EGG_PRICE,
+    pets=tuple(
+        replace(pet, drop_rate=FESTIVE_PET_DROP_RATES[pet.name])
+        for pet in _FESTIVE_EVENT_PETS[:3]
+    ),
+    zone_slug="event_anniversaire",
+    aliases=("oeuf festif", "festivegg"),
+)
+FESTIVE_GIFT_EGG_DEFINITION: Final[PetEggDefinition] = PetEggDefinition(
+    name="Œuf cadeau",
+    slug="cadeau_festif",
+    price=FESTIVE_GIFT_EGG_PRICE,
+    pets=tuple(
+        replace(pet, drop_rate=FESTIVE_GIFT_PET_DROP_RATES[pet.name])
+        for pet in _FESTIVE_EVENT_PETS[3:]
+    ),
+    zone_slug="event_anniversaire",
+    aliases=("oeuf cadeau", "giftegg"),
+)
+
 
 PET_DEFINITIONS: Tuple[PetDefinition, ...] = tuple(
     pet for egg in PET_EGG_DEFINITIONS for pet in egg.pets

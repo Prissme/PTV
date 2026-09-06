@@ -3286,6 +3286,7 @@ class Pets(commands.Cog):
         luck_bonus_total: float = 0.0,
         luck_bonus_lines: Sequence[str] | None = None,
         channel_override: discord.abc.Messageable | None = None,
+        replay_view: discord.ui.View | None = None,
     ) -> None:
         target_channel = channel_override or ctx.channel
         egg_title = egg.name
@@ -3402,9 +3403,75 @@ class Pets(commands.Cog):
             name=ctx.author.display_name,
             icon_url=ctx.author.display_avatar.url,
         )
-        replay_view = HatchReplayView(ctx, self, egg.slug)
+        replay_view = replay_view or HatchReplayView(ctx, self, egg.slug)
         replay_view.message = message
         await message.edit(content=egg_emoji, embed=embed, view=replay_view)
+
+    async def hatch_external_egg(
+        self,
+        ctx: commands.Context,
+        egg: PetEggDefinition,
+        *,
+        replay_view: discord.ui.View | None = None,
+        channel_override: discord.abc.Messageable | None = None,
+    ) -> bool:
+        """Ouvre un œuf déjà payé par un système externe avec le pipeline normal."""
+        user_id = ctx.author.id
+        egg_progress = await self.database.get_mastery_progress(user_id, EGG_MASTERY.slug)
+        pet_progress = await self.database.get_mastery_progress(user_id, PET_MASTERY.slug)
+        egg_perks = _compute_egg_mastery_perks(int(egg_progress.get("level", 1)))
+        pet_perks = _compute_pet_mastery_perks(int(pet_progress.get("level", 1)))
+        clan_row = await self.database.get_user_clan(user_id)
+        clan_shiny_multiplier = 1.0
+        if clan_row is not None:
+            clan_shiny_multiplier = max(
+                1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
+            )
+        _, index_bonus = await self._fetch_index_shiny_bonus(user_id)
+        active_potion = await self.database.get_active_potion(user_id)
+        rebirth_count = await self.database.get_rebirth_count(user_id)
+        enchantments = await self.database.get_enchantment_powers(user_id)
+        frenzy_active = is_egg_frenzy_active()
+        has_luck_role = isinstance(ctx.author, discord.Member) and any(
+            role.id == EGG_LUCK_ROLE_ID for role in ctx.author.roles
+        )
+        luck_bonus_total, luck_bonus_lines = self._build_egg_luck_breakdown(
+            mastery_perks=egg_perks, active_potion=active_potion,
+            frenzy_active=frenzy_active, rebirth_count=rebirth_count,
+            enchantments=enchantments, has_luck_role=has_luck_role,
+        )
+        hatch_kwargs = {
+            "mastery_perks": egg_perks,
+            "pet_mastery_perks": pet_perks,
+            "clan_shiny_multiplier": clan_shiny_multiplier,
+            "active_potion": active_potion,
+            "rebirth_count": rebirth_count,
+            "charge_cost": False,
+            "index_bonus": index_bonus,
+        }
+        primary = await self._hatch_pet(ctx, egg, **hatch_kwargs)
+        if primary is None:
+            return False
+        results = [primary]
+        bonus_eggs = 0
+        if egg_perks.triple_chance > 0 and random.random() < egg_perks.triple_chance:
+            bonus_eggs = 2
+        elif egg_perks.double_chance > 0 and random.random() < egg_perks.double_chance:
+            bonus_eggs = 1
+        for _ in range(bonus_eggs):
+            result = await self._hatch_pet(ctx, egg, bonus=True, **hatch_kwargs)
+            if result is not None:
+                results.append(result)
+        await self._display_hatch_results(
+            ctx, egg, results, mastery_perks=egg_perks,
+            luck_bonus_total=luck_bonus_total, luck_bonus_lines=luck_bonus_lines,
+            channel_override=channel_override, replay_view=replay_view,
+        )
+        target_channel = channel_override or ctx.channel
+        for result in results:
+            for auto_message in result.auto_messages:
+                await target_channel.send(auto_message)
+        return True
 
     async def _open_pet_egg(
         self,
