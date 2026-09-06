@@ -809,9 +809,13 @@ class HatchReplayView(discord.ui.View):
     async def auto_open(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        await interaction.response.send_message(
-            "Ouverture automatique lancée dans un fil dédié.", ephemeral=True
+        is_dm = isinstance(interaction.channel, discord.DMChannel)
+        confirmation = (
+            "Ouverture automatique lancée ici même."
+            if is_dm
+            else "Ouverture automatique lancée dans un fil dédié."
         )
+        await interaction.response.send_message(confirmation, ephemeral=True)
         if self.message is None:
             return
         await self.pets_cog._start_auto_hatch(self.ctx, self.egg_slug, self.message)
@@ -3855,26 +3859,31 @@ class Pets(commands.Cog):
             return
 
         channel = parent_message.channel
-        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+        is_dm = isinstance(channel, discord.DMChannel)
+        if not isinstance(channel, (discord.TextChannel, discord.Thread, discord.DMChannel)):
             await ctx.send(
                 embed=embeds.error_embed(
-                    "Le mode AUTO n'est disponible que dans un salon textuel."
+                    "Le mode AUTO n'est disponible que dans un salon textuel ou en message privé."
                 )
             )
             return
 
-        try:
-            thread = await parent_message.create_thread(
-                name=f"Auto œufs — {ctx.author.display_name}",
-                auto_archive_duration=60,
-            )
-        except discord.HTTPException:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Impossible de créer un fil pour l'ouverture automatique."
+        if is_dm:
+            # Pas de fils possibles en message privé : on ouvre directement dans le DM.
+            thread = channel
+        else:
+            try:
+                thread = await parent_message.create_thread(
+                    name=f"Auto œufs — {ctx.author.display_name}",
+                    auto_archive_duration=60,
                 )
-            )
-            return
+            except discord.HTTPException:
+                await ctx.send(
+                    embed=embeds.error_embed(
+                        "Impossible de créer un fil pour l'ouverture automatique."
+                    )
+                )
+                return
 
         egg_definition = self._resolve_egg(egg_slug)
         if egg_definition is None:
@@ -3883,8 +3892,9 @@ class Pets(commands.Cog):
                     "Cet œuf n'est plus disponible pour l'ouverture automatique."
                 )
             )
-            with contextlib.suppress(discord.HTTPException):
-                await thread.delete()
+            if not is_dm:
+                with contextlib.suppress(discord.HTTPException):
+                    await thread.delete()
             return
 
         stop_event = asyncio.Event()
@@ -3951,12 +3961,19 @@ class Pets(commands.Cog):
                 with contextlib.suppress(asyncio.CancelledError):
                     await wait_task
                 with contextlib.suppress(discord.HTTPException):
-                    await thread.send(
-                        embed=embeds.warning_embed(
-                            "Ouverture automatique arrêtée. Le fil va être supprimé."
+                    if is_dm:
+                        await thread.send(
+                            embed=embeds.warning_embed(
+                                "Ouverture automatique arrêtée."
+                            )
                         )
-                    )
-                    await thread.delete()
+                    else:
+                        await thread.send(
+                            embed=embeds.warning_embed(
+                                "Ouverture automatique arrêtée. Le fil va être supprimé."
+                            )
+                        )
+                        await thread.delete()
 
         task = asyncio.create_task(_runner())
         self._auto_hatch_tasks[ctx.author.id] = task
