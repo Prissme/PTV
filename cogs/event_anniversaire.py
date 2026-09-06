@@ -12,6 +12,7 @@ from config import (
     FESTIVE_EVENT_PET_NAMES,
     FESTIVE_PET_DROP_RATES,
 )
+from database.db import ActivePetLimitError, DatabaseError
 from utils import embeds
 
 FESTIVE_COIN_EMOJI: str = "🎉"
@@ -206,9 +207,100 @@ class EventAnniversaire(commands.Cog):
         embed = embeds.info_embed("\n".join(lines), title="🎂 Event Anniversaire")
         await ctx.send(embed=embed)
 
-    # ------------------------------------------------------------------
-    # Œuf festif
-    # ------------------------------------------------------------------
+    @commands.command(name="autoequipevent", aliases=("autoequipfestif",))
+    async def autoequip_event(self, ctx: commands.Context) -> None:
+        """Équipe automatiquement tes meilleurs pets festifs (utilisable via `e!autoequip event`)."""
+        await self._run_autoequip_event(ctx)
+
+    async def _run_autoequip_event(self, ctx: commands.Context) -> None:
+        user_id = ctx.author.id
+        await self.database.ensure_user(user_id)
+        rows = await self.database.get_user_pets(user_id)
+
+        festive_rows = [
+            row
+            for row in rows
+            if str(row.get("name", "")) in FESTIVE_COIN_INCOME_PER_SECOND
+            and not bool(row.get("on_market"))
+        ]
+        if not festive_rows:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    f"Tu n'as encore aucun pet festif. Utilise `!oeuffestif` pour en obtenir un "
+                    f"({FESTIVE_EGG_PRICE} Festive Coins)."
+                )
+            )
+            return
+
+        max_slots = await self.database.get_pet_slot_limit(user_id)
+        active_total = sum(1 for row in rows if bool(row.get("is_active")))
+        free_slots = max(0, max_slots - active_total)
+
+        def income_of(row) -> int:
+            return FESTIVE_COIN_INCOME_PER_SECOND[str(row.get("name", ""))]
+
+        inactive_festive = sorted(
+            (row for row in festive_rows if not bool(row.get("is_active"))),
+            key=lambda row: (-income_of(row), row.get("acquired_at")),
+        )
+        active_festive = sorted(
+            (row for row in festive_rows if bool(row.get("is_active"))),
+            key=lambda row: income_of(row),
+        )
+
+        equipped_names: list[str] = []
+        swapped_names: list[tuple[str, str]] = []
+
+        # 1. On remplit d'abord les slots libres avec les meilleurs pets festifs non équipés.
+        while free_slots > 0 and inactive_festive:
+            candidate = inactive_festive.pop(0)
+            try:
+                await self.database.activate_user_pet(user_id, int(candidate["id"]))
+            except (DatabaseError, ActivePetLimitError):
+                break
+            equipped_names.append(str(candidate.get("name", "Pet")))
+            free_slots -= 1
+
+        # 2. Plus de slots libres : on échange un pet festif équipé plus faible contre
+        #    un meilleur pet festif possédé mais inactif (uniquement si ça améliore le gain).
+        while inactive_festive and active_festive:
+            best_candidate = inactive_festive[0]
+            worst_active = active_festive[0]
+            if income_of(best_candidate) <= income_of(worst_active):
+                break
+            try:
+                await self.database.deactivate_user_pet(user_id, int(worst_active["id"]))
+                await self.database.activate_user_pet(user_id, int(best_candidate["id"]))
+            except DatabaseError:
+                break
+            swapped_names.append(
+                (str(worst_active.get("name", "Pet")), str(best_candidate.get("name", "Pet")))
+            )
+            inactive_festive.pop(0)
+            active_festive.pop(0)
+
+        if not equipped_names and not swapped_names:
+            await ctx.send(
+                embed=embeds.info_embed(
+                    "Tes pets festifs équipés sont déjà les meilleurs disponibles — rien à changer.",
+                    title="🎂 Auto-équipement event",
+                )
+            )
+            return
+
+        lines = []
+        if equipped_names:
+            lines.append("✅ Équipé(s) : " + ", ".join(equipped_names))
+        for old, new in swapped_names:
+            lines.append(f"🔄 {old} remplacé par {new}")
+
+        await ctx.send(
+            embed=embeds.success_embed(
+                "\n".join(lines), title="🎂 Auto-équipement des pets festifs"
+            )
+        )
+
+
 
     async def _play_egg_animation(
         self, ctx: commands.Context, *, egg_emoji: str = "🥚"
