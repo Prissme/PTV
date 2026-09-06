@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Mapping, MutableMapping, Sequence
 
 from config import (
+    FESTIVE_COIN_INCOME_PER_SECOND,
     GALAXY_PET_MULTIPLIER,
     GOLD_PET_MULTIPLIER,
     PET_EMOJIS,
@@ -13,6 +14,8 @@ from config import (
     SHINY_PET_MULTIPLIER,
     scale_pet_value,
 )
+
+FESTIVE_COIN_EMOJI: str = "🎉"
 
 from .formatting import format_currency, format_gems
 
@@ -113,7 +116,14 @@ class PetDisplay:
         return pet_emoji(self.name)
 
     @property
+    def is_festive(self) -> bool:
+        return self.name in FESTIVE_COIN_INCOME_PER_SECOND
+
+    @property
     def income_text(self) -> str:
+        if self.is_festive:
+            rate = FESTIVE_COIN_INCOME_PER_SECOND[self.name]
+            return f"{rate} {FESTIVE_COIN_EMOJI}/s"
         return f"{format_currency(self.income_per_hour)}/h"
 
     def rarity_label(self) -> str:
@@ -147,7 +157,11 @@ class PetDisplay:
         return base
 
     def reveal_lines(self) -> list[str]:
-        lines = [f"Revenus passifs : **{self.income_text}**"]
+        if self.is_festive:
+            rate = FESTIVE_COIN_INCOME_PER_SECOND[self.name]
+            lines = [f"Revenu : **{rate} {FESTIVE_COIN_EMOJI}/s** (une fois équipé)"]
+        else:
+            lines = [f"Revenus passifs : **{self.income_text}**"]
         if self.is_huge:
             lines.append(f"🎉 Incroyable ! Tu as obtenu **{self.name}** ! 🎉")
         if self.is_galaxy:
@@ -262,8 +276,13 @@ class PetDisplay:
         return lines
 
     def claim_line(self, share: int) -> str:
-        share_text = f"+{format_currency(share)}" if share > 0 else "0 PB"
-        parts = [self.emoji, self.name, self.income_text, share_text]
+        if self.is_festive:
+            rate = FESTIVE_COIN_INCOME_PER_SECOND[self.name]
+            income_display = f"{rate} {FESTIVE_COIN_EMOJI}/s"
+            parts = [self.emoji, self.name, income_display]
+        else:
+            share_text = f"+{format_currency(share)}" if share > 0 else "0 PB"
+            parts = [self.emoji, self.name, self.income_text, share_text]
         tags: list[str] = []
         if self.is_active:
             tags.append("Actif")
