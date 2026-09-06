@@ -1,55 +1,22 @@
 from __future__ import annotations
 
 import asyncio
-import random
-
 import discord
 from discord.ext import commands
 
 from config import (
     FESTIVE_COIN_INCOME_PER_SECOND,
     FESTIVE_EGG_PRICE,
+    FESTIVE_EGG_DEFINITION,
     FESTIVE_EVENT_PET_NAMES,
     FESTIVE_GIFT_EGG_PRICE,
-    FESTIVE_GIFT_PET_DROP_RATES,
-    FESTIVE_PET_DROP_RATES,
-    get_huge_multiplier,
+    FESTIVE_GIFT_EGG_DEFINITION,
 )
 from database.db import ActivePetLimitError, DatabaseError
 from utils import embeds
 
 FESTIVE_COIN_EMOJI: str = "🎉"
 STARTING_FESTIVE_COINS: int = 100
-
-_FESTIVE_PET_IMAGES = {
-    "Festive Mandy": "https://cdn.discordapp.com/emojis/1545748676012544070.png",
-    "Festive Piper": "https://cdn.discordapp.com/emojis/1545751609743642725.png",
-    "Ollie": "https://cdn.discordapp.com/emojis/1545752797482459237.png",
-    "Huge Festive Mandy": "https://cdn.discordapp.com/emojis/1545748676012544070.png",
-    "Huge Festive Piper": "https://cdn.discordapp.com/emojis/1545751609743642725.png",
-    "Huge Ollie": "https://cdn.discordapp.com/emojis/1545752797482459237.png",
-}
-
-
-def _roll_festive_pet_name() -> str:
-    roll = random.random()
-    cumulative = 0.0
-    for name, rate in FESTIVE_PET_DROP_RATES.items():
-        cumulative += rate
-        if roll <= cumulative:
-            return name
-    return next(iter(FESTIVE_PET_DROP_RATES))
-
-
-def _roll_festive_gift_pet_name() -> str:
-    roll = random.random()
-    cumulative = 0.0
-    for name, rate in FESTIVE_GIFT_PET_DROP_RATES.items():
-        cumulative += rate
-        if roll <= cumulative:
-            return name
-    return next(iter(FESTIVE_GIFT_PET_DROP_RATES))
-
 
 class FestiveEggReplayView(discord.ui.View):
     """Boutons 'Encore!' et 'AUTO' après l'ouverture d'un œuf festif."""
@@ -397,12 +364,11 @@ class EventAnniversaire(commands.Cog):
         user_id = ctx.author.id
         pool = self.database.pool
 
-        pet_name = _roll_festive_pet_name()
-        pet_id = await self.database.get_pet_id_by_name(pet_name)
-        if pet_id is None:
+        pets_cog = self.bot.get_cog("Pets")
+        if pets_cog is None:
             await ctx.send(
                 embed=embeds.error_embed(
-                    "Le catalogue des pets festifs n'est pas encore synchronisé, réessaie dans un instant."
+                    "Le système d'ouverture des œufs n'est pas encore disponible, réessaie dans un instant."
                 )
             )
             return
@@ -429,26 +395,8 @@ class EventAnniversaire(commands.Cog):
                     FESTIVE_EGG_PRICE,
                 )
 
-        # Ajouté via le système de pets standard (mêmes tables que les autres œufs).
-        await self.database.add_user_pet(user_id, pet_id)
-
-        message = await self._play_egg_animation(ctx)
-
-        income_per_second = FESTIVE_COIN_INCOME_PER_SECOND[pet_name]
-        drop_rate = FESTIVE_PET_DROP_RATES[pet_name]
-        embed = embeds.success_embed(
-            f"Tu as obtenu **{pet_name}** ! "
-            f"({int(drop_rate * 100)}% de chance — {income_per_second} "
-            f"Festive Coin{'s' if income_per_second > 1 else ''}/seconde une fois équipé)\n\n"
-            f"Il est dans ton inventaire mais pas encore équipé : utilise "
-            f"`e!equip {pet_name}` pour qu'il commence à rapporter des Festive Coins "
-            f"(mêmes emplacements que tes autres pets).",
-            title="🥚 Œuf festif ouvert !",
-        )
-        embed.set_image(url=_FESTIVE_PET_IMAGES[pet_name])
         replay_view = FestiveEggReplayView(self, ctx)
-        replay_view.message = message
-        await message.edit(content=None, embed=embed, view=replay_view)
+        await pets_cog.hatch_external_egg(ctx, FESTIVE_EGG_DEFINITION, replay_view=replay_view)
 
 
     async def _start_auto_festive_hatch(
@@ -579,12 +527,11 @@ class EventAnniversaire(commands.Cog):
             )
             return
 
-        pet_name = _roll_festive_gift_pet_name()
-        pet_id = await self.database.get_pet_id_by_name(pet_name)
-        if pet_id is None:
+        pets_cog = self.bot.get_cog("Pets")
+        if pets_cog is None:
             await ctx.send(
                 embed=embeds.error_embed(
-                    "Le catalogue des pets festifs n'est pas encore synchronisé, réessaie dans un instant."
+                    "Le système d'ouverture des œufs n'est pas encore disponible, réessaie dans un instant."
                 )
             )
             return
@@ -612,23 +559,7 @@ class EventAnniversaire(commands.Cog):
                     FESTIVE_GIFT_EGG_PRICE,
                 )
 
-        await self.database.add_user_pet(user_id, pet_id, is_huge=True)
-
-        message = await self._play_egg_animation(ctx, egg_emoji="🎁")
-
-        drop_rate = FESTIVE_GIFT_PET_DROP_RATES[pet_name]
-        multiplier = get_huge_multiplier(pet_name)
-        embed = embeds.success_embed(
-            f"Tu as obtenu **{pet_name}** ! ({drop_rate * 100:.0f}% de chance)\n\n"
-            f"C'est un **vrai Huge** : il rapporte du PB via `e!claim`, avec un "
-            f"multiplicateur montant jusqu'à **x{multiplier:.0f}** au niveau max "
-            f"(scalé sur ton meilleur pet non-huge, comme tes autres Huges).\n\n"
-            f"Il est dans ton inventaire mais pas encore équipé : utilise "
-            f"`e!equip {pet_name}` pour l'activer.",
-            title="🎁 Œuf cadeau ouvert !",
-        )
-        embed.set_image(url=_FESTIVE_PET_IMAGES[pet_name])
-        await message.edit(content=None, embed=embed)
+        await pets_cog.hatch_external_egg(ctx, FESTIVE_GIFT_EGG_DEFINITION)
 
 
 async def setup(bot: commands.Bot) -> None:
