@@ -5016,6 +5016,13 @@ class Database:
             user_id,
         )
 
+    async def get_discovered_pet_ids(self, user_id: int) -> set[int]:
+        rows = await self.pool.fetch(
+            "SELECT DISTINCT p.pet_id FROM user_pets AS up JOIN pets AS p ON p.pet_id = up.pet_id WHERE up.user_id = $1",
+            user_id,
+        )
+        return {int(r["pet_id"]) for r in rows}
+
     async def get_daycare_last_claim(self, user_id: int) -> datetime | None:
         await self.ensure_user(user_id)
         return await self.pool.fetchval(
