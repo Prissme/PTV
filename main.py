@@ -54,7 +54,6 @@ class EcoBot(commands.Bot):
             "drops",
             "pets",
             "potions",
-            "enchantments",
             "help",
             "plaza",
             "admin",
