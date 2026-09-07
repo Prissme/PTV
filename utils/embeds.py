@@ -32,7 +32,7 @@ _BRANDING_REPLACEMENTS: dict[str, str] = {
     "FREESCAPE": "PRISSCUP",
 }
 
-_PB_EMOJI_PATTERN = re.compile(r"\bPB\b(?!\s*🪙)")
+_PB_EMOJI_PATTERN = re.compile(r"\bPB\b(?!\s*(?:🪙|<a?:\w+:\d+>))")
 
 
 def _apply_branding(text: str | None) -> str | None:
@@ -47,11 +47,11 @@ def _apply_branding(text: str | None) -> str | None:
 
 
 def _apply_pb_emoji(text: str | None) -> str | None:
-    """Ajoute l'emoji aux mentions de PB si absent."""
+    """Remplace les mentions textuelles de PB par l'emoji dédié."""
 
     if text is None:
         return None
-    return _PB_EMOJI_PATTERN.sub("PB 🪙", text)
+    return _PB_EMOJI_PATTERN.sub(Emojis.COIN, text)
 
 
 def _finalize_embed(embed: discord.Embed) -> discord.Embed:
@@ -231,7 +231,7 @@ def slot_machine_embed(
     result_text: str,
 ) -> discord.Embed:
     net = payout - bet
-    gain_line = format_currency(payout) if payout else "0 PB"
+    gain_line = format_currency(payout) if payout else f"0 {Emojis.COIN}"
     multiplier_text = f" (x{multiplier})" if multiplier else ""
 
     lines = [
@@ -274,7 +274,7 @@ def mastermind_board_embed(
 ) -> discord.Embed:
     palette_line = ", ".join(f"{emoji} {name.capitalize()}" for name, emoji in palette)
     description_lines = [
-        f"Devine la combinaison de **{code_length}** couleurs pour décrocher des PB bonus et des tickets de tombola.",
+        f"Devine la combinaison de **{code_length}** couleurs pour décrocher des {Emojis.COIN} bonus et des tickets de tombola.",
         f"Palette : {palette_line}",
         "Les couleurs peuvent se répéter.",
         f"Tu disposes de **{max_attempts}** tentatives et de {timeout}s par interaction.",
@@ -361,7 +361,7 @@ def leaderboard_embed(
         if normalized_symbol == "PB":
             value_display = format_currency(value)
         elif normalized_symbol == "PB/H":
-            value_display = f"{format_compact(value)} {symbol}"
+            value_display = f"{format_compact(value)} {Emojis.COIN}/h"
         elif normalized_symbol == "RAP":
             value_display = f"{format_gems(value)} (RAP)"
         elif normalized_symbol in {"GEM", "GEMS"}:
@@ -608,7 +608,7 @@ def rank_profile_embed(
     embed = _base_embed("🏆 Carte de joueur", description, color=Colors.PRIMARY)
     _set_member_author(embed, member)
     _set_member_thumbnail(embed, member)
-    embed.add_field(name="💰 PB", value=format_currency(balance), inline=True)
+    embed.add_field(name=str(Emojis.COIN), value=format_currency(balance), inline=True)
     embed.add_field(name=str(Emojis.GEM), value=format_gems(gems), inline=True)
     embed.add_field(name="📊 RAP total", value=format_gems(rap_total), inline=True)
 
@@ -1260,7 +1260,7 @@ def clan_overview_embed(
     header = [
         f"⚔️ Chef : **{leader_name}**",
         f"🧮 Membres : **{member_count}/{capacity}**",
-        f"🔥 Turbo PB : **x{boost_multiplier:.2f}** (Niv. boost {boost_level})",
+        f"🔥 Turbo {Emojis.COIN} : **x{boost_multiplier:.2f}** (Niv. boost {boost_level})",
         f"✨ Chance shiny : **x{shiny_multiplier:.2f}**",
         f"📦 Extension : Niv. {capacity_level}",
     ]
