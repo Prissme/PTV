@@ -128,7 +128,7 @@ class LeaderboardView(discord.ui.View):
         self.page = 0
         await self._refresh(interaction)
 
-    @discord.ui.button(label="PB", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label=str(Emojis.COIN), style=discord.ButtonStyle.secondary, row=1)
     async def show_pb(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
