@@ -232,6 +232,10 @@ class Database:
             CACHE_TTL_SECONDS, CACHE_MAX_ENTRIES
         )
         self._market_values_ready = False
+        self._market_values_cache: LruTTLCache[object] = LruTTLCache(
+            CACHE_TTL_SECONDS, CACHE_MAX_ENTRIES
+        )
+        self._MARKET_VALUES_CACHE_KEY = "pet_market_values"
 
     async def _fetch(
         self, query: str, *args: object, timeout: float | None = QUERY_TIMEOUT_SECONDS
@@ -749,6 +753,7 @@ class Database:
             SET value_in_gems = GREATEST(0, CAST(FLOOR(value_in_gems::numeric / {factor}) AS BIGINT))
             """
         )
+        self._invalidate_market_values_cache()
         await connection.execute(
             f"""
             UPDATE pet_trade_history
@@ -6223,7 +6228,19 @@ class Database:
         return market_values
 
     async def get_pet_market_values(self) -> Dict[Tuple[int, str], int]:
-        """Retourne la dernière valeur marché enregistrée pour chaque variante."""
+        """Retourne la dernière valeur marché enregistrée pour chaque variante.
+
+        Cette méthode est appelée à chaque ouverture d'œuf (potentiellement
+        plusieurs fois par commande en cas d'œufs bonus) alors que les
+        valeurs de marché ne changent que rarement (resync manuel ou
+        rebase de l'économie). On la met donc en cache en mémoire avec le
+        même TTL que le reste du cache applicatif, pour éviter de refaire
+        cette requête à chaque hatch.
+        """
+
+        cached = self._market_values_cache.get(self._MARKET_VALUES_CACHE_KEY)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
 
         rows = await self.pool.fetch(
             """
@@ -6232,14 +6249,20 @@ class Database:
             """
         )
         if rows:
-            return {
+            values = {
                 (int(row["pet_id"]), str(row["variant_code"])): max(
                     0, int(row["value_in_gems"])
                 )
                 for row in rows
             }
+        else:
+            values = await self._get_trade_history_market_values()
 
-        return await self._get_trade_history_market_values()
+        self._market_values_cache.set(self._MARKET_VALUES_CACHE_KEY, values)
+        return values
+
+    def _invalidate_market_values_cache(self) -> None:
+        self._market_values_cache.clear()
 
     @staticmethod
     def _market_rarity_key(*, name: str, rarity: str, is_huge: bool) -> str:
@@ -6471,6 +6494,7 @@ class Database:
             """,
             values_to_store,
         )
+        self._invalidate_market_values_cache()
         return len(values_to_store)
 
     async def reset_rich_users_gems(
