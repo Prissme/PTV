@@ -208,7 +208,7 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 },
                 {
                     "command": f"{PREFIX}inventory",
-                    "description": "Affiche ton inventaire complet (tickets, enchantements, potions, pets).",
+                    "description": "Affiche ton inventaire complet (tickets, potions, pets).",
                     "aliases": ("inv",),
                 },
                 {
@@ -272,7 +272,7 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 },
                 {
                     "command": f"{PREFIX}adminshop",
-                    "description": f"Revends tes enchantements contre {Emojis.GEM} directement au shop admin.",
+                    "description": f"Revends tes objets contre {Emojis.GEM} directement au shop admin.",
                 },
                 {
                     "command": f"{PREFIX}sellpet <id>",
@@ -301,10 +301,6 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 {
                     "command": f"{PREFIX}claim",
                     "description": f"Récupère les {Emojis.COIN} générés par tes pets.",
-                },
-                {
-                    "command": f"{PREFIX}enchants",
-                    "description": "Affiche tes enchantements, équipe-les et surveille tes slots disponibles.",
                 },
             ),
         },
@@ -356,10 +352,6 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 {
                     "command": f"{PREFIX}auction potion <slug> <quantité> <mise> <durée_min> [achat_immédiat]",
                     "description": "Crée une enchère pour des potions.",
-                },
-                {
-                    "command": f"{PREFIX}auction enchant <slug> <puissance> <mise> <durée_min> [achat_immédiat]",
-                    "description": "Crée une enchère pour un enchantement.",
                 },
                 {
                     "command": f"{PREFIX}auction ticket <quantité> <mise> <durée_min> [achat_immédiat]",
@@ -488,7 +480,7 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 },
                 {
                     "command": f"{PREFIX}inventory",
-                    "description": "Open an interactive view of all your items (tickets, enchants, potions, pets).",
+                    "description": "Open an interactive view of all your items (tickets, potions, pets).",
                     "aliases": ("inv",),
                 },
                 {
@@ -561,7 +553,7 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 },
                 {
                     "command": f"{PREFIX}adminshop",
-                    "description": "Sell your enchantments for gems directly to the admin shop.",
+                    "description": "Sell your items for gems directly to the admin shop.",
                 },
                 {
                     "command": f"{PREFIX}sellpet <id>",
@@ -572,10 +564,6 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "command": f"{PREFIX}sellpotion <slug> [quantity]",
                     "description": f"Sell your potions for {Emojis.COIN}.",
                     "aliases": ("sellpotions",),
-                },
-                {
-                    "command": f"{PREFIX}enchants",
-                    "description": "Manage your enchantment inventory, equip them, and track your available slots.",
                 },
             ),
         },
@@ -627,10 +615,6 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 {
                     "command": f"{PREFIX}auction potion <slug> <qty> <bid> <minutes> [buyout]",
                     "description": "Create an auction for potions.",
-                },
-                {
-                    "command": f"{PREFIX}auction enchant <slug> <power> <bid> <minutes> [buyout]",
-                    "description": "Create an auction for an enchantment.",
                 },
                 {
                     "command": f"{PREFIX}auction ticket <qty> <bid> <minutes> [buyout]",
