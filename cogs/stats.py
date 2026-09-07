@@ -18,7 +18,6 @@ from config import (
 )
 from cogs.economy import MILLIONAIRE_RACE_STAGES
 from utils import embeds
-from utils.enchantments import compute_egg_luck_bonus
 from utils.mastery import EGG_MASTERY
 
 logger = logging.getLogger(__name__)
@@ -101,8 +100,6 @@ class ActivityStats(commands.Cog):
         mastery = await self.database.get_mastery_progress(member.id, EGG_MASTERY.slug)
         mastery_level = int(mastery.get("level", 1) or 1)
         mastery_bonus = 1.0 if mastery_level >= 64 else 0.0
-        enchantments = await self.database.get_enchantment_powers(member.id)
-        enchantment_bonus = compute_egg_luck_bonus(enchantments.get("egg_luck", 0))
         active_potion = await self.database.get_active_potion(member.id)
         potion_bonus = 0.0
         potion_label = None
@@ -121,7 +118,6 @@ class ActivityStats(commands.Cog):
 
         egg_luck_total = (
             mastery_bonus
-            + enchantment_bonus
             + potion_bonus
             + frenzy_bonus
             + role_bonus
@@ -129,10 +125,6 @@ class ActivityStats(commands.Cog):
         luck_breakdown: list[str] = []
         if mastery_bonus:
             luck_breakdown.append(f"Maîtrise des œufs : +{mastery_bonus * 100:.0f}%")
-        if enchantment_bonus:
-            luck_breakdown.append(
-                f"Enchantements : +{enchantment_bonus * 100:.0f}%"
-            )
         if potion_bonus:
             suffix = f" ({potion_label})" if potion_label else ""
             luck_breakdown.append(
