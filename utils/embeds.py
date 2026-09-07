@@ -22,7 +22,7 @@ from config import (
 )
 
 from utils.formatting import format_compact, format_currency, format_gems
-from utils.pet_formatting import PetDisplay, pet_emoji
+from utils.pet_formatting import FESTIVE_COIN_EMOJI, PetDisplay, pet_emoji
 from utils.mastery import MasteryDefinition
 from utils.enchantments import ENCHANTMENT_DEFINITION_MAP, format_enchantment
 
@@ -192,7 +192,7 @@ def balance_embed(
     if gems is not None:
         lines.append(f"**{Emojis.GEM} :** {format_compact(gems)}")
     if festive_coins is not None:
-        lines.append(f"**🎉 Festive Coins :** {format_compact(festive_coins)}")
+        lines.append(f"**{FESTIVE_COIN_EMOJI} Festive Coins :** {format_compact(festive_coins)}")
     description = "\n".join(lines)
     embed = _base_embed("Solde", description, color=Colors.SUCCESS if balance else Colors.NEUTRAL)
     _set_member_author(embed, member)
