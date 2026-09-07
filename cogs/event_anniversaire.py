@@ -12,6 +12,7 @@ from config import (
 )
 from database.db import ActivePetLimitError, DatabaseError
 from utils import embeds
+from utils.pet_formatting import FESTIVE_COIN_EMOJI
 
 CAKE_PRICE: int = 100          # Festive Coins par gâteau
 CAKE_AUTOPINATA_SECONDS: int = 5   # secondes d'autopinata par gâteau
