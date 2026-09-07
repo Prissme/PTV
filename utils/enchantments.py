@@ -5,6 +5,8 @@ import random
 from dataclasses import dataclass
 from typing import Final, Iterable, Mapping, Sequence
 
+from config import Emojis
+
 
 @dataclass(frozen=True)
 class EnchantmentDefinition:
@@ -23,9 +25,9 @@ ENCHANTMENT_DEFINITIONS: Final[tuple[EnchantmentDefinition, ...]] = (
     ),
     EnchantmentDefinition(
         "prissbucks",
-        "Enchantement Générateur de PB",
+        f"Enchantement Générateur de {Emojis.COIN}",
         "Boost permanent sur les gains passifs des pets.",
-        "Ajoute un multiplicateur aux revenus PrissBucks.",
+        f"Ajoute un multiplicateur aux revenus {Emojis.COIN}.",
     ),
     EnchantmentDefinition(
         "slots_luck",
