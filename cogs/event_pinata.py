@@ -134,6 +134,13 @@ class EventPinata(commands.Cog):
     def _upgrade_chance(chance_upgrades: int) -> float:
         return min(1.0, BASE_UPGRADE_CHANCE + CHANCE_BONUS_PER_UPGRADE * chance_upgrades)
 
+    @staticmethod
+    def _chance_as_fraction(chance: float) -> str:
+        """Formate une probabilité en fraction lisible du type '1/5 000'."""
+        if chance <= 0:
+            return "1/∞"
+        return f"1/{round(1 / chance):,}".replace(",", " ")
+
     async def _ensure_row(self, connection, user_id: int):
         row = await connection.fetchrow(
             "SELECT * FROM pinata_event WHERE user_id = $1",
@@ -234,10 +241,14 @@ class EventPinata(commands.Cog):
                     income = self._income_per_second(
                         current["pinata_level"], current["cash_upgrades"]
                     )
+                    chance_display = self._chance_as_fraction(
+                        self._upgrade_chance(current["chance_upgrades"])
+                    )
                     await ctx.send(
                         embed=embeds.info_embed(
                             f"🪅 Piñata niveau **{current['pinata_level']}** — "
                             f"**{income:.1f}$/s**\n"
+                            f"🎲 Chance d'upgrade : **{chance_display}**\n"
                             f"💵 Solde : **{current['dollars']:.1f}$**\n"
                             f"⏳ Prochain essai dans **{max(remaining, 0.0):.1f}s**.",
                             title="Piñata de l'event",
@@ -279,10 +290,12 @@ class EventPinata(commands.Cog):
                 )
             )
         else:
+            chance_display = self._chance_as_fraction(chance)
             await ctx.send(
                 embed=embeds.info_embed(
                     f"🪅 Pas d'upgrade cette fois... Ta piñata niveau **{level}** "
                     f"continue de rapporter **{income:.1f}$/s**.\n"
+                    f"🎲 Chance d'upgrade : **{chance_display}**\n"
                     f"Réessaie dans {self._cooldown_seconds(cooldown_upgrades):.1f}s.",
                     title="Piñata secouée",
                 )
@@ -300,7 +313,14 @@ class EventPinata(commands.Cog):
                 async with connection.transaction():
                     row = await self._settle_income(connection, user_id)
 
-            lines = [f"💵 Solde : **{row['dollars']:.1f}$**", ""]
+            chance_display = self._chance_as_fraction(
+                self._upgrade_chance(row["chance_upgrades"])
+            )
+            lines = [
+                f"💵 Solde : **{row['dollars']:.1f}$**",
+                f"🎲 Chance d'upgrade actuelle : **{chance_display}**",
+                "",
+            ]
             for key in ("cooldown", "chance", "cash"):
                 count = row[f"{key}_upgrades"]
                 cap = _max_for(key)
