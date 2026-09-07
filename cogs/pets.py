@@ -3731,7 +3731,10 @@ class Pets(commands.Cog):
             description=description,
             color=embeds.Colors.INFO,
         )
-        embed.set_thumbnail(url="https://cdn.discordapp.com/emojis/1542057019664633887.png?size=256")
+        image = self._egg_showcase_image(egg)
+        embed.set_image(url="https://cdn.discordapp.com/emojis/1542057019664633887.png?size=256")
+        if image:
+            embed.set_thumbnail(url=image)
         embed.set_footer(text="Les pets non découverts sont masqués. Ouvre l'œuf pour les révéler !")
         return embed
 
@@ -3820,11 +3823,7 @@ class Pets(commands.Cog):
                 log_context["stage"] = "egg_preview"
                 discovered_ids: Set[int] = set()
                 try:
-                    user_pets = await self.database.get_user_pets(ctx.author.id)
-                    for row in user_pets:
-                        pid = int(row.get("pet_id") or 0)
-                        if pid > 0:
-                            discovered_ids.add(pid)
+                    discovered_ids = await self.database.get_discovered_pet_ids(ctx.author.id)
                 except Exception:
                     pass  # On continue sans données de découverte
                 preview_embed = self._build_egg_preview_embed(
