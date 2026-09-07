@@ -24,7 +24,6 @@ from config import (
 from utils.formatting import format_compact, format_currency, format_gems
 from utils.pet_formatting import FESTIVE_COIN_EMOJI, PetDisplay, pet_emoji
 from utils.mastery import MasteryDefinition
-from utils.enchantments import ENCHANTMENT_DEFINITION_MAP, format_enchantment
 
 _BRANDING_REPLACEMENTS: dict[str, str] = {
     "Freescape": "PrissCup",
@@ -1021,7 +1020,6 @@ def pet_claim_embed(
     booster: Mapping[str, float] | None = None,
     clan: Mapping[str, object] | None = None,
     potion: Mapping[str, object] | None = None,
-    enchantment: Mapping[str, object] | None = None,
     farm_rewards: Mapping[str, object] | None = None,
 ) -> discord.Embed:
     displays = [PetDisplay.from_mapping(pet) for pet in pets]
@@ -1053,20 +1051,6 @@ def pet_claim_embed(
             if remaining > 0:
                 potion_line += f" ({_format_duration(remaining)} restants)"
             extra_info.append(potion_line)
-    if enchantment:
-        slug = str(enchantment.get("slug") or "")
-        power = int(enchantment.get("power") or 0)
-        definition = ENCHANTMENT_DEFINITION_MAP.get(slug)
-        if definition and power > 0:
-            label = format_enchantment(definition, power)
-        else:
-            label = f"Enchantement puissance {power}" if power else "Enchantement actif"
-        multiplier = float(enchantment.get("multiplier", 1.0))
-        bonus = int(enchantment.get("bonus", 0))
-        line = f"{label} x{multiplier:.2f}"
-        if bonus > 0:
-            line += f" (+{format_currency(bonus)})"
-        extra_info.append(line)
     if clan:
         clan_name = str(clan.get("name", "Clan"))
         clan_multiplier = float(clan.get("multiplier", 1.0))
@@ -1107,17 +1091,6 @@ def pet_claim_embed(
                 definition = POTION_DEFINITION_MAP.get(str(slug))
                 potion_name = definition.name if definition else str(slug)
                 reward_lines.append(f"🧪 {potion_name} ×{qty}")
-
-        enchantments = farm_rewards.get("enchantments")
-        if isinstance(enchantments, Collection):
-            for enchantment_entry in enchantments:
-                if not isinstance(enchantment_entry, Mapping):
-                    continue
-                slug = str(enchantment_entry.get("slug") or "")
-                power = int(enchantment_entry.get("power") or 0)
-                definition = ENCHANTMENT_DEFINITION_MAP.get(slug)
-                label = format_enchantment(definition, power) if definition else slug
-                reward_lines.append(f"✨ {label}")
 
     if reward_lines:
         embed.add_field(
