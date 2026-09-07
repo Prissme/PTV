@@ -1653,7 +1653,7 @@ _FESTIVE_EVENT_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name="Festive Piper",
         rarity="Festif",
-        image_url="https://cdn.discordapp.com/emojis/1545751609743642725.png",
+        image_url="https://cdn.discordapp.com/emojis/1546430132842008686.png",
         base_income_per_hour=0,
         drop_rate=0.0,
     ),
@@ -1668,10 +1668,11 @@ _FESTIVE_EVENT_PETS: Tuple[PetDefinition, ...] = (
     # Ce sont de VRAIS Huges (is_huge=True) : ils rapportent du PB via le système normal
     # (e!claim), scalé sur le meilleur pet non-huge du joueur, comme n'importe quel Huge.
     # base_income_per_hour sert uniquement de fallback si le joueur n'a aucun pet non-huge.
+    # Chaque Huge a désormais son propre emoji dédié (différent de la version normale).
     PetDefinition(
         name=HUGE_FESTIVE_MANDY_NAME,
         rarity="Secret",
-        image_url="https://cdn.discordapp.com/emojis/1545748676012544070.png",
+        image_url="https://cdn.discordapp.com/emojis/1546429349530439691.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0,
         is_huge=True,
@@ -1679,7 +1680,7 @@ _FESTIVE_EVENT_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name=HUGE_FESTIVE_PIPER_NAME,
         rarity="Secret",
-        image_url="https://cdn.discordapp.com/emojis/1545751609743642725.png",
+        image_url="https://cdn.discordapp.com/emojis/1546430131466141776.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0,
         is_huge=True,
@@ -1687,7 +1688,7 @@ _FESTIVE_EVENT_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name=HUGE_OLLIE_NAME,
         rarity="Secret",
-        image_url="https://cdn.discordapp.com/emojis/1545752797482459237.png",
+        image_url="https://cdn.discordapp.com/emojis/1546428608367566898.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0,
         is_huge=True,
@@ -1810,11 +1811,15 @@ PET_EMOJIS: Final[dict[str, str]] = {
     TITANIC_POCO_NAME: os.getenv("PET_EMOJI_TITANIC_POCO", "<:TITANICPOCO:1437826145486770176>"),
     # Pets festifs (event anniversaire)
     "Festive Mandy": os.getenv("PET_EMOJI_FESTIVE_MANDY", "<:FestiveMandy:1545748676012544070>"),
-    "Festive Piper": os.getenv("PET_EMOJI_FESTIVE_PIPER", "<:FestivePiper:1545751609743642725>"),
+    "Festive Piper": os.getenv("PET_EMOJI_FESTIVE_PIPER", "<:FestivePiper:1546430132842008686>"),
     "Ollie": os.getenv("PET_EMOJI_OLLIE", "<:Ollie:1545752797482459237>"),
-    HUGE_FESTIVE_MANDY_NAME: os.getenv("PET_EMOJI_FESTIVE_MANDY", "<:FestiveMandy:1545748676012544070>"),
-    HUGE_FESTIVE_PIPER_NAME: os.getenv("PET_EMOJI_FESTIVE_PIPER", "<:FestivePiper:1545751609743642725>"),
-    HUGE_OLLIE_NAME: os.getenv("PET_EMOJI_OLLIE", "<:Ollie:1545752797482459237>"),
+    HUGE_FESTIVE_MANDY_NAME: os.getenv(
+        "PET_EMOJI_HUGE_FESTIVE_MANDY", "<:HugeFestiveMandy:1546429349530439691>"
+    ),
+    HUGE_FESTIVE_PIPER_NAME: os.getenv(
+        "PET_EMOJI_HUGE_FESTIVE_PIPER", "<:HugeFestivePiper:1546430131466141776>"
+    ),
+    HUGE_OLLIE_NAME: os.getenv("PET_EMOJI_HUGE_OLLIE", "<:HugeOllie:1546428608367566898>"),
     # FIX: Ensure default emoji falls back when the environment variable is empty.
     "default": os.getenv("PET_EMOJI_DEFAULT") or "🐾",
 }
