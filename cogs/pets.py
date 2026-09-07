@@ -3683,7 +3683,6 @@ class Pets(commands.Cog):
     @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.command(name="openbox", aliases=("buyegg", "openegg", "egg"))
     async def openbox(self, ctx: commands.Context, egg: str | None = None) -> None:
-        await self._ack_heavy_command(ctx)
         lock = self._get_open_lock(ctx.author.id)
         async with lock:
             await self._openbox_impl(ctx, egg)
@@ -3691,7 +3690,6 @@ class Pets(commands.Cog):
     @commands.cooldown(1, 5, commands.BucketType.user)
     @commands.command(name="flower")
     async def flower(self, ctx: commands.Context) -> None:
-        await self._ack_heavy_command(ctx)
         lock = self._get_open_lock(ctx.author.id)
         async with lock:
             await self._openbox_impl(ctx, "flower")
