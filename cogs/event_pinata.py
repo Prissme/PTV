@@ -26,12 +26,18 @@ BASE_COOLDOWN_SECONDS: float = 10.0
 COOLDOWN_REDUCTION_PER_UPGRADE: float = 0.4
 MAX_COOLDOWN_UPGRADES: int = 20  # -> plancher 10 - 20*0.4 = 2s
 
-BASE_UPGRADE_CHANCE: float = 0.0002  # 1/5000 — sans achat : ~8-9 jours pour les 15 niveaux
-CHANCE_BONUS_PER_UPGRADE: float = 0.00006  # +0,006 pt de %/achat
-MAX_CHANCE_UPGRADES: int = 20  # -> chance max = 0.14% (avec cooldown mini 2s : ~6h pour les 15 niveaux)
-# Calcul (espérance) : temps par niveau ≈ cooldown / chance.
-# Sans upgrade   : 10s / 0.0002   = 50 000s/niveau -> x15 ≈ 8,7 jours
-# Tout maxé      : 2s  / 0.0014   ≈ 1 429s/niveau  -> x15 ≈ 5,9 heures
+BASE_UPGRADE_CHANCE: float = 0.0006  # 1/1667 — sans achat : ~6-7 jours pour les 15 niveaux
+CHANCE_BONUS_PER_UPGRADE: float = 0.00012  # +0,012 pt de %/achat
+MAX_CHANCE_UPGRADES: int = 20  # -> chance de base max (niveau 1) = 1/333
+LEVEL_CHANCE_DECAY: float = 0.90  # -10% de chance (multiplicatif) par niveau déjà atteint
+# La piñata devient plus dure à casser à mesure qu'elle monte de niveau :
+# chaque niveau multiplie la chance par 0.90 (donc niveau 15 = chance ÷ ~4,4
+# par rapport au niveau 1, à upgrades égaux). Un malus multiplicatif (plutôt
+# qu'un flat) évite de tomber à 0% ou en négatif en fin de run — la chance
+# décroît mais reste toujours positive.
+# Calcul (espérance) : temps total pour les 15 niveaux.
+# Sans upgrade   : cooldown=10s, chance niveau 1=1/1667  -> ~6,7 jours
+# Tout maxé      : cooldown=2s,  chance niveau 1=1/333   -> ~6,4 heures
 # (avant ce fix : base 0.1% + upgrades à +4pts/achat -> les 15 niveaux
 # tombaient en quelques minutes, même sans rien acheter à la boutique)
 
@@ -131,8 +137,9 @@ class EventPinata(commands.Cog):
         )
 
     @staticmethod
-    def _upgrade_chance(chance_upgrades: int) -> float:
-        return min(1.0, BASE_UPGRADE_CHANCE + CHANCE_BONUS_PER_UPGRADE * chance_upgrades)
+    def _upgrade_chance(chance_upgrades: int, level: int) -> float:
+        base = BASE_UPGRADE_CHANCE + CHANCE_BONUS_PER_UPGRADE * chance_upgrades
+        return min(1.0, base * (LEVEL_CHANCE_DECAY ** (level - 1)))
 
     @staticmethod
     def _chance_as_fraction(chance: float) -> str:
@@ -242,7 +249,7 @@ class EventPinata(commands.Cog):
                         current["pinata_level"], current["cash_upgrades"]
                     )
                     chance_display = self._chance_as_fraction(
-                        self._upgrade_chance(current["chance_upgrades"])
+                        self._upgrade_chance(current["chance_upgrades"], current["pinata_level"])
                     )
                     await ctx.send(
                         embed=embeds.info_embed(
@@ -256,7 +263,7 @@ class EventPinata(commands.Cog):
                     )
                     return
 
-                chance = self._upgrade_chance(claimed["chance_upgrades"])
+                chance = self._upgrade_chance(claimed["chance_upgrades"], claimed["pinata_level"])
                 success = random.random() < chance
                 level = int(claimed["pinata_level"])
                 cash_upgrades = int(claimed["cash_upgrades"])
@@ -314,7 +321,7 @@ class EventPinata(commands.Cog):
                     row = await self._settle_income(connection, user_id)
 
             chance_display = self._chance_as_fraction(
-                self._upgrade_chance(row["chance_upgrades"])
+                self._upgrade_chance(row["chance_upgrades"], row["pinata_level"])
             )
             lines = [
                 f"💵 Solde : **{row['dollars']:.1f}$**",
