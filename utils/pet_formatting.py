@@ -12,6 +12,7 @@ from config import (
     PET_EMOJIS,
     RAINBOW_PET_MULTIPLIER,
     SHINY_PET_MULTIPLIER,
+    Emojis,
     scale_pet_value,
 )
 
@@ -281,7 +282,7 @@ class PetDisplay:
             income_display = f"{rate} {FESTIVE_COIN_EMOJI}/s"
             parts = [self.emoji, self.name, income_display]
         else:
-            share_text = f"+{format_currency(share)}" if share > 0 else "0 PB"
+            share_text = f"+{format_currency(share)}" if share > 0 else f"0 {Emojis.COIN}"
             parts = [self.emoji, self.name, self.income_text, share_text]
         tags: list[str] = []
         if self.is_active:
