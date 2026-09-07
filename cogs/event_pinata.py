@@ -124,6 +124,7 @@ class EventPinata(commands.Cog):
         self.bot = bot
         self.database = bot.database
         self._tables_ready = False
+        self._autopinata_running: set[int] = set()  # user_ids avec boucle active
 
     async def cog_load(self) -> None:
         await self._ensure_tables()
@@ -143,8 +144,15 @@ class EventPinata(commands.Cog):
                     last_attempt_at TIMESTAMPTZ,
                     cooldown_upgrades INT NOT NULL DEFAULT 0,
                     chance_upgrades INT NOT NULL DEFAULT 0,
-                    cash_upgrades INT NOT NULL DEFAULT 0
+                    cash_upgrades INT NOT NULL DEFAULT 0,
+                    autopinata_until TIMESTAMPTZ
                 )
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE pinata_event
+                ADD COLUMN IF NOT EXISTS autopinata_until TIMESTAMPTZ
                 """
             )
         self._tables_ready = True
@@ -229,6 +237,58 @@ class EventPinata(commands.Cog):
     # ------------------------------------------------------------------
     # Commandes
     # ------------------------------------------------------------------
+
+    async def add_autopinata_seconds(self, user_id: int, seconds: int) -> None:
+        """Ajoute `seconds` secondes d'autopinata au compteur du joueur."""
+        pool = self.database.pool
+        async with pool.acquire() as connection:
+            await self._ensure_row(connection, user_id)
+            await connection.execute(
+                """
+                UPDATE pinata_event
+                SET autopinata_until = GREATEST(
+                    COALESCE(autopinata_until, now()),
+                    now()
+                ) + ($2 || ' seconds')::interval
+                WHERE user_id = $1
+                """,
+                user_id,
+                str(seconds),
+            )
+
+    async def get_autopinata_remaining(self, user_id: int) -> float:
+        """Renvoie le nombre de secondes d'autopinata restantes (0 si aucune)."""
+        pool = self.database.pool
+        async with pool.acquire() as connection:
+            row = await connection.fetchrow(
+                "SELECT autopinata_until FROM pinata_event WHERE user_id = $1", user_id
+            )
+        if row is None or row["autopinata_until"] is None:
+            return 0.0
+        from datetime import datetime, timezone
+        remaining = (row["autopinata_until"] - datetime.now(timezone.utc)).total_seconds()
+        return max(0.0, remaining)
+
+    async def _run_autopinata_loop(self, ctx: commands.Context) -> None:
+        """Boucle d'autopinata : frappe la piñata automatiquement tant que le timer tourne."""
+        import asyncio as _asyncio
+        user_id = ctx.author.id
+        if user_id in self._autopinata_running:
+            return  # boucle déjà active pour ce joueur
+        self._autopinata_running.add(user_id)
+        try:
+            while True:
+                remaining = await self.get_autopinata_remaining(user_id)
+                if remaining <= 0:
+                    break
+                await self.pinata.callback(self, ctx)
+                row = await self.database.pool.fetchrow(
+                    "SELECT cooldown_upgrades FROM pinata_event WHERE user_id = $1", user_id
+                )
+                cooldown = self._cooldown_seconds(int(row["cooldown_upgrades"])) if row else BASE_COOLDOWN_SECONDS
+                await _asyncio.sleep(max(0.5, cooldown))
+        finally:
+            self._autopinata_running.discard(user_id)
 
     @commands.command(name="pinata")
     async def pinata(self, ctx: commands.Context) -> None:
