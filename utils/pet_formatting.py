@@ -121,10 +121,23 @@ class PetDisplay:
         return self.name in FESTIVE_COIN_INCOME_PER_SECOND
 
     @property
+    def festive_rate(self) -> float:
+        """Taux festif de base multiplié par les variantes."""        rate = FESTIVE_COIN_INCOME_PER_SECOND[self.name]
+        if self.is_galaxy:
+            rate = rate * GALAXY_PET_MULTIPLIER
+        elif self.is_rainbow:
+            rate = rate * RAINBOW_PET_MULTIPLIER
+        elif self.is_gold:
+            rate = rate * GOLD_PET_MULTIPLIER
+        if self.is_shiny:
+            rate = rate * SHINY_PET_MULTIPLIER
+        return rate
+
+    @property
     def income_text(self) -> str:
         if self.is_festive:
-            rate = FESTIVE_COIN_INCOME_PER_SECOND[self.name]
-            return f"{rate} {FESTIVE_COIN_EMOJI}/s"
+            rate = self.festive_rate
+            return f"{rate:g} {FESTIVE_COIN_EMOJI}/s"
         return f"{format_currency(self.income_per_hour)}/h"
 
     def rarity_label(self) -> str:
@@ -159,8 +172,8 @@ class PetDisplay:
 
     def reveal_lines(self) -> list[str]:
         if self.is_festive:
-            rate = FESTIVE_COIN_INCOME_PER_SECOND[self.name]
-            lines = [f"Revenu : **{rate} {FESTIVE_COIN_EMOJI}/s** (une fois équipé)"]
+            rate = self.festive_rate
+            lines = [f"Revenu : **{rate:g} {FESTIVE_COIN_EMOJI}/s** (une fois équipé)"]
         else:
             lines = [f"Revenus passifs : **{self.income_text}**"]
         if self.is_huge:
@@ -278,8 +291,8 @@ class PetDisplay:
 
     def claim_line(self, share: int) -> str:
         if self.is_festive:
-            rate = FESTIVE_COIN_INCOME_PER_SECOND[self.name]
-            income_display = f"{rate} {FESTIVE_COIN_EMOJI}/s"
+            rate = self.festive_rate
+            income_display = f"{rate:g} {FESTIVE_COIN_EMOJI}/s"
             parts = [self.emoji, self.name, income_display]
         else:
             share_text = f"+{format_currency(share)}" if share > 0 else f"0 {Emojis.COIN}"
