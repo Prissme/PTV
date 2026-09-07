@@ -1681,7 +1681,7 @@ class InventoryView(discord.ui.View):
 
     def _build_overview(self) -> discord.Embed:
         lines = [
-            f"💰 PB : **{embeds.format_currency(self.snapshot.balance)}**",
+            f"{Emojis.COIN} : **{embeds.format_currency(self.snapshot.balance)}**",
             f"{Emojis.GEM} : **{embeds.format_gems(self.snapshot.gems)}**",
             f"{TOMBOLA_TICKET_EMOJI} Tickets en inventaire : **{max(0, self.snapshot.tickets_inventory)}**",
             f"🎯 Tickets misés : **{max(0, self.snapshot.tickets_committed)}**",
@@ -2348,7 +2348,7 @@ class Economy(commands.Cog):
             )
         if previous_level < 50 <= level:
             lines.append(
-                "Dernier boost : tu atteins un multiplicateur colossal **x256** sur les PB gagnés !"
+                f"Dernier boost : tu atteins un multiplicateur colossal **x256** sur les {Emojis.COIN} gagnés !"
             )
         if previous_level < 64 <= level:
             lines.append(
@@ -2632,9 +2632,9 @@ class Economy(commands.Cog):
     @staticmethod
     def _validate_give_request(author: discord.Member, target: discord.Member, amount: int) -> str | None:
         if target.bot:
-            return "Tu ne peux pas donner de PB à un bot."
+            return f"Tu ne peux pas donner de {Emojis.COIN} à un bot."
         if target == author:
-            return "Impossible de te donner des PB."
+            return f"Impossible de te donner des {Emojis.COIN}."
         if amount <= 0:
             return "Le montant doit être supérieur à 0."
         return None
@@ -2701,7 +2701,7 @@ class Economy(commands.Cog):
 
         if balance < parsed_amount:
             await ctx.send(
-                embed=embeds.error_embed("Tu n'as pas assez de PB pour ce transfert."),
+                embed=embeds.error_embed(f"Tu n'as pas assez de {Emojis.COIN} pour ce transfert."),
             )
             return
 
@@ -2716,7 +2716,7 @@ class Economy(commands.Cog):
                 receive_description=f"Transfert reçu de {ctx.author.id}",
             )
         except InsufficientBalanceError:
-            await ctx.send(embed=embeds.error_embed("Tu n'as pas assez de PB pour ce transfert."))
+            await ctx.send(embed=embeds.error_embed(f"Tu n'as pas assez de {Emojis.COIN} pour ce transfert."))
             return
         except DatabaseError:
             await ctx.send(
@@ -2822,7 +2822,7 @@ class Economy(commands.Cog):
     @commands.cooldown(1, 150, commands.BucketType.user)
     @commands.command(name="voler")
     async def steal(self, ctx: commands.Context, member: discord.Member | None = None) -> None:
-        """Tente de voler des PB à un autre membre avec une chance qui progresse avec ton grade."""
+        """Tente de voler des PB (coin) à un autre membre avec une chance qui progresse avec ton grade."""
 
         if member is None:
             await ctx.send(
@@ -2901,7 +2901,7 @@ class Economy(commands.Cog):
             )
         except InsufficientBalanceError:
             await ctx.send(
-                embed=embeds.error_embed("Ta cible n'a plus assez de PB à voler."),
+                embed=embeds.error_embed(f"Ta cible n'a plus assez de {Emojis.COIN} à voler."),
             )
             return
         except DatabaseError:
@@ -2925,7 +2925,7 @@ class Economy(commands.Cog):
     @commands.cooldown(1, 6, commands.BucketType.user)
     @commands.command(name="slots", aliases=("slot", "machine"))
     async def slots(self, ctx: commands.Context, bet: float = 100) -> None:
-        """Jeu de machine à sous simple pour miser ses PB."""
+        """Jeu de machine à sous simple pour miser ses PB (coin)."""
         # FIX: Reject non-integer wagers explicitly to avoid implicit truncation.
         if isinstance(bet, float):
             if not bet.is_integer():
@@ -2967,7 +2967,7 @@ class Economy(commands.Cog):
         if balance < bet:
             await ctx.send(
                 embed=embeds.error_embed(
-                    "Tu n'as pas assez de PB pour cette mise. Tente un montant plus faible ou récupère ton daily !"
+                    f"Tu n'as pas assez de {Emojis.COIN} pour cette mise. Tente un montant plus faible ou récupère ton daily !"
                 )
             )
             return
