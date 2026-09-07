@@ -272,7 +272,7 @@ class Admin(commands.Cog):
         if reason:
             lines.append(f"Raison : {reason}")
 
-        await ctx.send(embed=embeds.success_embed("\n".join(lines), title="PB ajoutés"))
+        await ctx.send(embed=embeds.success_embed("\n".join(lines), title=f"{Emojis.COIN} ajoutés"))
 
         logger.info(
             "Admin add_pb",
@@ -382,7 +382,7 @@ class Admin(commands.Cog):
             f"Pet transféré : {pet_description}",
             f"ID inventaire : #{transfer_result['id']}",
             "Revenu de base : "
-            f"{embeds.format_currency(scale_pet_value(int(transfer_result['base_income_per_hour'])))} PB/h",
+            f"{embeds.format_currency(scale_pet_value(int(transfer_result['base_income_per_hour'])))}/h",
         ]
 
         await ctx.send(embed=embeds.success_embed("\n".join(lines), title="Pet transféré"))
@@ -692,7 +692,7 @@ class Admin(commands.Cog):
 
         summary_lines = [
             "EcoBot est un bot d'économie complet centré sur les pets, l'épargne et le commerce.",
-            "Les joueurs gagnent des PB via le daily, l'activité et les revenus des pets équipés.",
+            f"Les joueurs gagnent des {Emojis.COIN} via le daily, l'activité et les revenus des pets équipés.",
             f"Les {Emojis.GEM} servent aux achats premium (boutique, enchères, échanges spéciaux).",
             "Le RAP mesure la valeur cumulée des pets possédés (base + variations).",
             "Un marché et des annonces permettent de vendre/échanger des pets entre joueurs.",
@@ -701,7 +701,7 @@ class Admin(commands.Cog):
         embed = embeds.info_embed("\n".join(summary_lines), title="📊 Analytics admin")
 
         totals_lines = [
-            f"💰 PB totaux : **{embeds.format_currency(totals['total_pb'])}**",
+            f"{Emojis.COIN} totaux : **{embeds.format_currency(totals['total_pb'])}**",
             f"{Emojis.GEM} totales : **{embeds.format_gems(totals['total_gems'])}**",
             f"📈 RAP total : **{embeds.format_gems(totals['total_rap'])}**",
         ]
