@@ -3731,10 +3731,7 @@ class Pets(commands.Cog):
             description=description,
             color=embeds.Colors.INFO,
         )
-        image = self._egg_showcase_image(egg)
-        embed.set_image(url="https://cdn.discordapp.com/emojis/1542057019664633887.png?size=256")
-        if image:
-            embed.set_thumbnail(url=image)
+        embed.set_thumbnail(url="https://cdn.discordapp.com/emojis/1542057019664633887.png?size=256")
         embed.set_footer(text="Les pets non découverts sont masqués. Ouvre l'œuf pour les révéler !")
         return embed
 
