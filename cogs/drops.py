@@ -12,11 +12,6 @@ from discord.ext import commands, tasks
 from config import Emojis, POTION_DEFINITIONS, PET_DEFINITIONS
 from database.db import Database, DatabaseError
 from utils import embeds
-from utils.enchantments import (
-    get_enchantment_emoji,
-    pick_random_enchantment,
-    roll_enchantment_power,
-)
 from utils.formatting import format_compact, format_currency
 from utils.pet_formatting import pet_emoji
 
@@ -58,18 +53,6 @@ def _pick_good_potion() -> DropReward:
     potion = random.choice(candidates)
     label = f"🧪 **{potion.name}**"
     return DropReward(kind="potion", label=label, data={"potion": potion})
-
-
-def _pick_good_enchantment() -> DropReward:
-    enchantment = pick_random_enchantment()
-    power = max(5, roll_enchantment_power())
-    emoji = get_enchantment_emoji(enchantment.slug)
-    label = f"{emoji} **{enchantment.name}** (puissance {power})"
-    return DropReward(
-        kind="enchant",
-        label=label,
-        data={"enchantment": enchantment, "power": power},
-    )
 
 
 def _pick_pb_reward() -> DropReward:
@@ -132,14 +115,6 @@ class DropClaimView(discord.ui.View):
             await self.database.add_user_potion(user.id, potion.slug)
             return
 
-        if self.reward.kind == "enchant":
-            enchantment = self.reward.data["enchantment"]
-            power = int(self.reward.data["power"])
-            await self.database.add_user_enchantment(
-                user.id, enchantment.slug, power=power
-            )
-            return
-
         if self.reward.kind == "pb":
             amount = int(self.reward.data["amount"])
             await self.database.increment_balance(
@@ -194,7 +169,6 @@ class DropClaimView(discord.ui.View):
 def _roll_drop() -> DropReward:
     choices: Sequence[tuple[str, int]] = (
         ("pet", 4),
-        ("enchant", 3),
         ("potion", 3),
         ("pb", 2),
         ("gems", 2),
@@ -203,8 +177,6 @@ def _roll_drop() -> DropReward:
     selected = random.choice(pool)
     if selected == "pet":
         return _pick_good_pet()
-    if selected == "enchant":
-        return _pick_good_enchantment()
     if selected == "potion":
         return _pick_good_potion()
     if selected == "gems":
