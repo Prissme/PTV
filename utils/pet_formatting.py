@@ -16,7 +16,7 @@ from config import (
     scale_pet_value,
 )
 
-FESTIVE_COIN_EMOJI: str = "🎉"
+FESTIVE_COIN_EMOJI: str = "<:FestiveCoin:1546606176815554560>"
 
 from .formatting import format_currency, format_gems
 
