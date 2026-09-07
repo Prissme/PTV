@@ -3796,24 +3796,34 @@ class Pets(commands.Cog):
             if not await self._ensure_zone_access(ctx, zone):
                 return
 
-            log_context["stage"] = "load_egg_mastery"
-            mastery_progress = await self.database.get_mastery_progress(
-                ctx.author.id, EGG_MASTERY.slug
+            # Ces 6 lectures sont indépendantes les unes des autres : on les
+            # envoie en parallèle plutôt qu'en série pour éviter de cumuler
+            # 6x la latence réseau vers la base de données à chaque ouverture.
+            log_context["stage"] = "load_parallel_context"
+            (
+                mastery_progress,
+                pet_mastery_progress,
+                clan_row,
+                index_unique_count,
+                rebirth_count,
+                active_potion,
+            ) = await asyncio.gather(
+                self.database.get_mastery_progress(ctx.author.id, EGG_MASTERY.slug),
+                self.database.get_mastery_progress(ctx.author.id, PET_MASTERY.slug),
+                self.database.get_user_clan(ctx.author.id),
+                self.database.get_unique_pet_count(ctx.author.id),
+                self.database.get_rebirth_count(ctx.author.id),
+                self.database.get_active_potion(ctx.author.id),
             )
+
             mastery_level = int(mastery_progress.get("level", 1))
             log_context["egg_mastery_level"] = mastery_level
             egg_perks = _compute_egg_mastery_perks(mastery_level)
 
-            log_context["stage"] = "load_pet_mastery"
-            pet_mastery_progress = await self.database.get_mastery_progress(
-                ctx.author.id, PET_MASTERY.slug
-            )
             pet_mastery_level = int(pet_mastery_progress.get("level", 1))
             log_context["pet_mastery_level"] = pet_mastery_level
             pet_perks = _compute_pet_mastery_perks(pet_mastery_level)
 
-            log_context["stage"] = "fetch_clan"
-            clan_row = await self.database.get_user_clan(ctx.author.id)
             clan_shiny_multiplier = 1.0
             if clan_row is not None:
                 clan_shiny_multiplier = max(
@@ -3821,11 +3831,17 @@ class Pets(commands.Cog):
                 )
             log_context["clan_shiny_multiplier"] = clan_shiny_multiplier
 
-            log_context["stage"] = "index_bonus"
-            index_unique_count, index_bonus_ratio = await self._fetch_index_shiny_bonus(
-                ctx.author.id
-            )
+            index_bonus_ratio = self._index_bonus_from_count(index_unique_count)
             log_context["index_unique"] = index_unique_count
+            log_context["rebirth_count"] = rebirth_count
+            if active_potion is not None:
+                potion_definition, potion_expires_at = active_potion
+                log_context["active_potion"] = getattr(potion_definition, "slug", None)
+                log_context["potion_expires_at"] = getattr(
+                    potion_expires_at, "isoformat", lambda: None
+                )()
+            else:
+                log_context["active_potion"] = None
 
             if double_request:
                 log_context["stage"] = "inform_double_request"
@@ -3843,9 +3859,6 @@ class Pets(commands.Cog):
                         )
                     )
 
-            log_context["stage"] = "fetch_rebirth_count"
-            rebirth_count = await self.database.get_rebirth_count(ctx.author.id)
-            log_context["rebirth_count"] = rebirth_count
             price_multiplier = 1
             if force_gold_request:
                 log_context["stage"] = "handle_force_gold"
@@ -3872,17 +3885,6 @@ class Pets(commands.Cog):
 
             log_context["price_multiplier"] = price_multiplier
             log_context["force_gold_final"] = force_gold_request
-
-            log_context["stage"] = "fetch_active_potion"
-            active_potion = await self.database.get_active_potion(ctx.author.id)
-            if active_potion is not None:
-                potion_definition, potion_expires_at = active_potion
-                log_context["active_potion"] = getattr(potion_definition, "slug", None)
-                log_context["potion_expires_at"] = getattr(
-                    potion_expires_at, "isoformat", lambda: None
-                )()
-            else:
-                log_context["active_potion"] = None
 
             frenzy_active = is_egg_frenzy_active()
             has_luck_role = (
