@@ -17,7 +17,7 @@ import discord
 
 from discord.ext import commands
 
-from config import DATABASE_URL, LOG_LEVEL, OWNER_ID, PREFIX, TOKEN, PET_DEFINITIONS
+from config import DATABASE_URL, LOG_LEVEL, OWNER_ID, PREFIX, TOKEN, PET_DEFINITIONS, Emojis
 from utils.localization import DEFAULT_LANGUAGE
 
 from database.db import Database, DatabaseError
@@ -114,6 +114,23 @@ class EcoBot(commands.Bot):
 
     async def setup_hook(self) -> None:  # pragma: no cover - cycle de vie discord.py
         await super().setup_hook()
+
+        # Patch les emojis d'application dynamiquement
+        try:
+            app_emojis = await self.fetch_application_emojis()
+            emoji_map = {e.name: str(e) for e in app_emojis}
+            if "Coin" in emoji_map:
+                Emojis.COIN = emoji_map["Coin"]
+                logger.info("Emoji Coin chargé : %s", Emojis.COIN)
+            if "FestiveCoin" in emoji_map:
+                import utils.pet_formatting as _pf
+                _pf.FESTIVE_COIN_EMOJI = emoji_map["FestiveCoin"]
+                logger.info("Emoji FestiveCoin chargé : %s", _pf.FESTIVE_COIN_EMOJI)
+            if "Gem" in emoji_map:
+                Emojis.GEM = emoji_map["Gem"]
+                logger.info("Emoji Gem chargé : %s", Emojis.GEM)
+        except Exception:
+            logger.exception("Impossible de charger les emojis d'application")
 
         for extension in self.initial_extensions:
             try:
