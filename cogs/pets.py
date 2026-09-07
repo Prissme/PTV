@@ -3818,17 +3818,26 @@ class Pets(commands.Cog):
             # manuelle (pas en mode AUTO qui utilise channel_override).
             if channel_override is None:
                 log_context["stage"] = "egg_preview"
-                discovered_ids: Set[int] = set()
-                try:
-                    discovered_ids = await self.database.get_discovered_pet_ids(ctx.author.id)
-                except Exception:
-                    pass  # On continue sans données de découverte
+                # Envoyer le preview immédiatement avec les pets masqués,
+                # puis mettre à jour avec les pets découverts en arrière-plan
                 preview_embed = self._build_egg_preview_embed(
-                    egg_definition, discovered_pet_ids=discovered_ids
+                    egg_definition, discovered_pet_ids=set()
                 )
                 preview_view = EggPreviewView(ctx, self, egg_definition.slug)
                 preview_msg = await target_channel.send(embed=preview_embed, view=preview_view)
                 preview_view.message = preview_msg
+
+                async def _update_preview_with_discovered() -> None:
+                    try:
+                        discovered_ids = await self.database.get_discovered_pet_ids(ctx.author.id)
+                        updated_embed = self._build_egg_preview_embed(
+                            egg_definition, discovered_pet_ids=discovered_ids
+                        )
+                        await preview_msg.edit(embed=updated_embed)
+                    except Exception:
+                        pass
+
+                asyncio.ensure_future(_update_preview_with_discovered())
                 timed_out = await preview_view.wait()
                 if timed_out or not preview_view.confirmed:
                     return
