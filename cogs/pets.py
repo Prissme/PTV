@@ -1370,7 +1370,7 @@ class PetSelectionView(discord.ui.View):
         active_marker = "⭐ " if is_active else ""
         id_label = f" #{identifier}" if identifier else ""
         base_label = f"{index}. {active_marker}{name}{marker}{id_label}"
-        income_part = f" • {income:,} PB/h" if income else ""
+        income_part = f" • {income:,} {Emojis.COIN}/h" if income else ""
         label = f"{base_label}{income_part}".replace(",", " ")
         return label[:80]
 
@@ -1416,7 +1416,7 @@ class PetSelectionView(discord.ui.View):
                 markers += " 🥇"
             status = "⭐ Actif" if is_active else "Disponible"
             line = (
-                f"**{index}. {emoji_prefix}{name}{markers}** — {income:,} PB/h"
+                f"**{index}. {emoji_prefix}{name}{markers}** — {income:,} {Emojis.COIN}/h"
             ).replace(",", " ")
             if rarity:
                 line += f" ({rarity})"
@@ -3125,7 +3125,7 @@ class Pets(commands.Cog):
                 if balance < effective_price:
                     await ctx.send(
                         embed=embeds.error_embed(
-                            "Tu n'as pas assez de PB. Il te faut "
+                            f"Tu n'as pas assez de {Emojis.COIN}. Il te faut "
                             f"**{embeds.format_currency(effective_price)}** pour acheter {egg.name}."
                         )
                     )
@@ -3689,6 +3689,14 @@ class Pets(commands.Cog):
         async with lock:
             await self._openbox_impl(ctx, egg)
 
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    @commands.command(name="flower")
+    async def flower(self, ctx: commands.Context) -> None:
+        await self._ack_heavy_command(ctx)
+        lock = self._get_open_lock(ctx.author.id)
+        async with lock:
+            await self._openbox_impl(ctx, "flower")
+
     def _build_egg_preview_embed(
         self,
         egg: PetEggDefinition,
@@ -4141,7 +4149,7 @@ class Pets(commands.Cog):
                         if balance < egg_definition.price:
                             await thread.send(
                                 embed=embeds.warning_embed(
-                                    "Tu n'as plus assez de PB pour continuer l'ouverture automatique."
+                                    f"Tu n'as plus assez de {Emojis.COIN} pour continuer l'ouverture automatique."
                                 )
                             )
                             stop_event.set()
@@ -4768,7 +4776,7 @@ class Pets(commands.Cog):
                 marker_text = " ".join(markers)
                 rarity = str(data.get("rarity", ""))
                 line = (
-                    f"{index}. {marker_text} **{name}** ({rarity}) — {income:,} PB/h"
+                    f"{index}. {marker_text} **{name}** ({rarity}) — {income:,} {Emojis.COIN}/h"
                 ).replace(",", " ")
                 detail_lines.append(line.strip())
             summary_lines.append("")
@@ -6373,7 +6381,7 @@ class Pets(commands.Cog):
                 name="🌈 Fusion Rainbow",
                 value=(
                     f"🎉 {consumed} pets GOLD fusionnés en 1 RAINBOW !\n"
-                    f"Puissance : **{display_rainbow_income:,} PB/h** ({RAINBOW_PET_MULTIPLIER}x le pet de base)\n"
+                    f"Puissance : **{display_rainbow_income:,} {Emojis.COIN}/h** ({RAINBOW_PET_MULTIPLIER}x le pet de base)\n"
                     "Les pets utilisés ont été retirés de ton inventaire.\n"
                     f"Coût : {embeds.format_gems(total_cost)}"
                 ).replace(",", " "),
@@ -6385,7 +6393,7 @@ class Pets(commands.Cog):
             lines = [
                 f"🎉 {quantity} versions rainbow créées pour **{definition.name}**.",
                 f"Pets consommés : {consumed} ({RAINBOW_PET_COMBINE_REQUIRED} par fusion).",
-                f"Puissance : **{display_rainbow_income:,} PB/h** ({RAINBOW_PET_MULTIPLIER}x)",
+                f"Puissance : **{display_rainbow_income:,} {Emojis.COIN}/h** ({RAINBOW_PET_MULTIPLIER}x)",
                 f"Coût total : {embeds.format_gems(total_cost)}",
             ]
             if shiny_count:
@@ -6487,7 +6495,7 @@ class Pets(commands.Cog):
             name="🌌 Fusion Galaxy",
             value=(
                 f"🎉 {consumed} pets RAINBOW fusionnés en 1 GALAXY !\n"
-                f"Puissance : **{display_galaxy_income:,} PB/h** ({GALAXY_PET_MULTIPLIER}x le pet de base)\n"
+                f"Puissance : **{display_galaxy_income:,} {Emojis.COIN}/h** ({GALAXY_PET_MULTIPLIER}x le pet de base)\n"
                 "Les pets utilisés ont été retirés de ton inventaire.\n"
                 f"Coût : {embeds.format_gems(total_cost)}"
             ).replace(",", " "),
@@ -6878,7 +6886,7 @@ class Pets(commands.Cog):
                 fallback_message = "\n".join(part for part in fallback_parts if part)
                 if not fallback_message:
                     fallback_message = (
-                        "Tu récupères des PB avec tes pets, mais un problème est survenu "
+                        f"Tu récupères des {Emojis.COIN} avec tes pets, mais un problème est survenu "
                         "lors de l'affichage de l'embed."
                     )
                 await ctx.send(fallback_message)
@@ -6974,7 +6982,7 @@ class TradeSession:
 
     async def set_pb(self, user_id: int, amount: int) -> None:
         if amount < 0:
-            raise DatabaseError("Le montant en PB doit être positif.")
+            raise DatabaseError(f"Le montant en {Emojis.COIN} doit être positif.")
         async with self.lock:
             self.offers.setdefault(user_id, TradeOffer()).pb = amount
             self.ready.discard(user_id)
@@ -7000,14 +7008,14 @@ class TradeSession:
 
     def build_embed(self) -> discord.Embed:
         embed = embeds.info_embed(
-            "Ajoute des pets ou des PB à ton offre, puis valide avec Prêt lorsque tout te convient.",
+            f"Ajoute des pets ou des {Emojis.COIN} à ton offre, puis valide avec Prêt lorsque tout te convient.",
             title="💱 Trade interactif",
         )
         for member in self.participants:
             offer = self.offers.get(member.id) or TradeOffer()
             lines: list[str] = []
             if offer.pb:
-                lines.append(f"PB : {embeds.format_currency(offer.pb)}")
+                lines.append(f"{Emojis.COIN} : {embeds.format_currency(offer.pb)}")
             for pet in offer.pets:
                 lines.append(self._format_pet_line(pet, int(pet.get("price", 0))))
             if not lines:
@@ -7064,7 +7072,7 @@ class TradeSession:
             self.ready.clear()
             await interaction.followup.send(
                 embed=embeds.error_embed(
-                    "Ajoute au moins un pet ou des PB avant de finaliser le trade."
+                    f"Ajoute au moins un pet ou des {Emojis.COIN} avant de finaliser le trade."
                 ),
                 ephemeral=True,
             )
@@ -7148,14 +7156,14 @@ class TradeSession:
     ) -> list[str]:
         lines: list[str] = []
         if given_pb:
-            lines.append(f"PB donnés : {embeds.format_currency(given_pb)}")
+            lines.append(f"{Emojis.COIN} donnés : {embeds.format_currency(given_pb)}")
         if outgoing.pets:
             lines.append(
                 "Pets donnés : "
                 + ", ".join(pet["name"] for pet in outgoing.pets)
             )
         if received_pb:
-            lines.append(f"PB reçus : {embeds.format_currency(received_pb)}")
+            lines.append(f"{Emojis.COIN} reçus : {embeds.format_currency(received_pb)}")
         if incoming:
             received_names: list[str] = []
             for pet in incoming:
@@ -7207,7 +7215,7 @@ class TradePetPriceModal(discord.ui.Modal):
         self.view = view
         self.user_pet_id = user_pet_id
         self.price_input = discord.ui.TextInput(
-            label="Valeur estimée en PB",
+            label=f"Valeur estimée en {Emojis.COIN}",
             placeholder="Ex: 150000",
             min_length=1,
             max_length=18,
@@ -7368,11 +7376,11 @@ class TradePetSelectView(discord.ui.View):
 
 class TradePBModal(discord.ui.Modal):
     def __init__(self, view: "TradeView", user_id: int) -> None:
-        super().__init__(title="Définir les PB offerts")
+        super().__init__(title=f"Définir les {Emojis.COIN} offerts")
         self.view = view
         self.user_id = user_id
         self.amount_input = discord.ui.TextInput(
-            label="Montant en PB",
+            label=f"Montant en {Emojis.COIN}",
             placeholder="Ex: 250000",
             min_length=1,
             max_length=18,
@@ -7473,7 +7481,7 @@ class TradeView(discord.ui.View):
             ephemeral=True,
         )
 
-    @discord.ui.button(label="Ajouter des PB", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label=f"Ajouter des {Emojis.COIN}", style=discord.ButtonStyle.secondary)
     async def add_pb_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
