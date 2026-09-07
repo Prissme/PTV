@@ -3360,24 +3360,23 @@ class Pets(commands.Cog):
         step_delay = max(0.2, 1.1 / speed_factor)
         reveal_delay = max(0.2, 1.2 / speed_factor)
 
-        message = await target_channel.send(
-            content=egg_emoji,
-            embed=embeds.pet_animation_embed(
-                title=animation_steps[0][0],
-                description=animation_steps[0][1],
-                emoji=egg_emoji,
-            ),
+        _egg_image_url = egg.image_url or "https://cdn.discordapp.com/emojis/1542057019664633887.png?size=256"
+        _anim_embed = embeds.pet_animation_embed(
+            title=animation_steps[0][0],
+            description=animation_steps[0][1],
+            emoji=egg_emoji,
         )
+        _anim_embed.set_image(url=_egg_image_url)
+        message = await target_channel.send(embed=_anim_embed)
         for title, description in animation_steps[1:]:
             await asyncio.sleep(step_delay)
-            await message.edit(
-                content=egg_emoji,
-                embed=embeds.pet_animation_embed(
-                    title=title,
-                    description=description,
-                    emoji=egg_emoji,
-                ),
+            _anim_embed = embeds.pet_animation_embed(
+                title=title,
+                description=description,
+                emoji=egg_emoji,
             )
+            _anim_embed.set_image(url=_egg_image_url)
+            await message.edit(embed=_anim_embed)
 
         await asyncio.sleep(reveal_delay)
 
@@ -3463,7 +3462,7 @@ class Pets(commands.Cog):
         )
         replay_view = replay_view or HatchReplayView(ctx, self, egg.slug)
         replay_view.message = message
-        await message.edit(content=egg_emoji, embed=embed, view=replay_view)
+        await message.edit(embed=embed, view=replay_view)
 
     async def hatch_external_egg(
         self,
@@ -3733,6 +3732,7 @@ class Pets(commands.Cog):
             color=embeds.Colors.INFO,
         )
         image = self._egg_showcase_image(egg)
+        embed.set_image(url="https://cdn.discordapp.com/emojis/1542057019664633887.png?size=256")
         if image:
             embed.set_thumbnail(url=image)
         embed.set_footer(text="Les pets non découverts sont masqués. Ouvre l'œuf pour les révéler !")
