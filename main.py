@@ -115,20 +115,29 @@ class EcoBot(commands.Bot):
     async def setup_hook(self) -> None:  # pragma: no cover - cycle de vie discord.py
         await super().setup_hook()
 
-        # Patch les emojis d'application dynamiquement
+        # Patch les emojis d'application dynamiquement (discord.py 2.4 compatible)
         try:
-            app_emojis = await self.fetch_application_emojis()
-            emoji_map = {e.name: str(e) for e in app_emojis}
-            if "Coin" in emoji_map:
-                Emojis.COIN = emoji_map["Coin"]
-                logger.info("Emoji Coin chargé : %s", Emojis.COIN)
-            if "FestiveCoin" in emoji_map:
-                import utils.pet_formatting as _pf
-                _pf.FESTIVE_COIN_EMOJI = emoji_map["FestiveCoin"]
-                logger.info("Emoji FestiveCoin chargé : %s", _pf.FESTIVE_COIN_EMOJI)
-            if "Gem" in emoji_map:
-                Emojis.GEM = emoji_map["Gem"]
-                logger.info("Emoji Gem chargé : %s", Emojis.GEM)
+            import aiohttp
+            app_id = self.application_id
+            headers = {"Authorization": f"Bot {TOKEN}"}
+            url = f"https://discord.com/api/v10/applications/{app_id}/emojis"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers) as resp:
+                    data = await resp.json()
+            import utils.pet_formatting as _pf
+            for emoji in data.get("items", data if isinstance(data, list) else []):
+                name = emoji["name"]
+                eid = emoji["id"]
+                fmt = f"<:{name}:{eid}>"
+                if name == "Coin":
+                    Emojis.COIN = fmt
+                    logger.info("Emoji Coin chargé : %s", fmt)
+                elif name == "FestiveCoin":
+                    _pf.FESTIVE_COIN_EMOJI = fmt
+                    logger.info("Emoji FestiveCoin chargé : %s", fmt)
+                elif name == "Gem":
+                    Emojis.GEM = fmt
+                    logger.info("Emoji Gem chargé : %s", fmt)
         except Exception:
             logger.exception("Impossible de charger les emojis d'application")
 
