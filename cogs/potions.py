@@ -9,6 +9,7 @@ import discord
 from discord.ext import commands
 
 from config import (
+    Emojis,
     POTION_DEFINITION_MAP,
     POTION_DEFINITIONS,
     POTION_SELL_VALUES,
@@ -68,7 +69,7 @@ class Potions(commands.Cog):
         percentage = int(definition.effect_value * 100)
         if definition.effect_type == "pb_boost":
             return (
-                f"Tes gains de PB sont augmentés de {percentage}% pendant"
+                f"Tes gains de {Emojis.COIN} sont augmentés de {percentage}% pendant"
                 f" {_format_duration(duration_seconds)}."
             )
         if definition.effect_type == "egg_luck":
