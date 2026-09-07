@@ -14,36 +14,56 @@ from utils import embeds
 
 PINATA_BASE_INCOME_PER_SECOND: float = 50.0  # niveau 1
 PINATA_LEVEL_MULTIPLIER: float = 2.0  # revenu x2 par niveau
+# IMPORTANT : sans plafond, pinata_level est une boucle de rétroaction
+# incontrôlable (chaque niveau double le revenu -> plus de cash -> plus
+# d'upgrades chance -> plus de niveaux...). On plafonne pour garder un
+# revenu maximum raisonnable par rapport au coût total à atteindre (~154M$
+# pour maxer tous les upgrades cash). A ce plafond + cash upgrades maxés,
+# le revenu reste élevé mais fini.
+MAX_PINATA_LEVEL: int = 15
 
 BASE_COOLDOWN_SECONDS: float = 10.0
 COOLDOWN_REDUCTION_PER_UPGRADE: float = 0.4
 MAX_COOLDOWN_UPGRADES: int = 20  # -> plancher 10 - 20*0.4 = 2s
 
-BASE_UPGRADE_CHANCE: float = 1 / 1000
-CHANCE_BONUS_PER_UPGRADE: float = 0.04  # +4 points de % par achat
-MAX_CHANCE_UPGRADES: int = 20  # -> +80 points de % max
+BASE_UPGRADE_CHANCE: float = 0.0002  # 1/5000 — sans achat : ~8-9 jours pour les 15 niveaux
+CHANCE_BONUS_PER_UPGRADE: float = 0.00006  # +0,006 pt de %/achat
+MAX_CHANCE_UPGRADES: int = 20  # -> chance max = 0.14% (avec cooldown mini 2s : ~6h pour les 15 niveaux)
+# Calcul (espérance) : temps par niveau ≈ cooldown / chance.
+# Sans upgrade   : 10s / 0.0002   = 50 000s/niveau -> x15 ≈ 8,7 jours
+# Tout maxé      : 2s  / 0.0014   ≈ 1 429s/niveau  -> x15 ≈ 5,9 heures
+# (avant ce fix : base 0.1% + upgrades à +4pts/achat -> les 15 niveaux
+# tombaient en quelques minutes, même sans rien acheter à la boutique)
 
 CASH_BONUS_PER_UPGRADE: float = 0.10  # +10% de revenu par achat
 MAX_CASH_UPGRADES: int = 50  # -> +500% max
 
 # Coût de départ + facteur exponentiel par type d'upgrade.
+# Chaque type a son propre ratio : cooldown/chance grimpent bien plus vite
+# que cash, pour que les maxer représente un vrai palier de plusieurs jours
+# et pas juste quelques minutes de revenu de base.
 UPGRADE_BASE_COSTS: dict[str, float] = {
-    "cooldown": 50.0,
-    "chance": 100.0,
-    "cash": 21_350.0,  # calibré pour ~1 semaine de grind total (voir calcul), même durée que l'event
+    "cooldown": 300.0,   # total pour maxer (20 achats, ratio 1.5) ≈ 2.0M$
+    "chance": 600.0,     # total pour maxer (20 achats, ratio 1.5) ≈ 4.0M$
+    "cash": 21_350.0,    # total pour maxer (50 achats, ratio 1.15) ≈ 154M$ — calibré pour ~1 semaine de grind total
 }
-UPGRADE_COST_RATIO: float = 1.15
+UPGRADE_COST_RATIOS: dict[str, float] = {
+    "cooldown": 1.5,
+    "chance": 1.5,
+    "cash": 1.15,
+}
 
 UPGRADE_LABELS: dict[str, str] = {
     "cooldown": "cooldown (-0.4s/achat)",
-    "chance": "chance d'upgrade (+4%/achat)",
+    "chance": "chance d'upgrade (+0.006%/achat)",
     "cash": "production (+10%/achat)",
 }
 
 
 def _upgrade_cost(upgrade_type: str, current_count: int) -> int:
     base = UPGRADE_BASE_COSTS[upgrade_type]
-    return int(round(base * (UPGRADE_COST_RATIO ** current_count)))
+    ratio = UPGRADE_COST_RATIOS[upgrade_type]
+    return int(round(base * (ratio ** current_count)))
 
 
 def _max_for(upgrade_type: str) -> int:
@@ -99,6 +119,7 @@ class EventPinata(commands.Cog):
 
     @staticmethod
     def _income_per_second(level: int, cash_upgrades: int) -> float:
+        level = min(level, MAX_PINATA_LEVEL)  # sécurité anti-explosion exponentielle
         base = PINATA_BASE_INCOME_PER_SECOND * (PINATA_LEVEL_MULTIPLIER ** (level - 1))
         return base * (1 + CASH_BONUS_PER_UPGRADE * cash_upgrades)
 
@@ -176,43 +197,68 @@ class EventPinata(commands.Cog):
                 row = await self._settle_income(connection, user_id)
 
                 cooldown = self._cooldown_seconds(row["cooldown_upgrades"])
-                last_attempt = row["last_attempt_at"]
-                now = datetime.now(timezone.utc)
-                remaining = (
-                    cooldown - (now - last_attempt).total_seconds()
-                    if last_attempt is not None
-                    else 0.0
+                cutoff = datetime.now(timezone.utc) - timedelta(seconds=cooldown)
+
+                # UPDATE atomique : on ne "réserve" la tentative que si le
+                # cooldown est bien écoulé, en une seule requête SQL. Ça
+                # verrouille la ligne le temps de l'opération, donc si deux
+                # commandes arrivent en même temps (spam / double-clic),
+                # une seule passe le WHERE ; la seconde voit last_attempt_at
+                # déjà mis à jour et échoue. Avant ce fix, le check (SELECT)
+                # et l'écriture (UPDATE) étaient deux étapes séparées : du
+                # spam pouvait faire lire l'ancienne valeur par plusieurs
+                # requêtes en parallèle et contourner totalement le cooldown.
+                claimed = await connection.fetchrow(
+                    """
+                    UPDATE pinata_event
+                    SET last_attempt_at = now()
+                    WHERE user_id = $1
+                      AND (last_attempt_at IS NULL OR last_attempt_at <= $2)
+                    RETURNING pinata_level, cash_upgrades, cooldown_upgrades, chance_upgrades, dollars
+                    """,
+                    user_id,
+                    cutoff,
                 )
 
-                if remaining > 0:
-                    income = self._income_per_second(row["pinata_level"], row["cash_upgrades"])
+                if claimed is None:
+                    # Cooldown pas encore écoulé : on relit l'état actuel pour l'affichage.
+                    current = await connection.fetchrow(
+                        "SELECT * FROM pinata_event WHERE user_id = $1", user_id
+                    )
+                    last_attempt = current["last_attempt_at"]
+                    remaining = (
+                        cooldown - (datetime.now(timezone.utc) - last_attempt).total_seconds()
+                        if last_attempt is not None
+                        else 0.0
+                    )
+                    income = self._income_per_second(
+                        current["pinata_level"], current["cash_upgrades"]
+                    )
                     await ctx.send(
                         embed=embeds.info_embed(
-                            f"🪅 Piñata niveau **{row['pinata_level']}** — "
+                            f"🪅 Piñata niveau **{current['pinata_level']}** — "
                             f"**{income:.1f}$/s**\n"
-                            f"💵 Solde : **{row['dollars']:.1f}$**\n"
-                            f"⏳ Prochain essai dans **{remaining:.1f}s**.",
+                            f"💵 Solde : **{current['dollars']:.1f}$**\n"
+                            f"⏳ Prochain essai dans **{max(remaining, 0.0):.1f}s**.",
                             title="Piñata de l'event",
                         )
                     )
                     return
 
-                await connection.execute(
-                    "UPDATE pinata_event SET last_attempt_at = now() WHERE user_id = $1",
-                    user_id,
-                )
-                chance = self._upgrade_chance(row["chance_upgrades"])
+                chance = self._upgrade_chance(claimed["chance_upgrades"])
                 success = random.random() < chance
-                level = int(row["pinata_level"])
-                cash_upgrades = int(row["cash_upgrades"])
-                cooldown_upgrades = int(row["cooldown_upgrades"])
+                level = int(claimed["pinata_level"])
+                cash_upgrades = int(claimed["cash_upgrades"])
+                cooldown_upgrades = int(claimed["cooldown_upgrades"])
 
-                if success:
+                if success and level < MAX_PINATA_LEVEL:
                     await connection.execute(
                         "UPDATE pinata_event SET pinata_level = pinata_level + 1 WHERE user_id = $1",
                         user_id,
                     )
                     level += 1
+                elif success and level >= MAX_PINATA_LEVEL:
+                    success = False  # déjà au niveau max, pas de gain supplémentaire
 
         income = self._income_per_second(level, cash_upgrades)
         if success:
@@ -221,6 +267,15 @@ class EventPinata(commands.Cog):
                     f"🎉 Ta piñata passe au **niveau {level}** ! "
                     f"Elle rapporte maintenant **{income:.1f}$/s**.",
                     title="🪅 Upgrade réussi !",
+                )
+            )
+        elif level >= MAX_PINATA_LEVEL:
+            await ctx.send(
+                embed=embeds.info_embed(
+                    f"🪅 Ta piñata a atteint le niveau **max ({MAX_PINATA_LEVEL})** ! "
+                    f"Elle rapporte **{income:.1f}$/s**.\n"
+                    f"Fonce sur `e!pinatashop` pour dépenser tes dollars.",
+                    title="Piñata au maximum",
                 )
             )
         else:
@@ -330,6 +385,61 @@ class EventPinata(commands.Cog):
                     title="🏆 Piñata entièrement maîtrisée !",
                 )
             )
+
+
+    @commands.command(name="pinatareset", aliases=("pinataresetall",))
+    @commands.is_owner()
+    async def pinatareset(self, ctx: commands.Context, confirm: str | None = None) -> None:
+        """Réinitialise la piñata de TOUS les joueurs (admin uniquement).
+
+        Usage : `e!pinatareset confirm`
+        """
+        if confirm != "confirm":
+            await ctx.send(
+                embed=embeds.error_embed(
+                    "⚠️ Ça va **réinitialiser la piñata de tout le monde** "
+                    "(niveau, dollars, upgrades, cadeau débloqué).\n"
+                    "Tape `e!pinatareset confirm` pour valider.",
+                )
+            )
+            return
+
+        pool = self.database.pool
+        async with pool.acquire() as connection:
+            result = await connection.execute("DELETE FROM pinata_event")
+
+        # asyncpg renvoie une string du type "DELETE 42"
+        deleted_count = result.split(" ")[-1] if result else "0"
+
+        await ctx.send(
+            embed=embeds.success_embed(
+                f"🪅 Piñata réinitialisée pour **{deleted_count}** joueur(s).",
+                title="Reset effectué",
+            )
+        )
+
+    @commands.command(name="pinatareset_user")
+    @commands.is_owner()
+    async def pinatareset_user(self, ctx: commands.Context, member: discord.Member) -> None:
+        """Réinitialise la piñata d'un seul joueur (admin uniquement)."""
+        pool = self.database.pool
+        async with pool.acquire() as connection:
+            result = await connection.execute(
+                "DELETE FROM pinata_event WHERE user_id = $1", member.id
+            )
+
+        if result.endswith(" 0"):
+            await ctx.send(
+                embed=embeds.info_embed(f"{member.mention} n'avait pas de piñata en cours.")
+            )
+            return
+
+        await ctx.send(
+            embed=embeds.success_embed(
+                f"🪅 Piñata de {member.mention} réinitialisée.",
+                title="Reset effectué",
+            )
+        )
 
 
 async def setup(bot: commands.Bot) -> None:
