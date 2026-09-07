@@ -3810,16 +3810,9 @@ class Pets(commands.Cog):
 
             log_context["zone"] = zone.slug
 
-            log_context["stage"] = "ensure_zone_access"
-            if not await self._ensure_zone_access(ctx, zone):
-                return
-
-            # Afficher l'embed de prévisualisation uniquement lors d'une ouverture
-            # manuelle (pas en mode AUTO qui utilise channel_override).
+            # Afficher le preview immédiatement sans attendre les checks DB
             if channel_override is None:
                 log_context["stage"] = "egg_preview"
-                # Envoyer le preview immédiatement avec les pets masqués,
-                # puis mettre à jour avec les pets découverts en arrière-plan
                 preview_embed = self._build_egg_preview_embed(
                     egg_definition, discovered_pet_ids=set()
                 )
@@ -3842,9 +3835,12 @@ class Pets(commands.Cog):
                 if timed_out or not preview_view.confirmed:
                     return
                 if preview_view.auto:
-                    # Lancer le mode AUTO à partir du message de preview
                     await self._start_auto_hatch(ctx, egg_definition.slug, preview_msg)
                     return
+
+            log_context["stage"] = "ensure_zone_access"
+            if not await self._ensure_zone_access(ctx, zone):
+                return
 
             log_context["stage"] = "load_egg_mastery"
             mastery_progress = await self.database.get_mastery_progress(
