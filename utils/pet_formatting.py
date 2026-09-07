@@ -122,7 +122,8 @@ class PetDisplay:
 
     @property
     def festive_rate(self) -> float:
-        """Taux festif de base multiplié par les variantes."""        rate = FESTIVE_COIN_INCOME_PER_SECOND[self.name]
+        """Taux festif de base multiplié par les variantes."""
+        rate = FESTIVE_COIN_INCOME_PER_SECOND[self.name]
         if self.is_galaxy:
             rate = rate * GALAXY_PET_MULTIPLIER
         elif self.is_rainbow:
