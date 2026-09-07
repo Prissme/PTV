@@ -13,7 +13,10 @@ from config import (
 from database.db import ActivePetLimitError, DatabaseError
 from utils import embeds
 
-FESTIVE_COIN_EMOJI: str = "🎉"
+CAKE_PRICE: int = 100          # Festive Coins par gâteau
+CAKE_AUTOPINATA_SECONDS: int = 5   # secondes d'autopinata par gâteau
+
+
 STARTING_FESTIVE_COINS: int = 100
 # Chaque amélioration achetée dans la boutique de la piñata ajoute 0,1 % de
 # chance aux pets les plus rares de l'œuf festif. Les 90 améliorations au total
@@ -359,6 +362,60 @@ class EventAnniversaire(commands.Cog):
             )
         await asyncio.sleep(reveal_delay)
         return message
+
+    @commands.command(name="buycake", aliases=("achetergâteau", "achetercake", "gateau", "cake"))
+    async def buycake(self, ctx: commands.Context, quantity: int = 1) -> None:
+        """Achète un ou plusieurs gâteaux (100 FC chacun, +5s d'autopinata par gâteau)."""
+        if quantity < 1:
+            await ctx.send(embed=embeds.error_embed("La quantité doit être d'au moins 1."))
+            return
+        if quantity > 100:
+            await ctx.send(embed=embeds.error_embed("Tu ne peux pas acheter plus de 100 gâteaux à la fois."))
+            return
+
+        user_id = ctx.author.id
+        total_cost = CAKE_PRICE * quantity
+        total_seconds = CAKE_AUTOPINATA_SECONDS * quantity
+        pool = self.database.pool
+
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                balance = await self._settle_income(connection, user_id)
+                if balance < total_cost:
+                    await ctx.send(
+                        embed=embeds.error_embed(
+                            f"Il te faut **{total_cost}** Festive Coins pour {quantity} gâteau(x) "
+                            f"(tu as **{balance}** FC)."
+                        )
+                    )
+                    return
+                await connection.execute(
+                    "UPDATE festive_event_wallet SET festive_coins = festive_coins - $2 WHERE user_id = $1",
+                    user_id,
+                    total_cost,
+                )
+
+        # Créditer les secondes d'autopinata
+        pinata_cog = self.bot.get_cog("EventPinata")
+        if pinata_cog is None:
+            await ctx.send(embed=embeds.error_embed("Le système de piñata n'est pas disponible."))
+            return
+
+        await pinata_cog.add_autopinata_seconds(user_id, total_seconds)
+        remaining = await pinata_cog.get_autopinata_remaining(user_id)
+
+        await ctx.send(
+            embed=embeds.success_embed(
+                f"🎂 Tu as acheté **{quantity}** gâteau(x) pour **{total_cost}** {FESTIVE_COIN_EMOJI}.\n"
+                f"⏱️ **+{total_seconds}s** d'autopinata ajoutées — total : **{remaining:.0f}s** restantes.\n\n"
+                f"La piñata se frappe toute seule automatiquement pendant ce temps !",
+                title="Gâteau acheté !",
+            )
+        )
+
+        # Lancer la boucle d'autopinata si pas déjà en cours
+        import asyncio
+        asyncio.create_task(pinata_cog._run_autopinata_loop(ctx))
 
     @commands.command(name="oeuffestif", aliases=("festivegg", "oeufanniversaire"))
     async def oeuffestif(self, ctx: commands.Context) -> None:
