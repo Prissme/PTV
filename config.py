@@ -685,6 +685,7 @@ class Colors:
 class Emojis:
     MONEY = "💰"
     GEM = os.getenv("GEM_EMOJI", "<:Gem:1542057021866512454>")
+    COIN = os.getenv("COIN_EMOJI", "<:Coin:1546596503273271672>")
     SUCCESS = "✅"
     ERROR = "❌"
     WARNING = "⚠️"
@@ -736,35 +737,35 @@ POTION_DEFINITIONS: Tuple[PotionDefinition, ...] = (
         "Potion de fortune I",
         "pb_boost",
         0.15,
-        "Augmente les gains de PB de 15% pendant une courte durée.",
+        f"Augmente les gains de {Emojis.COIN} de 15% pendant une courte durée.",
     ),
     PotionDefinition(
         "fortune_ii",
         "Potion de fortune II",
         "pb_boost",
         0.30,
-        "Augmente les gains de PB de 30% pendant une courte durée.",
+        f"Augmente les gains de {Emojis.COIN} de 30% pendant une courte durée.",
     ),
     PotionDefinition(
         "fortune_iii",
         "Potion de fortune III",
         "pb_boost",
         0.50,
-        "Augmente les gains de PB de 50% pendant une courte durée.",
+        f"Augmente les gains de {Emojis.COIN} de 50% pendant une courte durée.",
     ),
     PotionDefinition(
         "fortune_iv",
         "Potion de fortune IV",
         "pb_boost",
         0.75,
-        "Augmente les gains de PB de 75% pendant une courte durée.",
+        f"Augmente les gains de {Emojis.COIN} de 75% pendant une courte durée.",
     ),
     PotionDefinition(
         "fortune_v",
         "Potion de fortune V",
         "pb_boost",
         1.0,
-        "Augmente les gains de PB de 100% pendant une courte durée.",
+        f"Augmente les gains de {Emojis.COIN} de 100% pendant une courte durée.",
     ),
     PotionDefinition(
         "mastery_xp",
@@ -1200,28 +1201,35 @@ _FOREST_EGG_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name="Angelo",
         rarity="Commun",
-        image_url="https://example.com/document49.png",
+        image_url="https://cdn.discordapp.com/emojis/1546593231888720052.png",
         base_income_per_hour=35,
-        drop_rate=0.40,
+        drop_rate=0.34,
     ),
     PetDefinition(
         name="Doug",
         rarity="Atypique",
-        image_url="https://example.com/document52.png",
+        image_url="https://cdn.discordapp.com/emojis/1546593224385101864.png",
         base_income_per_hour=75,
-        drop_rate=0.30,
+        drop_rate=0.26,
     ),
     PetDefinition(
         name="Lily",
         rarity="Rare",
-        image_url="https://example.com/document50.png",
+        image_url="https://cdn.discordapp.com/emojis/1546593219297673326.png",
         base_income_per_hour=160,
-        drop_rate=0.20,
+        drop_rate=0.17,
+    ),
+    PetDefinition(
+        name="Trunk",
+        rarity="Rare",
+        image_url="https://cdn.discordapp.com/emojis/1546593223173214258.png",
+        base_income_per_hour=220,
+        drop_rate=0.13,
     ),
     PetDefinition(
         name="Cordelius",
         rarity="Rare",
-        image_url="https://example.com/document51.png",
+        image_url="https://cdn.discordapp.com/emojis/1546593226868129853.png",
         base_income_per_hour=280,
         drop_rate=0.0995,
     ),
@@ -1505,12 +1513,12 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
         aliases=("oeuf basique", "basique", "basic", "egg"),
     ),
     PetEggDefinition(
-        name="Œuf bio",
+        name="Flower Egg",
         slug="bio",
         price=1_300,
         pets=_FOREST_EGG_PETS,
         zone_slug=FORET_ZONE_SLUG,
-        aliases=("oeuf bio", "bio"),
+        aliases=("oeuf bio", "bio", "flower egg", "flower", "oeuf fleur"),
     ),
     PetEggDefinition(
         name="Œuf Spectral",
@@ -1706,10 +1714,11 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Rosa": _ROSA_EMOJI,
     "Mina": os.getenv("PET_EMOJI_MINA", "<:Mina:1437826273673089238>"),
     HUGE_PET_NAME: os.getenv("PET_EMOJI_HUGE_SHELLY", "<:HugeShelly:1542051433367732305>"),
-    "Angelo": os.getenv("PET_EMOJI_ANGELO", "<:Angelo:1430873772583289054>"),
-    "Lily": os.getenv("PET_EMOJI_LILY", "<:Lily:1430874351309422674>"),
-    "Cordelius": os.getenv("PET_EMOJI_CORDELIUS", "<:Cordelius:1430874643572719728>"),
-    "Doug": os.getenv("PET_EMOJI_DOUG", "<:Doug:1430875052202786977>"),
+    "Angelo": os.getenv("PET_EMOJI_ANGELO", "<:Angelo:1546593231888720052>"),
+    "Lily": os.getenv("PET_EMOJI_LILY", "<:Lily:1546593219297673326>"),
+    "Cordelius": os.getenv("PET_EMOJI_CORDELIUS", "<:Cordelius:1546593226868129853>"),
+    "Doug": os.getenv("PET_EMOJI_DOUG", "<:Doug:1546593224385101864>"),
+    "Trunk": os.getenv("PET_EMOJI_TRUNK", "<:Trunk:1546593223173214258>"),
     "Huge Trunk": os.getenv("PET_EMOJI_HUGE_TRUNK", "<:HugeTrunk:1430876043400446013>"),
     HUGE_GALE_NAME: os.getenv("PET_EMOJI_HUGE_GALE", "<:HugeGale:1430981225375600641>"),
     HUGE_GRIFF_NAME: os.getenv("PET_EMOJI_HUGE_GRIFF", "<:HugeGriff:1431005620227670036>"),
