@@ -781,6 +781,62 @@ class ZoneOverviewView(discord.ui.View):
                 await self.message.edit(view=self)
 
 
+class EggPreviewView(discord.ui.View):
+    """Embed de prévisualisation d'un œuf avant ouverture, avec boutons Ouvrir et AUTO."""
+
+    def __init__(
+        self,
+        ctx: commands.Context,
+        pets_cog: "Pets",
+        egg_slug: str,
+    ) -> None:
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.pets_cog = pets_cog
+        self.egg_slug = egg_slug
+        self.confirmed: bool = False
+        self.auto: bool = False
+        self.message: discord.Message | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul l'acheteur peut utiliser ces boutons.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Ouvrir", style=discord.ButtonStyle.success)
+    async def open_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.confirmed = True
+        self.auto = False
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        self.stop()
+
+    @discord.ui.button(label="AUTO", style=discord.ButtonStyle.primary)
+    async def auto_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.confirmed = True
+        self.auto = True
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        self.stop()
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message is not None:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=self)
+
+
 class HatchReplayView(discord.ui.View):
     def __init__(self, ctx: commands.Context, pets_cog: "Pets", egg_slug: str) -> None:
         super().__init__(timeout=60)
@@ -3633,6 +3689,47 @@ class Pets(commands.Cog):
         async with lock:
             await self._openbox_impl(ctx, egg)
 
+    def _build_egg_preview_embed(
+        self,
+        egg: PetEggDefinition,
+        *,
+        discovered_pet_ids: Set[int],
+    ) -> discord.Embed:
+        """Construit l'embed de prévisualisation d'un œuf avec les pets et leurs chances."""
+        if egg.currency == "gem":
+            price_text = embeds.format_gems(egg.price)
+        else:
+            price_text = embeds.format_currency(egg.price)
+
+        total_weight = sum(max(0.0, float(p.drop_rate)) for p in egg.pets)
+
+        lines: List[str] = []
+        for pet in egg.pets:
+            pet_id = self._pet_ids.get(pet.name)
+            discovered = pet_id is not None and pet_id in discovered_pet_ids
+            rate = max(0.0, float(pet.drop_rate))
+            pct = (rate / total_weight * 100) if total_weight > 0 else 0.0
+
+            if discovered:
+                emoji = pet_emoji(pet.name)
+                emoji_prefix = f"{emoji} " if emoji else ""
+                pct_text = f"{pct:.2f}%"
+                lines.append(f"{emoji_prefix}**{pet.name}** — {pct_text}")
+            else:
+                lines.append(f"⬛ **???** — ??")
+
+        description = f"Prix : **{price_text}**\n\n" + "\n".join(lines) if lines else f"Prix : **{price_text}**"
+        embed = discord.Embed(
+            title=f"🥚 {egg.name}",
+            description=description,
+            color=embeds.Colors.INFO,
+        )
+        image = self._egg_showcase_image(egg)
+        if image:
+            embed.set_thumbnail(url=image)
+        embed.set_footer(text="Les pets non découverts sont masqués. Ouvre l'œuf pour les révéler !")
+        return embed
+
     async def _openbox_impl(
         self,
         ctx: commands.Context,
@@ -3711,6 +3808,33 @@ class Pets(commands.Cog):
             log_context["stage"] = "ensure_zone_access"
             if not await self._ensure_zone_access(ctx, zone):
                 return
+
+            # Afficher l'embed de prévisualisation uniquement lors d'une ouverture
+            # manuelle (pas en mode AUTO qui utilise channel_override).
+            if channel_override is None:
+                log_context["stage"] = "egg_preview"
+                discovered_ids: Set[int] = set()
+                try:
+                    user_pets = await self.database.get_user_pets(ctx.author.id)
+                    for row in user_pets:
+                        pid = int(row.get("pet_id") or 0)
+                        if pid > 0:
+                            discovered_ids.add(pid)
+                except Exception:
+                    pass  # On continue sans données de découverte
+                preview_embed = self._build_egg_preview_embed(
+                    egg_definition, discovered_pet_ids=discovered_ids
+                )
+                preview_view = EggPreviewView(ctx, self, egg_definition.slug)
+                preview_msg = await target_channel.send(embed=preview_embed, view=preview_view)
+                preview_view.message = preview_msg
+                timed_out = await preview_view.wait()
+                if timed_out or not preview_view.confirmed:
+                    return
+                if preview_view.auto:
+                    # Lancer le mode AUTO à partir du message de preview
+                    await self._start_auto_hatch(ctx, egg_definition.slug, preview_msg)
+                    return
 
             log_context["stage"] = "load_egg_mastery"
             mastery_progress = await self.database.get_mastery_progress(
