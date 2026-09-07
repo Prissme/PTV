@@ -45,9 +45,6 @@ from config import (
     CACHE_MAX_ENTRIES,
     CACHE_TTL_SECONDS,
     DEBUG_SQL_TIMING,
-    PET_FARM_ENCHANT_BASE,
-    PET_FARM_ENCHANT_MAX_CHANCE,
-    PET_FARM_ENCHANT_PER_PET,
     PET_FARM_GEM_MAX,
     PET_FARM_GEM_PER_PET_HOUR,
     PET_FARM_GEM_VARIANCE_PER_PET,
@@ -77,11 +74,6 @@ from config import (
 )
 from utils.mastery import get_mastery_definition
 from utils.localization import DEFAULT_LANGUAGE, normalize_language
-from utils.enchantments import (
-    compute_prissbucks_multiplier,
-    pick_random_enchantment,
-    roll_enchantment_power,
-)
 from utils.cache import LruTTLCache
 
 __all__ = [
@@ -1193,7 +1185,7 @@ class Database:
                 """
                 ALTER TABLE plaza_consumable_listings
                 ADD CONSTRAINT plaza_consumable_listings_item_type_check
-                CHECK (item_type IN ('ticket', 'potion', 'role', 'enchantment'))
+                CHECK (item_type IN ('ticket', 'potion', 'role'))
                 """
             )
             await connection.execute(
@@ -1209,7 +1201,7 @@ class Database:
                     id SERIAL PRIMARY KEY,
                     seller_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
                     buyer_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
-                    item_type TEXT NOT NULL CHECK (item_type IN ('pet', 'ticket', 'potion', 'enchantment')),
+                    item_type TEXT NOT NULL CHECK (item_type IN ('pet', 'ticket', 'potion')),
                     item_slug TEXT,
                     item_power SMALLINT,
                     quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
@@ -1353,28 +1345,9 @@ class Database:
                 )
                 """
             )
-            await connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS user_enchantments (
-                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                    slug TEXT NOT NULL,
-                    power SMALLINT NOT NULL CHECK (power BETWEEN 1 AND 10),
-                    quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
-                    PRIMARY KEY (user_id, slug, power)
-                )
-                """
-            )
-            await connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS user_equipped_enchantments (
-                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                    slug TEXT NOT NULL,
-                    power SMALLINT NOT NULL CHECK (power BETWEEN 1 AND 10),
-                    equipped_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    PRIMARY KEY (user_id, slug)
-                )
-                """
-            )
+            # Fonctionnalité des enchantements retirée du jeu : nettoyage des anciennes tables.
+            await connection.execute("DROP TABLE IF EXISTS user_equipped_enchantments")
+            await connection.execute("DROP TABLE IF EXISTS user_enchantments")
             await connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS raffle_tickets (
@@ -1977,334 +1950,6 @@ class Database:
                 user_id,
                 potion_slug,
             )
-
-        return True
-
-    async def add_user_enchantment(
-        self,
-        user_id: int,
-        slug: str,
-        *,
-        power: int,
-        quantity: int = 1,
-        connection: asyncpg.Connection | None = None,
-    ) -> None:
-        if quantity <= 0:
-            raise ValueError("La quantité doit être positive pour un enchantement")
-        if power < 1 or power > 10:
-            raise ValueError("Le niveau d'enchantement doit être compris entre 1 et 10")
-
-        if connection is None:
-            await self.ensure_user(user_id)
-
-        executor = connection or self.pool
-        await executor.execute(
-            """
-            INSERT INTO user_enchantments (user_id, slug, power, quantity)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (user_id, slug, power)
-            DO UPDATE SET quantity = user_enchantments.quantity + EXCLUDED.quantity
-            """,
-            user_id,
-            slug,
-            power,
-            quantity,
-        )
-
-    async def consume_user_enchantment(
-        self,
-        user_id: int,
-        slug: str,
-        *,
-        power: int,
-        quantity: int = 1,
-        connection: asyncpg.Connection | None = None,
-    ) -> bool:
-        if quantity <= 0:
-            return False
-        if power < 1 or power > 10:
-            return False
-
-        executor = connection or self.pool
-        row = await executor.fetchrow(
-            """
-            SELECT quantity
-            FROM user_enchantments
-            WHERE user_id = $1 AND slug = $2 AND power = $3
-            FOR UPDATE
-            """,
-            user_id,
-            slug,
-            power,
-        )
-        if row is None:
-            return False
-
-        current_qty = int(row.get("quantity") or 0)
-        if current_qty < quantity:
-            return False
-
-        new_qty = current_qty - quantity
-        if new_qty > 0:
-            await executor.execute(
-                """
-                UPDATE user_enchantments
-                SET quantity = $4
-                WHERE user_id = $1 AND slug = $2 AND power = $3
-                """,
-                user_id,
-                slug,
-                power,
-                new_qty,
-            )
-        else:
-            await executor.execute(
-                """
-                DELETE FROM user_enchantments
-                WHERE user_id = $1 AND slug = $2 AND power = $3
-                """,
-                user_id,
-                slug,
-                power,
-            )
-            await executor.execute(
-                """
-                DELETE FROM user_equipped_enchantments
-                WHERE user_id = $1 AND slug = $2 AND power = $3
-                """,
-                user_id,
-                slug,
-                power,
-            )
-        return True
-
-    async def sell_enchantment_for_gems(
-        self,
-        user_id: int,
-        slug: str,
-        *,
-        power: int,
-        quantity: int = 1,
-        unit_price: int,
-    ) -> tuple[str, int, int, int, int]:
-        if quantity <= 0:
-            return "invalid_quantity", 0, 0, 0, 0
-        if power < 1 or power > 10:
-            return "invalid_power", 0, 0, 0, 0
-        if unit_price < 0:
-            return "invalid_price", 0, 0, 0, 0
-
-        await self.ensure_user(user_id)
-
-        async with self.transaction() as connection:
-            owned_row = await connection.fetchrow(
-                """
-                SELECT quantity
-                FROM user_enchantments
-                WHERE user_id = $1 AND slug = $2 AND power = $3
-                FOR UPDATE
-                """,
-                user_id,
-                slug,
-                power,
-            )
-            if owned_row is None:
-                return "missing", 0, 0, 0, 0
-
-            current_qty = int(owned_row.get("quantity") or 0)
-            if current_qty < quantity:
-                return "insufficient", 0, 0, 0, current_qty
-
-            remaining_qty = current_qty - quantity
-            if remaining_qty > 0:
-                await connection.execute(
-                    """
-                    UPDATE user_enchantments
-                    SET quantity = $4
-                    WHERE user_id = $1 AND slug = $2 AND power = $3
-                    """,
-                    user_id,
-                    slug,
-                    power,
-                    remaining_qty,
-                )
-            else:
-                await connection.execute(
-                    """
-                    DELETE FROM user_enchantments
-                    WHERE user_id = $1 AND slug = $2 AND power = $3
-                    """,
-                    user_id,
-                    slug,
-                    power,
-                )
-                await connection.execute(
-                    """
-                    DELETE FROM user_equipped_enchantments
-                    WHERE user_id = $1 AND slug = $2 AND power = $3
-                    """,
-                    user_id,
-                    slug,
-                    power,
-                )
-
-            gems_row = await connection.fetchrow(
-                "SELECT gems FROM users WHERE user_id = $1 FOR UPDATE",
-                user_id,
-            )
-            if gems_row is None:
-                raise DatabaseError("Utilisateur introuvable lors de la vente d'enchantements")
-
-            gems_before = int(gems_row.get("gems") or 0)
-            payout = max(0, unit_price * quantity)
-            tentative_after = gems_before + payout
-            gems_after = tentative_after if tentative_after >= 0 else 0
-
-            await connection.execute(
-                "UPDATE users SET gems = $1 WHERE user_id = $2",
-                gems_after,
-                user_id,
-            )
-            await self.record_transaction(
-                connection=connection,
-                user_id=user_id,
-                transaction_type="enchantment_sell",
-                currency="gem",
-                amount=gems_after - gems_before,
-                balance_before=gems_before,
-                balance_after=gems_after,
-                description=f"Vente de {slug} niv {power} x{quantity}",
-            )
-
-            return "sold", payout, gems_before, gems_after, remaining_qty
-
-    async def get_user_enchantments(self, user_id: int) -> Sequence[asyncpg.Record]:
-        await self.ensure_user(user_id)
-        return await self.pool.fetch(
-            """
-            SELECT slug, power, quantity
-            FROM user_enchantments
-            WHERE user_id = $1 AND quantity > 0
-            ORDER BY slug, power
-            """,
-            user_id,
-        )
-
-    async def get_equipped_enchantments(self, user_id: int) -> Sequence[asyncpg.Record]:
-        await self.ensure_user(user_id)
-        return await self.pool.fetch(
-            """
-            SELECT equipped.slug, equipped.power, equipped.equipped_at
-            FROM user_equipped_enchantments AS equipped
-            JOIN user_enchantments AS inventory
-                ON inventory.user_id = equipped.user_id
-                AND inventory.slug = equipped.slug
-                AND inventory.power = equipped.power
-                AND inventory.quantity > 0
-            WHERE equipped.user_id = $1
-            ORDER BY equipped.equipped_at
-            """,
-            user_id,
-        )
-
-    async def equip_user_enchantment(
-        self,
-        user_id: int,
-        slug: str,
-        *,
-        power: int,
-        slot_limit: int,
-    ) -> str:
-        if power < 1 or power > 10:
-            raise ValueError("Le niveau d'enchantement doit être compris entre 1 et 10")
-        if slot_limit <= 0:
-            return "limit"
-
-        await self.ensure_user(user_id)
-        async with self.transaction() as connection:
-            owned_row = await connection.fetchrow(
-                """
-                SELECT quantity
-                FROM user_enchantments
-                WHERE user_id = $1 AND slug = $2 AND power = $3 AND quantity > 0
-                FOR UPDATE
-                """,
-                user_id,
-                slug,
-                power,
-            )
-            if owned_row is None:
-                return "missing"
-
-            existing = await connection.fetchrow(
-                """
-                SELECT power
-                FROM user_equipped_enchantments
-                WHERE user_id = $1 AND slug = $2
-                FOR UPDATE
-                """,
-                user_id,
-                slug,
-            )
-            if existing:
-                previous_power = int(existing.get("power") or 0)
-                if previous_power == power:
-                    return "unchanged"
-                await connection.execute(
-                    """
-                    UPDATE user_equipped_enchantments
-                    SET power = $3, equipped_at = NOW()
-                    WHERE user_id = $1 AND slug = $2
-                    """,
-                    user_id,
-                    slug,
-                    power,
-                )
-                return "updated"
-
-            equipped_count = await connection.fetchval(
-                "SELECT COUNT(*) FROM user_equipped_enchantments WHERE user_id = $1",
-                user_id,
-            )
-            if int(equipped_count or 0) >= slot_limit:
-                return "limit"
-
-            await connection.execute(
-                """
-                INSERT INTO user_equipped_enchantments (user_id, slug, power)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (user_id, slug)
-                DO UPDATE SET power = EXCLUDED.power, equipped_at = NOW()
-                """,
-                user_id,
-                slug,
-                power,
-            )
-            return "equipped"
-
-    async def unequip_user_enchantment(self, user_id: int, slug: str) -> bool:
-        if not slug:
-            return False
-
-        await self.ensure_user(user_id)
-        result = await self.pool.execute(
-            "DELETE FROM user_equipped_enchantments WHERE user_id = $1 AND slug = $2",
-            user_id,
-            slug,
-        )
-        return bool(result and result.endswith("DELETE 1"))
-
-    async def get_enchantment_powers(self, user_id: int) -> Dict[str, int]:
-        rows = await self.get_equipped_enchantments(user_id)
-        summary: Dict[str, int] = {}
-        for row in rows:
-            slug = str(row.get("slug") or "")
-            power = int(row.get("power") or 0)
-            if not slug or power <= 0:
-                continue
-            current = summary.get(slug, 0)
-            summary[slug] = max(current, power)
-        return summary
 
         return True
 
@@ -5897,7 +5542,6 @@ class Database:
         dict[str, float | int],
     ]:
         await self.ensure_user(user_id)
-        enchantments = await self.get_enchantment_powers(user_id)
         # FIX: Fetch best non-huge income outside of the critical transaction to limit lock duration.
         best_non_huge_income = await self.get_best_non_huge_income(user_id)
         async with self.transaction() as connection:
@@ -6000,19 +5644,7 @@ class Database:
             if raw_income <= 0:
                 return self._build_empty_claim_result(rows, elapsed_seconds)
 
-            priss_power = int(enchantments.get("prissbucks", 0))
-            priss_multiplier = compute_prissbucks_multiplier(priss_power)
             enchantment_info: dict[str, object] = {}
-            if priss_multiplier > 1.0:
-                boosted_by_enchant = int(round(raw_income * priss_multiplier))
-                bonus = max(0, boosted_by_enchant - raw_income)
-                raw_income = boosted_by_enchant
-                enchantment_info = {
-                    "slug": "prissbucks",
-                    "power": priss_power,
-                    "multiplier": priss_multiplier,
-                    "bonus": bonus,
-                }
 
             potion_bonus_amount = 0
             if potion_multiplier > 1.0:
@@ -6087,7 +5719,6 @@ class Database:
                 "gems": 0,
                 "potions": {},
                 "tickets": 0,
-                "enchantments": [],
             }
             pet_count = len(rows)
             time_factor = max(
@@ -6144,24 +5775,6 @@ class Database:
                         connection=connection,
                     )
                     farm_rewards["potions"] = {potion.slug: 1}
-
-            enchant_chance = min(
-                PET_FARM_ENCHANT_MAX_CHANCE,
-                PET_FARM_ENCHANT_BASE + PET_FARM_ENCHANT_PER_PET * pet_count,
-            )
-            if random.random() < enchant_chance:
-                definition = pick_random_enchantment()
-                power = roll_enchantment_power()
-                await self.add_user_enchantment(
-                    user_id,
-                    definition.slug,
-                    power=power,
-                    quantity=1,
-                    connection=connection,
-                )
-                farm_rewards["enchantments"] = [
-                    {"slug": definition.slug, "power": power}
-                ]
 
             booster_expires = first_row.get("pet_booster_expires_at")
             if (
@@ -6918,7 +6531,7 @@ class Database:
         tables liées à la progression individuelle (grades, zones, pets
         possédés, historique d'ouvertures, masteries, préférences, listings
         de marché/plaza, clans, membres de clan, activité, potions,
-        enchantements, tickets/entrées de tombola, transactions...).
+        tickets/entrées de tombola, transactions...).
 
         Les tables de catalogue globales (`pets`, `pet_market_values`,
         `pet_trade_history`, `gemshop_roles`, `config_flags`) ne sont pas
@@ -7525,7 +7138,7 @@ class Database:
         item_slug: str | None = None,
         item_power: int | None = None,
     ) -> asyncpg.Record:
-        if item_type not in {"ticket", "potion", "role", "enchantment"}:
+        if item_type not in {"ticket", "potion", "role"}:
             raise DatabaseError("Type d'objet invalide pour la plaza.")
         if quantity <= 0:
             raise DatabaseError("La quantité doit être positive.")
@@ -7535,11 +7148,6 @@ class Database:
             raise DatabaseError("Merci de préciser le rôle à mettre en vente.")
         if item_type == "role" and quantity != 1:
             raise DatabaseError("Tu ne peux vendre qu'un rôle à la fois.")
-        if item_type == "enchantment":
-            if not item_slug or item_power is None:
-                raise DatabaseError("Merci de préciser l'enchantement et son niveau.")
-            if item_power < 1 or item_power > 10:
-                raise DatabaseError("Le niveau doit être compris entre 1 et 10.")
 
         await self.ensure_user(seller_id)
 
@@ -7565,20 +7173,6 @@ class Database:
                 )
                 if not consumed:
                     raise DatabaseError("Tu n'as pas assez d'exemplaires de cette potion.")
-            elif item_type == "enchantment":
-                if not slug:
-                    raise DatabaseError("Merci de préciser l'enchantement à vendre.")
-                if item_power is None:
-                    raise DatabaseError("Merci de préciser le niveau de l'enchantement.")
-                consumed = await self.consume_user_enchantment(
-                    seller_id,
-                    slug,
-                    power=item_power,
-                    quantity=quantity,
-                    connection=connection,
-                )
-                if not consumed:
-                    raise DatabaseError("Tu ne possèdes pas assez de cet enchantement.")
             else:
                 if not slug:
                     raise DatabaseError("Merci de préciser le rôle à mettre en vente.")
@@ -7636,17 +7230,6 @@ class Database:
                 await self.add_user_potion(
                     seller_id,
                     str(item_slug),
-                    quantity=quantity,
-                    connection=connection,
-                )
-            elif item_type == "enchantment":
-                if not item_slug:
-                    raise DatabaseError("Enchantement inconnu pour cette annonce.")
-                power = int(listing.get("item_power") or 0)
-                await self.add_user_enchantment(
-                    seller_id,
-                    str(item_slug),
-                    power=power,
                     quantity=quantity,
                     connection=connection,
                 )
@@ -7728,15 +7311,6 @@ class Database:
                 await self.add_user_potion(
                     buyer_id,
                     item_slug,
-                    quantity=quantity,
-                    connection=connection,
-                )
-            elif item_type == "enchantment":
-                power = int(listing.get("item_power") or 0)
-                await self.add_user_enchantment(
-                    buyer_id,
-                    item_slug,
-                    power=power,
                     quantity=quantity,
                     connection=connection,
                 )
@@ -7870,16 +7444,6 @@ class Database:
                 quantity=quantity,
                 connection=connection,
             )
-        elif item_type == "enchantment":
-            if not slug or power is None:
-                raise DatabaseError("Enchantement invalide.")
-            await self.add_user_enchantment(
-                winner_id,
-                str(slug),
-                power=int(power),
-                quantity=quantity,
-                connection=connection,
-            )
 
     async def _release_auction_item(
         self,
@@ -7907,15 +7471,6 @@ class Database:
                 await self.add_user_potion(
                     seller_id,
                     str(slug),
-                    quantity=quantity,
-                    connection=connection,
-                )
-        elif item_type == "enchantment":
-            if slug and power is not None:
-                await self.add_user_enchantment(
-                    seller_id,
-                    str(slug),
-                    power=int(power),
                     quantity=quantity,
                     connection=connection,
                 )
@@ -8132,9 +7687,8 @@ class Database:
         buyout_price: int | None = None,
         min_increment: int | None = None,
         item_slug: str | None = None,
-        enchantment_power: int | None = None,
     ) -> asyncpg.Record:
-        valid_types = {"ticket", "potion", "enchantment"}
+        valid_types = {"ticket", "potion"}
         if item_type not in valid_types:
             raise DatabaseError("Type d'objet d'enchère invalide.")
         if quantity <= 0:
@@ -8167,19 +7721,6 @@ class Database:
                 if not consumed:
                     raise DatabaseError("Tu n'as pas assez d'exemplaires de cette potion.")
                 slug = item_slug
-            else:  # enchantment
-                if not item_slug or enchantment_power is None:
-                    raise DatabaseError("Précise l'enchantement et son niveau.")
-                removed = await self.consume_user_enchantment(
-                    seller_id,
-                    item_slug,
-                    power=enchantment_power,
-                    quantity=quantity,
-                    connection=connection,
-                )
-                if not removed:
-                    raise DatabaseError("Tu ne possèdes pas cet enchantement.")
-                slug = item_slug
 
             record = await connection.fetchrow(
                 """
@@ -8193,7 +7734,7 @@ class Database:
                 seller_id,
                 item_type,
                 slug,
-                enchantment_power,
+                None,
                 quantity,
                 starting_bid,
                 increment,
