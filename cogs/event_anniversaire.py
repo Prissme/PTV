@@ -9,14 +9,16 @@ from config import (
     FESTIVE_EGG_PRICE,
     FESTIVE_EGG_DEFINITION,
     FESTIVE_EVENT_PET_NAMES,
-    FESTIVE_GIFT_EGG_PRICE,
-    FESTIVE_GIFT_EGG_DEFINITION,
 )
 from database.db import ActivePetLimitError, DatabaseError
 from utils import embeds
 
 FESTIVE_COIN_EMOJI: str = "🎉"
 STARTING_FESTIVE_COINS: int = 100
+# Chaque amélioration achetée dans la boutique de la piñata ajoute 0,1 % de
+# chance aux pets les plus rares de l'œuf festif. Les 90 améliorations au total
+# donnent donc un bonus maximal volontairement modeste de +9 %.
+PINATA_FESTIVE_EGG_LUCK_PER_UPGRADE: float = 0.001
 
 class FestiveEggReplayView(discord.ui.View):
     """Boutons 'Encore!' et 'AUTO' après l'ouverture d'un œuf festif."""
@@ -396,7 +398,14 @@ class EventAnniversaire(commands.Cog):
                 )
 
         replay_view = FestiveEggReplayView(self, ctx)
-        await pets_cog.hatch_external_egg(ctx, FESTIVE_EGG_DEFINITION, replay_view=replay_view)
+        pinata_luck_bonus = await self._pinata_festive_egg_luck_bonus(user_id)
+        await pets_cog.hatch_external_egg(
+            ctx,
+            FESTIVE_EGG_DEFINITION,
+            replay_view=replay_view,
+            extra_luck_bonus=pinata_luck_bonus,
+            extra_luck_label="Améliorations de piñata",
+        )
 
 
     async def _start_auto_festive_hatch(
@@ -489,77 +498,20 @@ class EventAnniversaire(commands.Cog):
 
         asyncio.create_task(_runner())
 
-    async def _pinata_maxed(self, user_id: int) -> bool:
-        """Vérifie si les 3 upgrades de la piñata (cog EventPinata) sont maxées."""
+    async def _pinata_festive_egg_luck_bonus(self, user_id: int) -> float:
+        """Retourne le bonus de chance de l'œuf festif accordé par la piñata."""
         pool = self.database.pool
         row = await pool.fetchrow(
             "SELECT cooldown_upgrades, chance_upgrades, cash_upgrades FROM pinata_event WHERE user_id = $1",
             user_id,
         )
         if row is None:
-            return False
-        pinata_cog = self.bot.get_cog("EventPinata")
-        if pinata_cog is not None:
-            from cogs.event_pinata import (
-                MAX_CASH_UPGRADES,
-                MAX_CHANCE_UPGRADES,
-                MAX_COOLDOWN_UPGRADES,
-            )
-        else:
-            MAX_COOLDOWN_UPGRADES, MAX_CHANCE_UPGRADES, MAX_CASH_UPGRADES = 20, 20, 50
-        return (
-            int(row["cooldown_upgrades"]) >= MAX_COOLDOWN_UPGRADES
-            and int(row["chance_upgrades"]) >= MAX_CHANCE_UPGRADES
-            and int(row["cash_upgrades"]) >= MAX_CASH_UPGRADES
+            return 0.0
+        upgrades = sum(
+            int(row[key])
+            for key in ("cooldown_upgrades", "chance_upgrades", "cash_upgrades")
         )
-
-    @commands.command(name="oeufcadeau", aliases=("giftegg", "oeufsecret"))
-    async def oeufcadeau(self, ctx: commands.Context) -> None:
-        """Œuf cadeau (1 000 000 Festive Coins) — débloqué en maxant les upgrades de la piñata."""
-        user_id = ctx.author.id
-
-        if not await self._pinata_maxed(user_id):
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "L'œuf cadeau est réservé à ceux qui ont maxé les 3 upgrades de la "
-                    "piñata (`e!pinatashop`). Continue à améliorer ta piñata !"
-                )
-            )
-            return
-
-        pets_cog = self.bot.get_cog("Pets")
-        if pets_cog is None:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Le système d'ouverture des œufs n'est pas encore disponible, réessaie dans un instant."
-                )
-            )
-            return
-
-        pool = self.database.pool
-        async with pool.acquire() as connection:
-            async with connection.transaction():
-                balance = await self._settle_income(connection, user_id)
-                if balance < FESTIVE_GIFT_EGG_PRICE:
-                    await ctx.send(
-                        embed=embeds.error_embed(
-                            f"Il te faut **{FESTIVE_GIFT_EGG_PRICE:,}** Festive Coins pour "
-                            f"acheter l'œuf cadeau (tu as {balance:,})."
-                        )
-                    )
-                    return
-
-                await connection.execute(
-                    """
-                    UPDATE festive_event_wallet
-                    SET festive_coins = festive_coins - $2
-                    WHERE user_id = $1
-                    """,
-                    user_id,
-                    FESTIVE_GIFT_EGG_PRICE,
-                )
-
-        await pets_cog.hatch_external_egg(ctx, FESTIVE_GIFT_EGG_DEFINITION)
+        return upgrades * PINATA_FESTIVE_EGG_LUCK_PER_UPGRADE
 
 
 async def setup(bot: commands.Bot) -> None:

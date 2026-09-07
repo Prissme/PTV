@@ -3042,6 +3042,7 @@ class Pets(commands.Cog):
         price_multiplier: int = 1,
         force_gold: bool = False,
         index_bonus: float = 0.0,
+        extra_luck_bonus: float = 0.0,
     ) -> PetHatchResult | None:
         await self.database.ensure_user(ctx.author.id)
         if charge_cost:
@@ -3104,6 +3105,7 @@ class Pets(commands.Cog):
             role.id == EGG_LUCK_ROLE_ID for role in ctx.author.roles
         ):
             effective_luck_bonus += 0.10
+        effective_luck_bonus += max(0.0, float(extra_luck_bonus))
         pet_definition: PetDefinition | None = None
         pet_id: int | None = None
         last_missing_name = ""
@@ -3414,6 +3416,8 @@ class Pets(commands.Cog):
         *,
         replay_view: discord.ui.View | None = None,
         channel_override: discord.abc.Messageable | None = None,
+        extra_luck_bonus: float = 0.0,
+        extra_luck_label: str | None = None,
     ) -> bool:
         """Ouvre un œuf déjà payé par un système externe avec le pipeline normal."""
         user_id = ctx.author.id
@@ -3440,6 +3444,12 @@ class Pets(commands.Cog):
             frenzy_active=frenzy_active, rebirth_count=rebirth_count,
             enchantments=enchantments, has_luck_role=has_luck_role,
         )
+        extra_luck_bonus = max(0.0, float(extra_luck_bonus))
+        if extra_luck_bonus:
+            luck_bonus_total += extra_luck_bonus
+            luck_bonus_lines.append(
+                f"{extra_luck_label or 'Bonus spécial'} : +{extra_luck_bonus * 100:.1f}%"
+            )
         hatch_kwargs = {
             "mastery_perks": egg_perks,
             "pet_mastery_perks": pet_perks,
@@ -3448,6 +3458,7 @@ class Pets(commands.Cog):
             "rebirth_count": rebirth_count,
             "charge_cost": False,
             "index_bonus": index_bonus,
+            "extra_luck_bonus": extra_luck_bonus,
         }
         primary = await self._hatch_pet(ctx, egg, **hatch_kwargs)
         if primary is None:

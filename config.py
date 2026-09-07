@@ -924,6 +924,8 @@ TITANIC_MEEPLE_NAME: Final[str] = "Titanic Meeple"
 TITANIC_MEEPLE_MULTIPLIER: Final[float] = 100
 TITANIC_POCO_NAME: Final[str] = "Titanic Poco"
 TITANIC_POCO_MULTIPLIER: Final[float] = TITANIC_MEEPLE_MULTIPLIER
+TITANIC_SMOOTH_LOU_NAME: Final[str] = "Titanic Smooth Lou"
+TITANIC_SMOOTH_LOU_MULTIPLIER: Final[float] = 150
 HUGE_ROSA_NAME: Final[str] = "Huge Rosa"
 HUGE_ROSA_MULTIPLIER: Final[float] = 15
 HUGE_CLANCY_NAME: Final[str] = "Huge Clancy"
@@ -932,12 +934,6 @@ HUGE_WISHED_NAME: Final[str] = "Huge Wished"
 HUGE_WISHED_MULTIPLIER: Final[float] = 20
 HUGE_VIRGO_COLLETTE_MULTIPLIER: Final[float] = 25
 TITANIC_CAPRICORN_STU_MULTIPLIER: Final[float] = 100
-HUGE_FESTIVE_MANDY_NAME: Final[str] = "Huge Festive Mandy"
-HUGE_FESTIVE_PIPER_NAME: Final[str] = "Huge Festive Piper"
-HUGE_OLLIE_NAME: Final[str] = "Huge Ollie"
-HUGE_FESTIVE_MANDY_MULTIPLIER: Final[float] = 15
-HUGE_FESTIVE_PIPER_MULTIPLIER: Final[float] = 25
-HUGE_OLLIE_MULTIPLIER: Final[float] = 40
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
 HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
@@ -958,10 +954,8 @@ TITANIC_MEEPLE_NAME: TITANIC_MEEPLE_MULTIPLIER,
     HUGE_ROSA_NAME: HUGE_ROSA_MULTIPLIER,
     HUGE_WISHED_NAME: HUGE_WISHED_MULTIPLIER,
     TITANIC_POCO_NAME: TITANIC_POCO_MULTIPLIER,
+    TITANIC_SMOOTH_LOU_NAME: TITANIC_SMOOTH_LOU_MULTIPLIER,
     HUGE_RED_KING_FRANK_NAME: HUGE_RED_KING_FRANK_MULTIPLIER,
-    HUGE_FESTIVE_MANDY_NAME: HUGE_FESTIVE_MANDY_MULTIPLIER,
-    HUGE_FESTIVE_PIPER_NAME: HUGE_FESTIVE_PIPER_MULTIPLIER,
-    HUGE_OLLIE_NAME: HUGE_OLLIE_MULTIPLIER,
 }
 
 HUGE_PET_MIN_LEVEL_MULTIPLIERS: Final[Dict[str, float]] = {
@@ -1096,6 +1090,7 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     HUGE_CLANCY_NAME: "Se trouve dans l'Œuf vivant de l'Animalerie après ton premier rebirth.",
     HUGE_ROSA_NAME: "Ultra rare dans l'Œuf Huevo de Mexico — seuls les plus courageux la rencontrent.",
     TITANIC_POCO_NAME: "Récompense mythique de l'Œuf Huevo de Mexico, l'égale du Titanic Meeple.",
+    TITANIC_SMOOTH_LOU_NAME: "Jackpot ultra rare de l'Œuf festif.",
     HUGE_WISHED_NAME: "0,1% de chance d'apparaître lorsqu'un vol réussit.",
     HUGE_RED_KING_FRANK_NAME: "Récompense d'événement liée à la Millionaire Race pour les coureurs acharnés.",
 }
@@ -1637,6 +1632,7 @@ FESTIVE_PET_DROP_RATES: Final[Dict[str, float]] = {
     "Festive Mandy": 0.70,
     "Festive Piper": 0.25,
     "Ollie": 0.05,
+    TITANIC_SMOOTH_LOU_NAME: 1 / 175_000_000,
 }
 FESTIVE_EVENT_PET_NAMES: Final[Tuple[str, ...]] = tuple(FESTIVE_COIN_INCOME_PER_SECOND)
 
@@ -1664,46 +1660,15 @@ _FESTIVE_EVENT_PETS: Tuple[PetDefinition, ...] = (
         base_income_per_hour=0,
         drop_rate=0.0,
     ),
-    # Versions "Huge" de l'œuf cadeau, débloquées après avoir maxé les 3 upgrades de la piñata.
-    # Ce sont de VRAIS Huges (is_huge=True) : ils rapportent du PB via le système normal
-    # (e!claim), scalé sur le meilleur pet non-huge du joueur, comme n'importe quel Huge.
-    # base_income_per_hour sert uniquement de fallback si le joueur n'a aucun pet non-huge.
-    # Chaque Huge a désormais son propre emoji dédié (différent de la version normale).
     PetDefinition(
-        name=HUGE_FESTIVE_MANDY_NAME,
-        rarity="Secret",
-        image_url="https://cdn.discordapp.com/emojis/1546429349530439691.png",
-        base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.0,
-        is_huge=True,
-    ),
-    PetDefinition(
-        name=HUGE_FESTIVE_PIPER_NAME,
-        rarity="Secret",
-        image_url="https://cdn.discordapp.com/emojis/1546430131466141776.png",
-        base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.0,
-        is_huge=True,
-    ),
-    PetDefinition(
-        name=HUGE_OLLIE_NAME,
-        rarity="Secret",
-        image_url="https://cdn.discordapp.com/emojis/1546428608367566898.png",
+        name=TITANIC_SMOOTH_LOU_NAME,
+        rarity="Titanic",
+        image_url="",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0,
         is_huge=True,
     ),
 )
-
-# Œuf cadeau (débloqué après avoir maxé les 3 upgrades de la piñata).
-# Ces pets sont des Huges normaux niveau PB : leur revenu suit le système existant
-# (voir HUGE_PET_CUSTOM_MULTIPLIERS ci-dessus), pas les Festive Coins.
-FESTIVE_GIFT_EGG_PRICE: Final[int] = 1_000_000
-FESTIVE_GIFT_PET_DROP_RATES: Final[Dict[str, float]] = {
-    HUGE_FESTIVE_MANDY_NAME: 0.85,
-    HUGE_FESTIVE_PIPER_NAME: 0.13,
-    HUGE_OLLIE_NAME: 0.02,
-}
 
 # Ces définitions utilisent les taux festifs tout en pouvant passer par le
 # pipeline standard (maîtrises, potions, Egg Frenzy et variantes). La monnaie
@@ -1714,21 +1679,10 @@ FESTIVE_EGG_DEFINITION: Final[PetEggDefinition] = PetEggDefinition(
     price=FESTIVE_EGG_PRICE,
     pets=tuple(
         replace(pet, drop_rate=FESTIVE_PET_DROP_RATES[pet.name])
-        for pet in _FESTIVE_EVENT_PETS[:3]
+        for pet in _FESTIVE_EVENT_PETS
     ),
     zone_slug="event_anniversaire",
     aliases=("oeuf festif", "festivegg"),
-)
-FESTIVE_GIFT_EGG_DEFINITION: Final[PetEggDefinition] = PetEggDefinition(
-    name="Œuf cadeau",
-    slug="cadeau_festif",
-    price=FESTIVE_GIFT_EGG_PRICE,
-    pets=tuple(
-        replace(pet, drop_rate=FESTIVE_GIFT_PET_DROP_RATES[pet.name])
-        for pet in _FESTIVE_EVENT_PETS[3:]
-    ),
-    zone_slug="event_anniversaire",
-    aliases=("oeuf cadeau", "giftegg"),
 )
 
 
@@ -1809,17 +1763,11 @@ PET_EMOJIS: Final[dict[str, str]] = {
     ),
     HUGE_ROSA_NAME: os.getenv("PET_EMOJI_HUGE_ROSA", "<:HugeRosa:1437826071503311010>"),
     TITANIC_POCO_NAME: os.getenv("PET_EMOJI_TITANIC_POCO", "<:TITANICPOCO:1437826145486770176>"),
+    TITANIC_SMOOTH_LOU_NAME: os.getenv("PET_EMOJI_TITANIC_SMOOTH_LOU") or "🐋",
     # Pets festifs (event anniversaire)
     "Festive Mandy": os.getenv("PET_EMOJI_FESTIVE_MANDY", "<:FestiveMandy:1545748676012544070>"),
     "Festive Piper": os.getenv("PET_EMOJI_FESTIVE_PIPER", "<:FestivePiper:1546430132842008686>"),
     "Ollie": os.getenv("PET_EMOJI_OLLIE", "<:Ollie:1545752797482459237>"),
-    HUGE_FESTIVE_MANDY_NAME: os.getenv(
-        "PET_EMOJI_HUGE_FESTIVE_MANDY", "<:HugeFestiveMandy:1546429349530439691>"
-    ),
-    HUGE_FESTIVE_PIPER_NAME: os.getenv(
-        "PET_EMOJI_HUGE_FESTIVE_PIPER", "<:HugeFestivePiper:1546430131466141776>"
-    ),
-    HUGE_OLLIE_NAME: os.getenv("PET_EMOJI_HUGE_OLLIE", "<:HugeOllie:1546428608367566898>"),
     # FIX: Ensure default emoji falls back when the environment variable is empty.
     "default": os.getenv("PET_EMOJI_DEFAULT") or "🐾",
 }

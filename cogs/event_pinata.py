@@ -44,24 +44,23 @@ LEVEL_CHANCE_DECAY: float = 0.90  # -10% de chance (multiplicatif) par niveau d�
 CASH_BONUS_PER_UPGRADE: float = 0.10  # +10% de revenu par achat
 MAX_CASH_UPGRADES: int = 50  # -> +500% max
 
-# Coût de départ + facteur exponentiel par type d'upgrade.
-# Chaque type a son propre ratio : cooldown/chance grimpent bien plus vite
-# que cash, pour que les maxer représente un vrai palier de plusieurs jours
-# et pas juste quelques minutes de revenu de base.
+# Coût de départ + facteur exponentiel par type d'upgrade. La progression est
+# volontairement très raide : chaque palier demande un investissement nettement
+# supérieur au précédent.
 UPGRADE_BASE_COSTS: dict[str, float] = {
-    "cooldown": 300.0,   # total pour maxer (20 achats, ratio 1.5) ≈ 2.0M$
-    "chance": 600.0,     # total pour maxer (20 achats, ratio 1.5) ≈ 4.0M$
-    "cash": 21_350.0,    # total pour maxer (50 achats, ratio 1.15) ≈ 154M$ — calibré pour ~1 semaine de grind total
+    "cooldown": 1_500.0,
+    "chance": 3_000.0,
+    "cash": 50_000.0,
 }
 UPGRADE_COST_RATIOS: dict[str, float] = {
-    "cooldown": 1.5,
-    "chance": 1.5,
-    "cash": 1.15,
+    "cooldown": 1.75,
+    "chance": 1.75,
+    "cash": 1.25,
 }
 
 UPGRADE_LABELS: dict[str, str] = {
     "cooldown": "cooldown (-0.4s/achat)",
-    "chance": "chance d'upgrade (+0.006%/achat)",
+    "chance": "chance d'upgrade (+0.012%/achat)",
     "cash": "production (+10%/achat)",
 }
 
@@ -78,6 +77,44 @@ def _max_for(upgrade_type: str) -> int:
         "chance": MAX_CHANCE_UPGRADES,
         "cash": MAX_CASH_UPGRADES,
     }[upgrade_type]
+
+
+class PinataShopView(discord.ui.View):
+    """Raccourcis d'achat réservés au joueur qui a ouvert la boutique."""
+
+    def __init__(self, cog: "EventPinata", ctx: commands.Context) -> None:
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.ctx = ctx
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul le propriétaire de cette boutique peut utiliser ces boutons.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def _buy(self, interaction: discord.Interaction, upgrade_type: str) -> None:
+        await interaction.response.defer()
+        await self.cog.pinatashop.callback(self.cog, self.ctx, args=upgrade_type)
+
+    @discord.ui.button(label="Cooldown", emoji="⏱️", style=discord.ButtonStyle.primary)
+    async def cooldown(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._buy(interaction, "cooldown")
+
+    @discord.ui.button(label="Chance", emoji="🎲", style=discord.ButtonStyle.success)
+    async def chance(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._buy(interaction, "chance")
+
+    @discord.ui.button(label="Production", emoji="💵", style=discord.ButtonStyle.secondary)
+    async def cash(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._buy(interaction, "cash")
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
 
 
 class EventPinata(commands.Cog):
@@ -106,15 +143,8 @@ class EventPinata(commands.Cog):
                     last_attempt_at TIMESTAMPTZ,
                     cooldown_upgrades INT NOT NULL DEFAULT 0,
                     chance_upgrades INT NOT NULL DEFAULT 0,
-                    cash_upgrades INT NOT NULL DEFAULT 0,
-                    gift_announced BOOLEAN NOT NULL DEFAULT FALSE
+                    cash_upgrades INT NOT NULL DEFAULT 0
                 )
-                """
-            )
-            await connection.execute(
-                """
-                ALTER TABLE pinata_event
-                ADD COLUMN IF NOT EXISTS gift_announced BOOLEAN NOT NULL DEFAULT FALSE
                 """
             )
         self._tables_ready = True
@@ -338,9 +368,10 @@ class EventPinata(commands.Cog):
                     f"(prochain : {cost_text})"
                 )
             lines.append("")
-            lines.append("Achète avec `e!pinatashop cooldown`, `e!pinatashop chance` ou `e!pinatashop cash`.")
+            lines.append("Utilise les boutons ci-dessous ou la commande `e!pinatashop <upgrade>`.")
             await ctx.send(
-                embed=embeds.info_embed("\n".join(lines), title="🪅 Boutique de la piñata")
+                embed=embeds.info_embed("\n".join(lines), title="🪅 Boutique de la piñata"),
+                view=PinataShopView(self, ctx),
             )
             return
 
@@ -378,23 +409,6 @@ class EventPinata(commands.Cog):
                     cost,
                 )
 
-                new_counts = {
-                    "cooldown": int(row["cooldown_upgrades"]) + (1 if choice == "cooldown" else 0),
-                    "chance": int(row["chance_upgrades"]) + (1 if choice == "chance" else 0),
-                    "cash": int(row["cash_upgrades"]) + (1 if choice == "cash" else 0),
-                }
-                fully_maxed = (
-                    new_counts["cooldown"] >= MAX_COOLDOWN_UPGRADES
-                    and new_counts["chance"] >= MAX_CHANCE_UPGRADES
-                    and new_counts["cash"] >= MAX_CASH_UPGRADES
-                )
-                already_announced = bool(row["gift_announced"])
-                if fully_maxed and not already_announced:
-                    await connection.execute(
-                        "UPDATE pinata_event SET gift_announced = TRUE WHERE user_id = $1",
-                        user_id,
-                    )
-
         await ctx.send(
             embed=embeds.success_embed(
                 f"Upgrade **{UPGRADE_LABELS[choice]}** acheté pour **{cost}$** "
@@ -402,17 +416,6 @@ class EventPinata(commands.Cog):
                 title="🪅 Piñata améliorée !",
             )
         )
-
-        if fully_maxed and not already_announced:
-            await ctx.send(
-                embed=embeds.success_embed(
-                    "🎉 **Félicitations !** Tu as maxé les 3 upgrades de ta piñata !\n\n"
-                    "Tu débloques l'**œuf cadeau** (`e!oeufcadeau`) — 1 000 000 Festive Coins "
-                    "pour tenter d'obtenir un pet Huge festif exclusif.",
-                    title="🏆 Piñata entièrement maîtrisée !",
-                )
-            )
-
 
     @commands.command(name="pinatareset", aliases=("pinataresetall",))
     @commands.is_owner()
