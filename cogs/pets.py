@@ -114,14 +114,6 @@ from utils.mastery import (
     iter_masteries,
 )
 from database.db import ActivePetLimitError, DatabaseError, InsufficientBalanceError
-from utils.enchantments import (
-    compute_egg_luck_bonus,
-    get_source_label,
-    pick_random_enchantment,
-    roll_enchantment_power,
-    should_drop_enchantment,
-    format_enchantment,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -1803,29 +1795,6 @@ class Pets(commands.Cog):
         is_shiny = self._roll_chance(shiny_chance)
         return is_gold, is_rainbow, False, is_shiny
 
-    async def _maybe_award_enchantment(
-        self, ctx: commands.Context, source: str
-    ) -> None:
-        if not should_drop_enchantment(source):
-            return
-        definition = pick_random_enchantment()
-        power = roll_enchantment_power()
-        try:
-            await self.database.add_user_enchantment(
-                ctx.author.id, definition.slug, power=power
-            )
-        except DatabaseError:
-            logger.exception(
-                "Impossible d'attribuer un enchantement", extra={"user_id": ctx.author.id}
-            )
-            return
-        label = get_source_label(source)
-        embed = embeds.success_embed(
-            f"{ctx.author.mention} obtient {format_enchantment(definition, power)} grâce à {label} !",
-            title="✨ Enchantement trouvé",
-        )
-        await ctx.send(embed=embed)
-
     @staticmethod
     def _parse_toggle_argument(raw: str | None) -> bool | None:
         if raw is None:
@@ -1992,7 +1961,6 @@ class Pets(commands.Cog):
         active_potion: tuple[PotionDefinition, datetime] | None,
         frenzy_active: bool,
         rebirth_count: int,
-        enchantments: Mapping[str, int] | None,
         has_luck_role: bool,
     ) -> tuple[float, list[str]]:
         total_bonus = 0.0
@@ -2022,12 +1990,6 @@ class Pets(commands.Cog):
             bonus = max(0.0, float(REBIRTH_EGG_LUCK_BONUS))
             total_bonus += bonus
             lines.append(f"Rebirth : +{bonus * 100:.0f}%")
-
-        if enchantments:
-            bonus = compute_egg_luck_bonus(enchantments.get("egg_luck", 0))
-            if bonus > 0:
-                total_bonus += bonus
-                lines.append(f"Enchantement chance : +{bonus * 100:.0f}%")
 
         if has_luck_role:
             bonus = 0.10
@@ -3137,7 +3099,6 @@ class Pets(commands.Cog):
                     transaction_type="pet_purchase",
                     description=f"Achat de {egg.name}",
                 )
-        enchantments = await self.database.get_enchantment_powers(ctx.author.id)
         effective_luck_bonus = 0.0
         frenzy_active = is_egg_frenzy_active()
         if mastery_perks:
@@ -3153,10 +3114,6 @@ class Pets(commands.Cog):
             effective_luck_bonus += max(0.0, float(EGG_FRENZY_LUCK_BONUS))
         if rebirth_count > 0:
             effective_luck_bonus += max(0.0, float(REBIRTH_EGG_LUCK_BONUS))
-        if enchantments:
-            effective_luck_bonus += compute_egg_luck_bonus(
-                enchantments.get("egg_luck", 0)
-            )
         if isinstance(ctx.author, discord.Member) and any(
             role.id == EGG_LUCK_ROLE_ID for role in ctx.author.roles
         ):
@@ -3489,7 +3446,6 @@ class Pets(commands.Cog):
         _, index_bonus = await self._fetch_index_shiny_bonus(user_id)
         active_potion = await self.database.get_active_potion(user_id)
         rebirth_count = await self.database.get_rebirth_count(user_id)
-        enchantments = await self.database.get_enchantment_powers(user_id)
         frenzy_active = is_egg_frenzy_active()
         has_luck_role = isinstance(ctx.author, discord.Member) and any(
             role.id == EGG_LUCK_ROLE_ID for role in ctx.author.roles
@@ -3497,7 +3453,7 @@ class Pets(commands.Cog):
         luck_bonus_total, luck_bonus_lines = self._build_egg_luck_breakdown(
             mastery_perks=egg_perks, active_potion=active_potion,
             frenzy_active=frenzy_active, rebirth_count=rebirth_count,
-            enchantments=enchantments, has_luck_role=has_luck_role,
+            has_luck_role=has_luck_role,
         )
         extra_luck_bonus = max(0.0, float(extra_luck_bonus))
         if extra_luck_bonus:
@@ -3928,10 +3884,6 @@ class Pets(commands.Cog):
             else:
                 log_context["active_potion"] = None
 
-            log_context["stage"] = "fetch_enchantments"
-            enchantments = await self.database.get_enchantment_powers(ctx.author.id)
-            log_context["enchantments_loaded"] = bool(enchantments)
-
             frenzy_active = is_egg_frenzy_active()
             has_luck_role = (
                 isinstance(ctx.author, discord.Member)
@@ -3942,7 +3894,6 @@ class Pets(commands.Cog):
                 active_potion=active_potion,
                 frenzy_active=frenzy_active,
                 rebirth_count=rebirth_count,
-                enchantments=enchantments,
                 has_luck_role=has_luck_role,
             )
 
@@ -5241,7 +5192,6 @@ class Pets(commands.Cog):
                 title="🎁 Distributeur de Mexico",
             )
         )
-        await self._maybe_award_enchantment(ctx, "distributor")
 
     @commands.command(name="daycare", aliases=("garderie",))
     async def daycare(self, ctx: commands.Context, *, action: str | None = None) -> None:
@@ -6767,7 +6717,7 @@ class Pets(commands.Cog):
                 clan_info,
                 progress_updates,
                 potion_info,
-                enchantment_info,
+                _enchantment_info,
                 farm_rewards,
                 _rebirth_info,
             ) = await self.database.claim_active_pet_income(ctx.author.id)
@@ -6849,7 +6799,6 @@ class Pets(commands.Cog):
                 booster=booster_info,
                 clan=clan_info if clan_info else None,
                 potion=potion_info if potion_info else None,
-                enchantment=enchantment_info if enchantment_info else None,
                 farm_rewards=farm_rewards if farm_rewards else None,
             )
             level_up_summary: str | None = None
