@@ -1109,17 +1109,6 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_config_flags_name ON config_flags(flag_name)"
             )
 
-            await connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS koth_states (
-                    guild_id BIGINT PRIMARY KEY,
-                    king_user_id BIGINT,
-                    channel_id BIGINT,
-                    claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    last_roll_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
 
             await connection.execute(
                 """
@@ -6157,8 +6146,7 @@ class Database:
         Les tables de catalogue globales (`pets`, `pet_market_values`,
         `pet_trade_history`, `gemshop_roles`, `config_flags`) ne sont pas
         affectées : elles décrivent le jeu lui-même, pas la progression
-        d'un joueur. Le KOTH (`koth_states`) est vidé séparément car il
-        référence un `king_user_id` sans contrainte de clé étrangère.
+        d'un joueur.
 
         Retourne un résumé (nombre d'utilisateurs supprimés) pour le log.
         """
@@ -6166,7 +6154,6 @@ class Database:
         async with self.transaction() as connection:
             user_count = await connection.fetchval("SELECT COUNT(*) FROM users")
             await connection.execute("TRUNCATE TABLE users CASCADE")
-            await connection.execute("DELETE FROM koth_states")
 
         return {"users_removed": int(user_count or 0)}
 
@@ -6193,58 +6180,6 @@ class Database:
             value,
         )
 
-    # ------------------------------------------------------------------
-    # King of the Hill
-    # ------------------------------------------------------------------
-    async def get_koth_state(self, guild_id: int) -> Optional[asyncpg.Record]:
-        row = await self.pool.fetchrow(
-            """
-            SELECT guild_id, king_user_id, channel_id, claimed_at, last_roll_at
-            FROM koth_states
-            WHERE guild_id = $1
-            """,
-            guild_id,
-        )
-        return row
-
-    async def upsert_koth_state(
-        self, guild_id: int, king_user_id: int, channel_id: int
-    ) -> asyncpg.Record:
-        now = datetime.now(timezone.utc)
-        row = await self.pool.fetchrow(
-            """
-            INSERT INTO koth_states (guild_id, king_user_id, channel_id, claimed_at, last_roll_at)
-            VALUES ($1, $2, $3, $4, $4)
-            ON CONFLICT (guild_id) DO UPDATE
-            SET king_user_id = EXCLUDED.king_user_id,
-                channel_id = EXCLUDED.channel_id,
-                claimed_at = EXCLUDED.claimed_at,
-                last_roll_at = EXCLUDED.last_roll_at
-            RETURNING guild_id, king_user_id, channel_id, claimed_at, last_roll_at
-            """,
-            guild_id,
-            king_user_id,
-            channel_id,
-            now,
-        )
-        if row is None:
-            raise DatabaseError("Impossible de mettre à jour l'état King of the Hill")
-        return row
-
-    async def get_all_koth_states(self) -> Sequence[asyncpg.Record]:
-        return await self.pool.fetch(
-            "SELECT guild_id, king_user_id, channel_id, claimed_at, last_roll_at FROM koth_states"
-        )
-
-    async def update_koth_roll_timestamp(
-        self, guild_id: int, *, timestamp: datetime | None = None
-    ) -> None:
-        moment = timestamp or datetime.now(timezone.utc)
-        await self.pool.execute(
-            "UPDATE koth_states SET last_roll_at = $2 WHERE guild_id = $1",
-            guild_id,
-            moment,
-        )
     # ------------------------------------------------------------------
     # Historique financier
     # ------------------------------------------------------------------
