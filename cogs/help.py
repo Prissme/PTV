@@ -207,10 +207,6 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "description": "Affiche ton inventaire complet (potions, pets).",
                     "aliases": ("inv",),
                 },
-                {
-                    "command": f"{PREFIX}koth",
-                    "description": "Conquiers la colline et vise Huge Bo : 1/6000 toutes les 10s, aucun cooldown.",
-                },
             ),
         },
         {
@@ -436,10 +432,6 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "command": f"{PREFIX}inventory",
                     "description": "Open an interactive view of all your items (potions, pets).",
                     "aliases": ("inv",),
-                },
-                {
-                    "command": f"{PREFIX}koth",
-                    "description": "Claim the hill and chase Huge Bo: 1/6000 chance every 10s, no cooldown.",
                 },
             ),
         },
