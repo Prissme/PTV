@@ -520,93 +520,6 @@ class PetHatchResult:
     was_forced_gold: bool = False
 
 
-class PetInventoryView(GoldifyButtonMixin, discord.ui.View):
-    """Interface paginée pour afficher la collection de pets par lots de huit."""
-
-    def __init__(
-        self,
-        *,
-        ctx: commands.Context,
-        pets: Iterable[Mapping[str, Any]],
-        total_income: int,
-        total_count: int,
-        per_page: int = 8,
-        huge_descriptions: Mapping[str, str] | None = None,
-    ) -> None:
-        super().__init__(timeout=120)
-        self.ctx = ctx
-        self.member = ctx.author
-        self._pets: List[Dict[str, Any]] = [dict(pet) for pet in pets]
-        self._per_page = max(1, per_page)
-        self._total_income = int(total_income)
-        self._total_count = int(total_count)
-        self._huge_descriptions: Dict[str, str] = dict(huge_descriptions or {})
-        self.page_count = max(1, math.ceil(len(self._pets) / self._per_page))
-        self.page = 0
-        self.message: discord.Message | None = None
-        self._sync_buttons()
-
-    def _current_slice(self) -> List[Mapping[str, Any]]:
-        if not self._pets:
-            return []
-        start = self.page * self._per_page
-        end = start + self._per_page
-        return self._pets[start:end]
-
-    def build_embed(self) -> discord.Embed:
-        return embeds.pet_collection_embed(
-            member=self.member,
-            pets=self._current_slice(),
-            total_count=self._total_count,
-            total_income_per_hour=self._total_income,
-            page=self.page + 1,
-            page_count=self.page_count,
-            huge_descriptions=self._huge_descriptions,
-            group_duplicates=False,
-        )
-
-    def _sync_buttons(self) -> None:
-        has_multiple_pages = self.page_count > 1
-        if hasattr(self, "previous_page"):
-            self.previous_page.disabled = not has_multiple_pages or self.page <= 0
-        if hasattr(self, "next_page"):
-            self.next_page.disabled = not has_multiple_pages or self.page >= self.page_count - 1
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message(
-                "Seul le propriétaire de l'inventaire peut utiliser ces boutons.",
-                ephemeral=True,
-            )
-            return False
-        return True
-
-    @discord.ui.button(label="Précédent", style=discord.ButtonStyle.secondary)
-    async def previous_page(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        if self.page > 0:
-            self.page -= 1
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    @discord.ui.button(label="Suivant", style=discord.ButtonStyle.secondary)
-    async def next_page(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        if self.page < self.page_count - 1:
-            self.page += 1
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def on_timeout(self) -> None:
-        for item in self.children:
-            item.disabled = True
-        if self.message:
-            with contextlib.suppress(discord.HTTPException):
-                await self.message.edit(view=self)
-
-
 class GoldifySelect(discord.ui.Select):
     """Menu déroulant permettant de choisir quel pet fusionner en version or."""
 
@@ -696,6 +609,93 @@ class GoldifyButtonMixin:
             view=view,
             ephemeral=True,
         )
+
+
+class PetInventoryView(GoldifyButtonMixin, discord.ui.View):
+    """Interface paginée pour afficher la collection de pets par lots de huit."""
+
+    def __init__(
+        self,
+        *,
+        ctx: commands.Context,
+        pets: Iterable[Mapping[str, Any]],
+        total_income: int,
+        total_count: int,
+        per_page: int = 8,
+        huge_descriptions: Mapping[str, str] | None = None,
+    ) -> None:
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.member = ctx.author
+        self._pets: List[Dict[str, Any]] = [dict(pet) for pet in pets]
+        self._per_page = max(1, per_page)
+        self._total_income = int(total_income)
+        self._total_count = int(total_count)
+        self._huge_descriptions: Dict[str, str] = dict(huge_descriptions or {})
+        self.page_count = max(1, math.ceil(len(self._pets) / self._per_page))
+        self.page = 0
+        self.message: discord.Message | None = None
+        self._sync_buttons()
+
+    def _current_slice(self) -> List[Mapping[str, Any]]:
+        if not self._pets:
+            return []
+        start = self.page * self._per_page
+        end = start + self._per_page
+        return self._pets[start:end]
+
+    def build_embed(self) -> discord.Embed:
+        return embeds.pet_collection_embed(
+            member=self.member,
+            pets=self._current_slice(),
+            total_count=self._total_count,
+            total_income_per_hour=self._total_income,
+            page=self.page + 1,
+            page_count=self.page_count,
+            huge_descriptions=self._huge_descriptions,
+            group_duplicates=False,
+        )
+
+    def _sync_buttons(self) -> None:
+        has_multiple_pages = self.page_count > 1
+        if hasattr(self, "previous_page"):
+            self.previous_page.disabled = not has_multiple_pages or self.page <= 0
+        if hasattr(self, "next_page"):
+            self.next_page.disabled = not has_multiple_pages or self.page >= self.page_count - 1
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul le propriétaire de l'inventaire peut utiliser ces boutons.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Précédent", style=discord.ButtonStyle.secondary)
+    async def previous_page(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if self.page > 0:
+            self.page -= 1
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="Suivant", style=discord.ButtonStyle.secondary)
+    async def next_page(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if self.page < self.page_count - 1:
+            self.page += 1
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=self)
 
 
 class PetsSinglePageView(GoldifyButtonMixin, discord.ui.View):
