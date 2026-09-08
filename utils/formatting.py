@@ -38,9 +38,9 @@ def format_compact(amount: int) -> str:
 
 def format_currency(amount: int) -> str:
     """Return a formatted currency string using US short scale suffixes."""
-    return f"{_format_compact(amount)} {Emojis.COIN}"
+    return f"{Emojis.COIN} {_format_compact(amount)}"
 
 
 def format_gems(amount: int) -> str:
     """Return a formatted gem string using US short scale suffixes."""
-    return f"{_format_compact(amount)} {Emojis.GEM}"
+    return f"{Emojis.GEM} {_format_compact(amount)}"
