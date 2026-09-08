@@ -1741,7 +1741,7 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Gus": os.getenv("PET_EMOJI_GUS", "<:Gus:1546649442394972240>"),
     "Ghost Squeak": os.getenv("PET_EMOJI_GHOST_SQUEAK", "<:GhostSqueak:1546649813414846544>"),
     "Ghost Leon": os.getenv("PET_EMOJI_GHOST_LEON", "<:GhostLeon:1546650056629948476>"),
-    "Inspectrice Colette": os.getenv("PET_EMOJI_INSPECTRICE_COLETTE", "<:InspectriceColette:1431422778170408960>"),
+    "Inspectrice Colette": os.getenv("PET_EMOJI_INSPECTRICE_COLETTE", "<:InspectorColette:1546803035043528774>"),
     HUGE_SHADE_NAME: os.getenv("PET_EMOJI_HUGE_SHADE", "<:HugeShade:1546805401297887302>"),
     "Chuck": os.getenv("PET_EMOJI_CHUCK", "<:Chuck:1546650953111834674>"),
     TITANIC_ZOMBIBI_NAME: os.getenv("PET_EMOJI_TITANIC_ZOMBIBI", "<:TitanicZombibi:1546805402782404618>"),
