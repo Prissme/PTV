@@ -685,7 +685,7 @@ class Colors:
 class Emojis:
     MONEY = "💰"
     GEM = os.getenv("GEM_EMOJI", "<:Gem:1542057021866512454>")
-    COIN = os.getenv("COIN_EMOJI", "<:Coin:1546595300373271672>")
+    COIN = os.getenv("COIN_EMOJI", "<:Coin:1546596530373271672>")
     SUCCESS = "✅"
     ERROR = "❌"
     WARNING = "⚠️"
