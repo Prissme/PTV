@@ -1079,7 +1079,7 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     TITANIC_ZOMBIBI_NAME: "Jackpot quasi impossible de l'Œuf Maudit - Zone Manoir Hanté.",
     HUGE_MORTIS_NAME: "Récompense exclusive pour les membres VIP du serveur.",
     HUGE_SURGE_NAME: "Apparaît dans l'Œuf métallique pour les stratèges les plus assidus.",
-    HUGE_BO_NAME: "Récompense du mode King of the Hill : défends ton trône pour tenter ta chance !",
+    HUGE_BO_NAME: "Récompense rare : reste attentif aux occasions de tenter ta chance !",
     TITANIC_MEEPLE_NAME: "Récompense quasi mythique de l'Œuf métallique, au-delà du légendaire.",
     HUGE_ASTRALIS_NAME: "Pet stellaire de la Citadelle Céleste.",
     TITANIC_ZENITH_NAME: "Joyau cosmique ultime de la Citadelle Céleste.",
