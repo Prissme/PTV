@@ -6620,11 +6620,6 @@ class Pets(commands.Cog):
 
         egg_entries.sort(key=lambda entry: entry[0], reverse=True)
 
-        try:
-            raffle_pool = await self.database.get_total_raffle_tickets()
-        except Exception:
-            raffle_pool = 0
-
         special_lines: list[str] = []
         frenzy_start, frenzy_end = get_egg_frenzy_window()
         frenzy_active = is_egg_frenzy_active()
@@ -6643,19 +6638,6 @@ class Pets(commands.Cog):
                 f"{discord.utils.format_dt(frenzy_end_utc, style='t')} "
                 f"({discord.utils.format_dt(frenzy_start_utc, style='R')})."
             )
-        # Tombola — Huge aléatoire toutes les 3h.
-        bull_line = (
-            f"{_format_emoji(HUGE_BULL_NAME)} **Tombola** — tirage toutes les 3h via `e!raffle` "
-            "(Huge aléatoire x2 à x10)."
-        )
-        if raffle_pool > 0:
-            pool_display = f"{raffle_pool:,}".replace(",", " ")
-            bull_line += (
-                f" {pool_display} tickets sont déjà misés pour ce tirage. Miser depuis `e!raffle`."
-            )
-        else:
-            bull_line += " Mise tes tickets depuis `e!raffle` pour participer (remise à zéro après chaque tirage)."
-        special_lines.append(bull_line)
 
         min_kenji = MASTERMIND_HUGE_MIN_CHANCE * 100
         max_kenji = MASTERMIND_HUGE_MAX_CHANCE * 100
@@ -7171,7 +7153,7 @@ class TradePetPriceModal(discord.ui.Modal):
         self.view = view
         self.user_pet_id = user_pet_id
         self.price_input = discord.ui.TextInput(
-            label=f"Valeur estimée en {Emojis.COIN}",
+            label="Valeur estimée en PB",
             placeholder="Ex: 150000",
             min_length=1,
             max_length=18,
@@ -7332,11 +7314,11 @@ class TradePetSelectView(discord.ui.View):
 
 class TradePBModal(discord.ui.Modal):
     def __init__(self, view: "TradeView", user_id: int) -> None:
-        super().__init__(title=f"Définir les {Emojis.COIN} offerts")
+        super().__init__(title="Définir les PB offerts")
         self.view = view
         self.user_id = user_id
         self.amount_input = discord.ui.TextInput(
-            label=f"Montant en {Emojis.COIN}",
+            label="Montant en PB",
             placeholder="Ex: 250000",
             min_length=1,
             max_length=18,
@@ -7437,7 +7419,7 @@ class TradeView(discord.ui.View):
             ephemeral=True,
         )
 
-    @discord.ui.button(label=f"Ajouter des {Emojis.COIN}", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Ajouter des PB", emoji=Emojis.COIN, style=discord.ButtonStyle.secondary)
     async def add_pb_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
