@@ -128,11 +128,6 @@ POTION_DROP_RATES: dict[str, float] = {
 POTION_SLUGS: tuple[str, ...] = tuple(potion.slug for potion in POTION_DEFINITIONS)
 HUGE_WISHED_STEAL_CHANCE = 0.001
 
-KOTH_ROLL_INTERVAL = 10
-KOTH_HUGE_CHANCE_DENOMINATOR = 6_000
-KOTH_HUGE_EMOJI = PET_EMOJIS.get(HUGE_BO_NAME, "<:HugeBo:1435335892712685628>")
-KOTH_HUGE_LABEL = f"{KOTH_HUGE_EMOJI} {HUGE_BO_NAME}"
-
 
 
 @dataclass(frozen=True)
@@ -1485,8 +1480,6 @@ class Economy(commands.Cog):
 
     async def cog_load(self) -> None:
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
-        if not self.koth_reward_loop.is_running():
-            self.koth_reward_loop.start()
         logger.info("Cog Economy chargé")
 
     async def cog_unload(self) -> None:
@@ -1494,8 +1487,6 @@ class Economy(commands.Cog):
             self._cleanup_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._cleanup_task
-        if self.koth_reward_loop.is_running():
-            self.koth_reward_loop.cancel()
 
     async def _ack_heavy_command(self, ctx: commands.Context) -> None:
         interaction = getattr(ctx, "interaction", None)
@@ -1915,57 +1906,6 @@ class Economy(commands.Cog):
                 logger.debug("Cache inventaire mis à jour", extra={"user_id": ctx.author.id})
         view = InventoryView(ctx, snapshot)
         await view.start()
-
-    @commands.command(name="koth")
-    async def koth(self, ctx: commands.Context) -> None:
-        if ctx.guild is None:
-            await ctx.send(
-                embed=embeds.error_embed("Cette commande ne peut être utilisée qu'en serveur.")
-            )
-            return
-        if isinstance(ctx.channel, (discord.DMChannel, discord.GroupChannel)):
-            await ctx.send(
-                embed=embeds.error_embed("La commande King of the Hill ne fonctionne pas en message privé.")
-            )
-            return
-        try:
-            previous_state = await self.database.get_koth_state(ctx.guild.id)
-        except Exception:
-            logger.exception("Impossible de récupérer l'état King of the Hill")
-            await ctx.send(
-                embed=embeds.error_embed("Impossible de prendre le contrôle de la colline pour le moment.")
-            )
-            return
-        previous_king_id = 0
-        if previous_state is not None:
-            previous_king_id = int(previous_state.get("king_user_id") or 0)
-            if previous_king_id == ctx.author.id:
-                await ctx.send(
-                    embed=embeds.info_embed(
-                        (
-                            "Tu es déjà le roi de la colline !\n"
-                            f"Chaque {KOTH_ROLL_INTERVAL}s tu as 1/{KOTH_HUGE_CHANCE_DENOMINATOR} de gagner {KOTH_HUGE_LABEL}."
-                        ),
-                        title="👑 King of the Hill",
-                    )
-                )
-                return
-        try:
-            await self.database.upsert_koth_state(ctx.guild.id, ctx.author.id, ctx.channel.id)
-        except Exception:
-            logger.exception("Impossible de mettre à jour le roi de la colline")
-            await ctx.send(
-                embed=embeds.error_embed("Impossible de prendre le contrôle de la colline pour le moment.")
-            )
-            return
-        description = (
-            f"{ctx.author.mention} règne désormais sur la colline !\n"
-            f"Chaque {KOTH_ROLL_INTERVAL}s : 1/{KOTH_HUGE_CHANCE_DENOMINATOR} de gagner {KOTH_HUGE_LABEL}."
-        )
-        if previous_king_id and previous_king_id != ctx.author.id:
-            description += f"\n<@{previous_king_id}> cède sa place au nouveau roi."
-        embed = embeds.success_embed(description, title="👑 King of the Hill")
-        await ctx.send(embed=embed)
 
     @commands.command(name="daily")
     async def daily(self, ctx: commands.Context) -> None:
@@ -2594,72 +2534,6 @@ class Economy(commands.Cog):
 
         session.message = message
         view.message = message
-
-    @tasks.loop(seconds=KOTH_ROLL_INTERVAL)
-    async def koth_reward_loop(self) -> None:
-        try:
-            states = await self.database.get_all_koth_states()
-        except Exception:
-            logger.exception("Impossible de récupérer l'état King of the Hill")
-            return
-
-        if not states:
-            return
-
-        now = datetime.now(timezone.utc)
-        for state in states:
-            guild_id = int(state.get("guild_id") or 0)
-            king_id = int(state.get("king_user_id") or 0)
-            channel_id = int(state.get("channel_id") or 0)
-            if not guild_id or not king_id or not channel_id:
-                continue
-
-            await self.database.update_koth_roll_timestamp(guild_id, timestamp=now)
-            effective_denominator = KOTH_HUGE_CHANCE_DENOMINATOR
-            if random.randint(1, effective_denominator) != 1:
-                continue
-
-            pet_id = await self.database.get_pet_id_by_name(HUGE_BO_NAME)
-            if pet_id is None:
-                logger.warning("Pet %s introuvable pour le mode KOTH", HUGE_BO_NAME)
-                continue
-
-            try:
-                await self.database.add_user_pet(king_id, pet_id, is_huge=True)
-            except DatabaseError:
-                logger.exception(
-                    "Impossible d'ajouter %s au roi de la colline (guild=%s)",
-                    HUGE_BO_NAME,
-                    guild_id,
-                )
-                continue
-
-            channel = self.bot.get_channel(channel_id)
-            announcement = (
-                f"{KOTH_HUGE_LABEL} rejoint <@{king_id}> !\n"
-                f"Chance 1/{KOTH_HUGE_CHANCE_DENOMINATOR} toutes les {KOTH_ROLL_INTERVAL}s."
-            )
-            if isinstance(channel, Messageable):
-                with contextlib.suppress(discord.HTTPException):
-                    await channel.send(announcement)
-            else:
-                logger.info(
-                    "Canal introuvable pour annoncer la récompense KOTH (guild_id=%s, channel_id=%s)",
-                    guild_id,
-                    channel_id,
-                )
-
-            user = self.bot.get_user(king_id)
-            if user is not None:
-                with contextlib.suppress(discord.HTTPException):
-                    await user.send(
-                        f"👑 Tu remportes {KOTH_HUGE_LABEL} grâce à King of the Hill !"
-                    )
-
-    @koth_reward_loop.before_loop
-    async def before_koth_reward_loop(self) -> None:
-        await self.bot.wait_until_ready()
-
 
 
 async def setup(bot: commands.Bot) -> None:
