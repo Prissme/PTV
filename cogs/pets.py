@@ -967,7 +967,9 @@ class HatchReplayView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         await interaction.response.defer()
-        await self.pets_cog._openbox_impl(self.ctx, self.egg_slug)
+        await self.pets_cog._openbox_impl(
+            self.ctx, self.egg_slug, channel_override=self.ctx.channel
+        )
 
     @discord.ui.button(label="AUTO", style=discord.ButtonStyle.primary)
     async def auto_open(
