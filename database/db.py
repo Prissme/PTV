@@ -54,9 +54,6 @@ from config import (
     PET_FARM_POTION_BASE,
     PET_FARM_POTION_MAX_CHANCE,
     PET_FARM_POTION_PER_PET,
-    PET_FARM_TICKET_BASE,
-    PET_FARM_TICKET_MAX_CHANCE,
-    PET_FARM_TICKET_PER_PET,
     PET_FARM_TIME_FACTOR_MAX,
     PET_FARM_TIME_FACTOR_MIN,
     PET_VALUE_SCALE,
@@ -80,7 +77,6 @@ __all__ = [
     "Database",
     "DatabaseError",
     "InsufficientBalanceError",
-    "InsufficientRaffleTicketsError",
     "ActivePetLimitError",
 ]
 
@@ -194,10 +190,6 @@ class DatabaseError(RuntimeError):
 
 class InsufficientBalanceError(DatabaseError):
     """Erreur dédiée lorsqu'un solde utilisateur est insuffisant."""
-
-
-class InsufficientRaffleTicketsError(DatabaseError):
-    """Erreur levée lorsque l'utilisateur n'a pas assez de tickets en inventaire."""
 
 
 class ActivePetLimitError(DatabaseError):
@@ -1353,41 +1345,10 @@ class Database:
             # Fonctionnalité des enchantements retirée du jeu : nettoyage des anciennes tables.
             await connection.execute("DROP TABLE IF EXISTS user_equipped_enchantments")
             await connection.execute("DROP TABLE IF EXISTS user_enchantments")
-            await connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS raffle_tickets (
-                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
-                    quantity BIGINT NOT NULL DEFAULT 0 CHECK (quantity >= 0),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            await connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS raffle_entries (
-                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
-                    quantity BIGINT NOT NULL DEFAULT 0 CHECK (quantity >= 0),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            await connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS raffle_draws (
-                    id SERIAL PRIMARY KEY,
-                    winner_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
-                    drawn_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    total_tickets BIGINT NOT NULL CHECK (total_tickets >= 0),
-                    winning_ticket BIGINT NOT NULL CHECK (winning_ticket >= 1)
-                )
-                """
-            )
-            await connection.execute(
-                "ALTER TABLE raffle_tickets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
-            )
-            await connection.execute(
-                "ALTER TABLE raffle_entries ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
-            )
+            # Fonctionnalité de tombola retirée du jeu : nettoyage des anciennes tables.
+            await connection.execute("DROP TABLE IF EXISTS raffle_tickets")
+            await connection.execute("DROP TABLE IF EXISTS raffle_entries")
+            await connection.execute("DROP TABLE IF EXISTS raffle_draws")
 
             await self._apply_economy_migrations(connection)
 
@@ -1558,294 +1519,6 @@ class Database:
     ) -> int:
         _ = (user_id, transaction_type)
         return 0
-
-    async def add_raffle_tickets(
-        self,
-        user_id: int,
-        *,
-        amount: int = 1,
-        connection: asyncpg.Connection | None = None,
-    ) -> int:
-        if amount <= 0:
-            raise ValueError("La quantité de tickets doit être positive")
-
-        executor: asyncpg.Connection | asyncpg.pool.Pool
-        if connection is None:
-            await self.ensure_user(user_id)
-            executor = self.pool
-        else:
-            executor = connection
-
-        row = await executor.fetchrow(
-            """
-            INSERT INTO raffle_tickets (user_id, quantity, updated_at)
-            VALUES ($1, $2, NOW())
-            ON CONFLICT (user_id)
-            DO UPDATE SET
-                quantity = raffle_tickets.quantity + EXCLUDED.quantity,
-                updated_at = NOW()
-            RETURNING quantity
-            """,
-            user_id,
-            amount,
-        )
-        if row is None:
-            raise DatabaseError("Impossible de mettre à jour les tickets de tombola")
-        return int(row.get("quantity", 0) or 0)
-
-    async def get_user_raffle_tickets(self, user_id: int) -> int:
-        await self.ensure_user(user_id)
-        row = await self.pool.fetchrow(
-            "SELECT quantity FROM raffle_tickets WHERE user_id = $1",
-            user_id,
-        )
-        if row is None:
-            return 0
-        quantity = row.get("quantity")
-        if quantity is None:
-            return 0
-        return max(0, int(quantity))
-
-    async def get_user_raffle_entries(self, user_id: int) -> int:
-        await self.ensure_user(user_id)
-        row = await self.pool.fetchrow(
-            "SELECT quantity FROM raffle_entries WHERE user_id = $1",
-            user_id,
-        )
-        if row is None:
-            return 0
-        quantity = row.get("quantity")
-        if quantity is None:
-            return 0
-        return max(0, int(quantity))
-
-    async def remove_raffle_tickets(
-        self,
-        user_id: int,
-        *,
-        amount: int,
-        connection: asyncpg.Connection | None = None,
-    ) -> int | None:
-        if amount <= 0:
-            raise ValueError("La quantité à retirer doit être positive")
-
-        if connection is None:
-            await self.ensure_user(user_id)
-            async with self.transaction() as txn_connection:
-                return await self.remove_raffle_tickets(
-                    user_id,
-                    amount=amount,
-                    connection=txn_connection,
-                )
-
-        row = await connection.fetchrow(
-            "SELECT quantity FROM raffle_tickets WHERE user_id = $1 FOR UPDATE",
-            user_id,
-        )
-        if row is None:
-            return None
-
-        current_quantity = int(row.get("quantity") or 0)
-        if current_quantity < amount:
-            return None
-
-        new_quantity = current_quantity - amount
-        if new_quantity > 0:
-            await connection.execute(
-                "UPDATE raffle_tickets SET quantity = $2, updated_at = NOW() WHERE user_id = $1",
-                user_id,
-                new_quantity,
-            )
-        else:
-            await connection.execute(
-                "DELETE FROM raffle_tickets WHERE user_id = $1",
-                user_id,
-            )
-
-        return new_quantity
-
-    async def stake_raffle_tickets(
-        self,
-        user_id: int,
-        *,
-        amount: int,
-    ) -> tuple[int, int]:
-        if amount <= 0:
-            raise ValueError("La quantité à miser doit être positive")
-
-        await self.ensure_user(user_id)
-        async with self.transaction() as connection:
-            row = await connection.fetchrow(
-                "SELECT quantity FROM raffle_tickets WHERE user_id = $1 FOR UPDATE",
-                user_id,
-            )
-            current_inventory = int(row.get("quantity") or 0) if row else 0
-            if current_inventory < amount:
-                raise InsufficientRaffleTicketsError(
-                    "Inventaire insuffisant pour miser autant de tickets"
-                )
-
-            new_inventory = current_inventory - amount
-            if row:
-                if new_inventory > 0:
-                    await connection.execute(
-                        "UPDATE raffle_tickets SET quantity = $2, updated_at = NOW() WHERE user_id = $1",
-                        user_id,
-                        new_inventory,
-                    )
-                else:
-                    await connection.execute(
-                        "DELETE FROM raffle_tickets WHERE user_id = $1",
-                        user_id,
-                    )
-
-            entry_row = await connection.fetchrow(
-                "SELECT quantity FROM raffle_entries WHERE user_id = $1 FOR UPDATE",
-                user_id,
-            )
-            current_entries = int(entry_row.get("quantity") or 0) if entry_row else 0
-            new_entries = current_entries + amount
-            if entry_row:
-                await connection.execute(
-                    "UPDATE raffle_entries SET quantity = $2, updated_at = NOW() WHERE user_id = $1",
-                    user_id,
-                    new_entries,
-                )
-            else:
-                await connection.execute(
-                    """
-                    INSERT INTO raffle_entries (user_id, quantity, updated_at)
-                    VALUES ($1, $2, NOW())
-                    """,
-                    user_id,
-                    new_entries,
-                )
-
-        return new_inventory, new_entries
-
-    async def withdraw_raffle_entries(
-        self,
-        user_id: int,
-        *,
-        amount: int | None = None,
-    ) -> tuple[int, int]:
-        await self.ensure_user(user_id)
-        async with self.transaction() as connection:
-            entry_row = await connection.fetchrow(
-                "SELECT quantity FROM raffle_entries WHERE user_id = $1 FOR UPDATE",
-                user_id,
-            )
-            current_entries = int(entry_row.get("quantity") or 0) if entry_row else 0
-            if current_entries <= 0:
-                inventory_row = await connection.fetchrow(
-                    "SELECT quantity FROM raffle_tickets WHERE user_id = $1",
-                    user_id,
-                )
-                inventory = int(inventory_row.get("quantity") or 0) if inventory_row else 0
-                return inventory, 0
-
-            withdraw_amount = current_entries if amount is None else min(amount, current_entries)
-            remaining_entries = current_entries - withdraw_amount
-            if remaining_entries > 0:
-                await connection.execute(
-                    "UPDATE raffle_entries SET quantity = $2, updated_at = NOW() WHERE user_id = $1",
-                    user_id,
-                    remaining_entries,
-                )
-            else:
-                await connection.execute(
-                    "DELETE FROM raffle_entries WHERE user_id = $1",
-                    user_id,
-                )
-
-            inventory_row = await connection.fetchrow(
-                "SELECT quantity FROM raffle_tickets WHERE user_id = $1 FOR UPDATE",
-                user_id,
-            )
-            current_inventory = int(inventory_row.get("quantity") or 0) if inventory_row else 0
-            new_inventory = current_inventory + withdraw_amount
-            if inventory_row:
-                await connection.execute(
-                    "UPDATE raffle_tickets SET quantity = $2, updated_at = NOW() WHERE user_id = $1",
-                    user_id,
-                    new_inventory,
-                )
-            else:
-                await connection.execute(
-                    """
-                    INSERT INTO raffle_tickets (user_id, quantity, updated_at)
-                    VALUES ($1, $2, NOW())
-                    """,
-                    user_id,
-                    new_inventory,
-                )
-
-        return new_inventory, remaining_entries
-
-    async def draw_raffle_winner(self) -> tuple[int, int, int] | None:
-        async with self.transaction() as connection:
-            rows = await connection.fetch(
-                """
-                SELECT user_id, quantity
-                FROM raffle_entries
-                WHERE quantity > 0
-                ORDER BY user_id
-                FOR UPDATE
-                """
-            )
-            if not rows:
-                return None
-            totals: list[tuple[int, int]] = []
-            total_tickets = 0
-            for row in rows:
-                quantity = int(row.get("quantity", 0) or 0)
-                if quantity <= 0:
-                    continue
-                user_id = int(row.get("user_id"))
-                totals.append((user_id, quantity))
-                total_tickets += quantity
-            if total_tickets <= 0 or not totals:
-                return None
-            if len(totals) > 1:
-                random.shuffle(totals)
-            winning_ticket = random.randint(1, total_tickets)
-            cumulative = 0
-            winner_id = 0
-            for user_id, quantity in totals:
-                cumulative += quantity
-                if winning_ticket <= cumulative:
-                    winner_id = user_id
-                    break
-            if winner_id == 0:
-                return None
-            await connection.execute("DELETE FROM raffle_entries")
-            await connection.execute(
-                """
-                INSERT INTO raffle_draws (winner_id, total_tickets, winning_ticket)
-                VALUES ($1, $2, $3)
-                """,
-                winner_id,
-                total_tickets,
-                winning_ticket,
-            )
-            result = (winner_id, total_tickets, winning_ticket)
-
-        return result
-
-    async def get_total_raffle_tickets(self) -> int:
-        value = await self.pool.fetchval("SELECT COALESCE(SUM(quantity), 0) FROM raffle_entries")
-        return int(value or 0)
-
-    async def get_last_raffle_draw(self) -> datetime | None:
-        row = await self.pool.fetchrow(
-            "SELECT drawn_at FROM raffle_draws ORDER BY drawn_at DESC LIMIT 1"
-        )
-        if row is None:
-            return None
-        drawn_at = row.get("drawn_at")
-        if isinstance(drawn_at, datetime):
-            return drawn_at
-        return None
 
     async def should_send_help_dm(self, user_id: int) -> bool:
         await self.ensure_user(user_id)
@@ -3888,10 +3561,6 @@ class Database:
                 user_id,
             )
             await connection.execute(
-                "DELETE FROM raffle_tickets WHERE user_id = $1",
-                user_id,
-            )
-            await connection.execute(
                 "DELETE FROM user_zones WHERE user_id = $1",
                 user_id,
             )
@@ -5755,15 +5424,6 @@ class Database:
                 gems_before = gems_after
                 farm_rewards["gems"] = gem_reward
 
-            ticket_chance = min(
-                PET_FARM_TICKET_MAX_CHANCE,
-                (PET_FARM_TICKET_BASE + PET_FARM_TICKET_PER_PET * pet_count)
-                * min(PET_FARM_TIME_FACTOR_MAX, elapsed_hours or 1.0),
-            )
-            if random.random() < ticket_chance:
-                await self.add_raffle_tickets(user_id, amount=1, connection=connection)
-                farm_rewards["tickets"] = 1
-
             potion_chance = min(
                 PET_FARM_POTION_MAX_CHANCE,
                 (PET_FARM_POTION_BASE + PET_FARM_POTION_PER_PET * pet_count)
@@ -6555,7 +6215,7 @@ class Database:
         tables liées à la progression individuelle (grades, zones, pets
         possédés, historique d'ouvertures, masteries, préférences, listings
         de marché/plaza, clans, membres de clan, activité, potions,
-        tickets/entrées de tombola, transactions...).
+        transactions...).
 
         Les tables de catalogue globales (`pets`, `pet_market_values`,
         `pet_trade_history`, `gemshop_roles`, `config_flags`) ne sont pas
@@ -7162,7 +6822,7 @@ class Database:
         item_slug: str | None = None,
         item_power: int | None = None,
     ) -> asyncpg.Record:
-        if item_type not in {"ticket", "potion", "role"}:
+        if item_type not in {"potion", "role"}:
             raise DatabaseError("Type d'objet invalide pour la plaza.")
         if quantity <= 0:
             raise DatabaseError("La quantité doit être positive.")
@@ -7177,16 +6837,7 @@ class Database:
 
         async with self.transaction() as connection:
             slug = item_slug
-            if item_type == "ticket":
-                slug = "raffle_ticket"
-                remaining = await self.remove_raffle_tickets(
-                    seller_id, amount=quantity, connection=connection
-                )
-                if remaining is None:
-                    raise DatabaseError(
-                        "Tu n'as pas assez de tickets de tombola pour cette mise en vente."
-                    )
-            elif item_type == "potion":
+            if item_type == "potion":
                 if not slug:
                     raise DatabaseError("Merci de préciser la potion à mettre en vente.")
                 consumed = await self.consume_user_potion(
@@ -7244,11 +6895,7 @@ class Database:
             quantity = int(listing["quantity"])
             item_type = str(listing["item_type"])
             item_slug = listing.get("item_slug")
-            if item_type == "ticket":
-                await self.add_raffle_tickets(
-                    seller_id, amount=quantity, connection=connection
-                )
-            elif item_type == "potion":
+            if item_type == "potion":
                 if not item_slug:
                     raise DatabaseError("Potion inconnue pour cette annonce.")
                 await self.add_user_potion(
@@ -7327,11 +6974,7 @@ class Database:
                 seller_id,
             )
 
-            if item_type == "ticket":
-                await self.add_raffle_tickets(
-                    buyer_id, amount=quantity, connection=connection
-                )
-            elif item_type == "potion":
+            if item_type == "potion":
                 await self.add_user_potion(
                     buyer_id,
                     item_slug,
@@ -7455,10 +7098,6 @@ class Database:
                 winner_id,
                 user_pet_id,
             )
-        elif item_type == "ticket":
-            await self.add_raffle_tickets(
-                winner_id, amount=quantity, connection=connection
-            )
         elif item_type == "potion":
             if not slug:
                 raise DatabaseError("Potion inconnue pour cette enchère.")
@@ -7486,10 +7125,6 @@ class Database:
                     "UPDATE user_pets SET on_market = FALSE WHERE id = $1",
                     user_pet_id,
                 )
-        elif item_type == "ticket":
-            await self.add_raffle_tickets(
-                seller_id, amount=quantity, connection=connection
-            )
         elif item_type == "potion":
             if slug:
                 await self.add_user_potion(
@@ -7712,7 +7347,7 @@ class Database:
         min_increment: int | None = None,
         item_slug: str | None = None,
     ) -> asyncpg.Record:
-        valid_types = {"ticket", "potion"}
+        valid_types = {"potion"}
         if item_type not in valid_types:
             raise DatabaseError("Type d'objet d'enchère invalide.")
         if quantity <= 0:
@@ -7726,14 +7361,7 @@ class Database:
         ends_at = datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
 
         async with self.transaction() as connection:
-            if item_type == "ticket":
-                removed = await self.remove_raffle_tickets(
-                    seller_id, amount=quantity, connection=connection
-                )
-                if removed is None:
-                    raise DatabaseError("Tu n'as pas assez de tickets à miser.")
-                slug = "raffle_ticket"
-            elif item_type == "potion":
+            if item_type == "potion":
                 if not item_slug:
                     raise DatabaseError("Précise la potion à mettre aux enchères.")
                 consumed = await self.consume_user_potion(
