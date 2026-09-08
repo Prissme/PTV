@@ -3788,7 +3788,7 @@ class Pets(commands.Cog):
         await self._openbox_impl(ctx, "vivant")
 
     @commands.cooldown(1, 5, commands.BucketType.user)
-    @commands.command(name="huevo", aliases=("mexico",))
+    @commands.command(name="huevo")
     async def huevo(self, ctx: commands.Context) -> None:
         await self._openbox_impl(ctx, "huevo")
 
