@@ -363,11 +363,6 @@ PET_FARM_GEM_VARIANCE_PER_PET = _get_balance_float("pet_farm_gem_variance_per_pe
 DAYCARE_MAX_PETS = _get_balance_int("daycare_max_pets", 10, minimum=1)
 DAYCARE_GEM_PER_PET_HOUR = _get_balance_float("daycare_gem_per_pet_hour", 4.0, minimum=0.0)
 DAYCARE_GEM_MAX = _get_balance_int("daycare_gem_max", 1500, minimum=0)
-PET_FARM_TICKET_BASE = _get_balance_float("pet_farm_ticket_base", 0.03, minimum=0.0)
-PET_FARM_TICKET_PER_PET = _get_balance_float("pet_farm_ticket_per_pet", 0.004, minimum=0.0)
-PET_FARM_TICKET_MAX_CHANCE = _get_balance_float(
-    "pet_farm_ticket_max_chance", 0.20, minimum=0.0, maximum=1.0
-)
 PET_FARM_POTION_BASE = _get_balance_float("pet_farm_potion_base", 0.03, minimum=0.0)
 PET_FARM_POTION_PER_PET = _get_balance_float("pet_farm_potion_per_pet", 0.006, minimum=0.0)
 PET_FARM_POTION_MAX_CHANCE = _get_balance_float(
@@ -800,8 +795,6 @@ POTION_SELL_VALUES: Final[Dict[str, int]] = {
     "slots_luck": 2_000,
 }
 
-RAFFLE_TICKET_SELL_VALUE: Final[int] = 500
-
 
 # ---------------------------------------------------------------------------
 # Animaux (Pets)
@@ -1078,7 +1071,7 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     TITANIC_COLT_NAME: "Récompense mythique octroyée uniquement par l'équipe via le panneau admin.",
     HUGE_GALE_NAME: "Récompense finale du mode Millionaire Race (étape 20).",
     HUGE_KENJI_ONI_NAME: "Récompense rarissime du Mastermind pour les esprits les plus vifs.",
-    HUGE_BULL_NAME: "Récompense de la tombola Mastermind (tirage toutes les 3h, Huge aléatoire x2 à x10).",
+    HUGE_BULL_NAME: "Huge légendaire distribué autrefois via un événement spécial du staff.",
     HUGE_SHADE_NAME: "Extrêmement rare dans l'Œuf Maudit (0.5%) - Zone Manoir Hanté.",
     HUGE_MORTIS_NAME: "Récompense exclusive pour les membres VIP du serveur.",
     HUGE_SURGE_NAME: "Apparaît dans l'Œuf métallique pour les stratèges les plus assidus.",
