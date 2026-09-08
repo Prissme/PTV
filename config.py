@@ -1,7612 +1,1827 @@
-"""Système d'ouverture d'œufs et de gestion des pets Brawl Stars."""
+"""Configuration centralisée et minimaliste pour EcoBot."""
 from __future__ import annotations
 
-import asyncio
-from collections import OrderedDict
-import contextlib
-import logging
+import json
 import math
-import random
-import unicodedata
-from decimal import Decimal, ROUND_HALF_UP
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Dict, Final, Iterable, List, Mapping, Optional, Sequence, Set
+import os
+from pathlib import Path
+from dataclasses import dataclass, replace
+from datetime import datetime, time, timedelta, timezone
+from typing import Dict, Final, Mapping, Tuple
 
-import discord
-from discord.ext import commands
+try:  # Python 3.9+ fournit zoneinfo, mais nous gardons un repli.
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover - environnement minimaliste
+    ZoneInfo = None  # type: ignore[misc, assignment]
 
-from config import (
-    BASE_PET_SLOTS,
-    MEXICO_ZONE_SLUG,
-    DEFAULT_PET_EGG_SLUG,
-    GOLD_PET_CHANCE,
-    GOLD_PET_COMBINE_REQUIRED,
-    GOLD_PET_MULTIPLIER,
-    GOLDIFY_GEM_COST,
-    GRADE_DEFINITIONS,
-    CELESTE_ZONE_SLUG,
-    ZODIAQUE_ZONE_SLUG,
-    DAYCARE_GEM_MAX,
-    DAYCARE_GEM_PER_PET_HOUR,
-    DAYCARE_MAX_PETS,
-    EGG_MASTERY_MAX_ROLE_ID,
-    PET_MASTERY_MAX_ROLE_ID,
-    PET_DEFINITIONS,
-    PET_EGG_DEFINITIONS,
-    PET_RARITY_ORDER,
-    PET_ZONES,
-    POTION_DEFINITIONS,
-    EGG_FRENZY_LUCK_BONUS,
-    REBIRTH_EGG_LUCK_BONUS,
-    get_egg_frenzy_window,
-    is_egg_frenzy_active,
-    RAINBOW_PET_CHANCE,
-    RAINBOW_PET_COMBINE_REQUIRED,
-    RAINBOW_PET_MULTIPLIER,
-    RAINBOWIFY_GEM_COST,
-    GALAXY_PET_COMBINE_REQUIRED,
-    GALAXY_PET_MULTIPLIER,
-    GALAXY_GEM_COST,
-    PET_EMOJIS,
-    Emojis,
-    SHINY_PET_MULTIPLIER,
-    PET_SLOT_MAX_CAPACITY,
-    PET_SLOT_SHOP_BASE_COST,
-    PET_SLOT_SHOP_COST_GROWTH,
-    PET_SLOT_SHOP_CURRENCY,
-    MEXICO_DISTRIBUTOR_COOLDOWN,
-    HUGE_PET_LEVEL_CAP,
-    HUGE_PET_NAME,
-    HUGE_PET_MIN_INCOME,
-    HUGE_PET_NAMES,
-    HUGE_PET_SOURCES,
-    HUGE_BULL_NAME,
-    HUGE_GALE_NAME,
-    HUGE_GRIFF_NAME,
-    HUGE_KENJI_ONI_NAME,
-    HUGE_MORTIS_NAME,
-    HUGE_WISHED_NAME,
-    EGG_LUCK_ROLE_ID,
-    FUSION_COST_BASE,
-    FUSION_COST_COUNT_EXPONENT,
-    FUSION_COST_MAX,
-    FUSION_COST_MIN,
-    FUSION_COST_OUTPUT_MULTIPLIER,
-    FUSION_COST_POWER_LOG_BASE,
-    FUSION_COST_POWER_SCALE,
-    FUSION_COST_RARITY_MULTIPLIERS,
-    PETS_PAGE_SIZE,
-    CACHE_TTL_PETS,
-    DEBUG_CACHE,
-    STEAL_PROTECTED_ROLE_ID,
-    VOICE_XP_ROLE_ID,
-    XP_BOOST_ROLE_ID,
-    TITANIC_GRIFF_NAME,
-    PotionDefinition,
-    compute_huge_income,
-    get_huge_level_multiplier,
-    get_huge_level_progress,
-    huge_level_required_xp,
-    rebase_gems_price,
-    scale_pet_value,
-    PetDefinition,
-    PetEggDefinition,
-    PetZoneDefinition,
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def _load_balance_config(path: str) -> dict[str, object]:
+    config_path = Path(path)
+    if not config_path.is_absolute():
+        config_path = Path(__file__).resolve().parent / config_path
+    if not config_path.exists():
+        return {}
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+_BALANCE_CONFIG = _load_balance_config(os.getenv("BALANCE_CONFIG_PATH", "balance_config.json"))
+
+
+def _load_economy_config(path: str) -> dict[str, object]:
+    config_path = Path(path)
+    if not config_path.is_absolute():
+        config_path = Path(__file__).resolve().parent / config_path
+    if not config_path.exists():
+        return {}
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+_ECONOMY_CONFIG = _load_economy_config(os.getenv("ECONOMY_CONFIG_PATH", "config/economy.json"))
+
+
+def _get_economy_value(path: str, default: object) -> object:
+    current: object = _ECONOMY_CONFIG
+    for key in path.split("."):
+        if not isinstance(current, dict):
+            return default
+        current = current.get(key, default)
+    return current
+
+
+def _get_economy_int(
+    path: str,
+    default: int,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    value = _get_economy_value(path, default)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
+def _get_economy_float(
+    path: str,
+    default: float,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    value = _get_economy_value(path, default)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
+def _get_economy_bool(path: str, default: bool) -> bool:
+    value = _get_economy_value(path, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y"}:
+            return True
+        if lowered in {"0", "false", "no", "n"}:
+            return False
+    return bool(value) if isinstance(value, (int, float)) else default
+
+
+def _get_economy_mapping(
+    path: str, default: Mapping[str, float]
+) -> Mapping[str, float]:
+    value = _get_economy_value(path, default)
+    if isinstance(value, dict):
+        parsed: dict[str, float] = {}
+        for entry_key, entry_value in value.items():
+            try:
+                parsed[str(entry_key)] = float(entry_value)
+            except (TypeError, ValueError):
+                continue
+        return parsed or default
+    return default
+
+
+def _get_balance_int(
+    key: str,
+    default: int,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    value = _BALANCE_CONFIG.get(key, default)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
+def _get_balance_float(
+    key: str,
+    default: float,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    value = _BALANCE_CONFIG.get(key, default)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
+def _get_balance_bool(key: str, default: bool) -> bool:
+    value = _BALANCE_CONFIG.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y"}:
+            return True
+        if lowered in {"0", "false", "no", "n"}:
+            return False
+    return bool(value) if isinstance(value, (int, float)) else default
+
+
+def _get_balance_mapping(key: str, default: Mapping[str, float]) -> Mapping[str, float]:
+    value = _BALANCE_CONFIG.get(key, default)
+    if isinstance(value, dict):
+        parsed: dict[str, float] = {}
+        for entry_key, entry_value in value.items():
+            try:
+                parsed[str(entry_key)] = float(entry_value)
+            except (TypeError, ValueError):
+                continue
+        return parsed or default
+    return default
+
+
+def _get_float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except ValueError:
+        return default
+    return max(0.0, min(1.0, parsed))
+
+
+def _get_int_env(name: str, default: int, *, minimum: int = 1) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return max(minimum, parsed)
+
+
+def _resolve_timezone(name: str, *, fallback_offset_hours: int = 1) -> timezone:
+    """Retourne un fuseau horaire robuste, même si zoneinfo est indisponible."""
+
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo(name)
+        except Exception:  # pragma: no cover - dépend de l'environnement système
+            pass
+    offset = timedelta(hours=fallback_offset_hours)
+    return timezone(offset)
+
+# ---------------------------------------------------------------------------
+# Informations essentielles
+# ---------------------------------------------------------------------------
+TOKEN = os.getenv("DISCORD_TOKEN")
+PREFIX = os.getenv("PREFIX", "e!")
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+DATABASE_URL = os.getenv("DATABASE_URL")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+if not TOKEN:
+    raise ValueError("DISCORD_TOKEN manquant dans le fichier .env")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL manquant dans le fichier .env")
+
+# ---------------------------------------------------------------------------
+# Paramètres économie
+# ---------------------------------------------------------------------------
+GEMS_REBASE_FACTOR = _get_economy_int("GEMS_REBASE_FACTOR", 10_000, minimum=1)
+ECONOMY_DEBUG = _get_economy_bool("debug", False)
+
+MARKET_VALUE_RARITY_BASE = _get_economy_mapping(
+    "market_value.rarity_base",
+    {
+        "Commun": 20,
+        "Atypique": 60,
+        "Rare": 120,
+        "Épique": 400,
+        "Légendaire": 1_200,
+        "Mythique": 4_000,
+        "Secret": 12_000,
+        "Huge": 150_000,
+        "Titanic": 1_500_000,
+    },
 )
-from utils import embeds
-from utils.cache import TTLCache
-from utils.pet_formatting import PetDisplay, pet_emoji
-from cogs.economy import (
-    CASINO_HUGE_CHANCE_PER_PB,
-    CASINO_HUGE_MAX_CHANCE,
-    CASINO_TITANIC_CHANCE_PER_PB,
-    CASINO_TITANIC_MAX_CHANCE,
-    MASTERMIND_HUGE_MAX_CHANCE,
-    MASTERMIND_HUGE_MIN_CHANCE,
-    HUGE_WISHED_STEAL_CHANCE,
+MARKET_VALUE_RARITY_CAP = _get_economy_mapping(
+    "market_value.rarity_cap",
+    {
+        "Commun": 200,
+        "Atypique": 500,
+        "Rare": 800,
+        "Épique": 3_000,
+        "Légendaire": 10_000,
+        "Mythique": 50_000,
+        "Secret": 250_000,
+        "Huge": 2_000_000,
+        "Titanic": 20_000_000,
+    },
 )
-from utils.mastery import (
-    EGG_MASTERY,
-    PET_MASTERY,
-    MASTERMIND_MASTERY,
-    MasteryDefinition,
-    iter_masteries,
+MARKET_VALUE_POWER_EXPONENT = _get_economy_float(
+    "market_value.power_exponent", 0.8, minimum=0.1, maximum=2.0
 )
-from database.db import ActivePetLimitError, DatabaseError, InsufficientBalanceError
+MARKET_VALUE_POWER_BASELINE_GLOBAL = _get_economy_int(
+    "market_value.power_baseline_global", 1_000, minimum=1
+)
+MARKET_VALUE_POWER_BASELINE_BY_ZONE = _get_economy_mapping(
+    "market_value.power_baseline_by_zone",
+    {
+        "starter": 50,
+        "foret": 250,
+        "manoir_hante": 3_000,
+        "robotique": 50_000,
+        "animalerie": 1_000_000,
+        "mexico": 10_000_000,
+        "celeste": 100_000_000,
+        "exclusif": 1_000_000,
+    },
+)
+MARKET_VALUE_HUGE_MULTIPLIER = _get_economy_float(
+    "market_value.huge_multiplier", 10.0, minimum=0.1
+)
+MARKET_VALUE_TITANIC_MULTIPLIER = _get_economy_float(
+    "market_value.titanic_multiplier", 50.0, minimum=0.1
+)
+MARKET_VALUE_MIN = _get_economy_int("market_value.min_value", 1, minimum=1)
+MARKET_VALUE_OWNER_EXPONENT = _get_economy_float(
+    "market_value.owner_exponent", 0.5, minimum=0.0, maximum=2.0
+)
+MARKET_VALUE_OWNER_MIN_MULTIPLIER = _get_economy_float(
+    "market_value.owner_min_multiplier", 0.1, minimum=0.0, maximum=1.0
+)
+DISPLAY_GEMS_COMPACT = _get_economy_bool("display.compact", True)
 
-logger = logging.getLogger(__name__)
+MARKET_VALUE_CONFIG: Final[Mapping[str, object]] = {
+    "rarity_base": MARKET_VALUE_RARITY_BASE,
+    "rarity_cap": MARKET_VALUE_RARITY_CAP,
+    "power_exponent": MARKET_VALUE_POWER_EXPONENT,
+    "power_baseline_global": MARKET_VALUE_POWER_BASELINE_GLOBAL,
+    "power_baseline_by_zone": MARKET_VALUE_POWER_BASELINE_BY_ZONE,
+    "huge_multiplier": MARKET_VALUE_HUGE_MULTIPLIER,
+    "titanic_multiplier": MARKET_VALUE_TITANIC_MULTIPLIER,
+    "min_value": MARKET_VALUE_MIN,
+    "owner_exponent": MARKET_VALUE_OWNER_EXPONENT,
+    "owner_min_multiplier": MARKET_VALUE_OWNER_MIN_MULTIPLIER,
+    "debug": ECONOMY_DEBUG,
+}
+_daily_min = _get_balance_int("daily_reward_min", 10_000, minimum=0)
+_daily_max = _get_balance_int("daily_reward_max", 20_000, minimum=_daily_min)
+DAILY_REWARD = (_daily_min, _daily_max)
+DAILY_COOLDOWN = 86_400  # 24 heures
+DAILY_STREAK_TOLERANCE = _get_balance_int("daily_streak_tolerance_seconds", 7_200, minimum=0)
+DAILY_STREAK_BONUS_BASE = _get_balance_float("daily_streak_bonus_base", 0.02, minimum=0.0)
+DAILY_STREAK_BONUS_EXPONENT = _get_balance_float(
+    "daily_streak_bonus_exponent", 1.05, minimum=0.1
+)
+DAILY_STREAK_BONUS_CAP = _get_balance_float("daily_streak_bonus_cap", 0.6, minimum=0.0)
+DAILY_STREAK_DIMINISH_ENABLED = _get_balance_bool("daily_streak_diminish_enabled", True)
+DAILY_STREAK_DIMINISH_START = _get_balance_int("daily_streak_diminish_start", 25, minimum=1)
+DAILY_STREAK_DIMINISH_EXPONENT = _get_balance_float(
+    "daily_streak_diminish_exponent", 0.75, minimum=0.1, maximum=1.0
+)
+DAILY_GEMS_BASE = _get_balance_int("daily_gems_base", 5, minimum=0)
+DAILY_GEMS_BONUS_CHANCE = _get_balance_float(
+    "daily_gems_bonus_chance", 0.15, minimum=0.0, maximum=1.0
+)
+DAILY_GEMS_BONUS_MIN = _get_balance_int("daily_gems_bonus_min", 1, minimum=0)
+DAILY_GEMS_BONUS_MAX = _get_balance_int(
+    "daily_gems_bonus_max", 5, minimum=DAILY_GEMS_BONUS_MIN
+)
+DAILY_GEMS_CAP = _get_balance_int("daily_gems_cap", 12, minimum=0)
+MESSAGE_REWARD = _get_balance_int("message_reward", 1, minimum=0)
+MESSAGE_COOLDOWN = 60
+LEADERBOARD_LIMIT = _get_economy_int("leaderboard_limit", 10, minimum=1)
+CACHE_TTL_SECONDS = _get_economy_int("cache_ttl_seconds", 60, minimum=0)
+CACHE_MAX_ENTRIES = _get_economy_int("cache_max_entries", 128, minimum=1)
+QUERY_TIMEOUT_SECONDS = _get_economy_int("query_timeout_seconds", 3, minimum=1)
+DEBUG_SQL_TIMING = _get_economy_bool("debug_sql_timing", False)
+SLOT_MIN_BET = _get_balance_int("slots_min_bet", 50, minimum=1)
+SLOT_MAX_BET = _get_balance_int("slots_max_bet", 1_000_000_000_000_000, minimum=SLOT_MIN_BET)
+CASINO_HUGE_MAX_CHANCE = _get_balance_float("casino_huge_max_chance", 0.10, minimum=0.0, maximum=1.0)
+CASINO_TITANIC_MAX_CHANCE = _get_balance_float(
+    "casino_titanic_max_chance", 0.01, minimum=0.0, maximum=1.0
+)
+CASINO_HUGE_CHANCE_PER_PB = CASINO_HUGE_MAX_CHANCE / SLOT_MAX_BET
+CASINO_TITANIC_CHANCE_PER_PB = CASINO_TITANIC_MAX_CHANCE / SLOT_MAX_BET
+PET_FARM_TIME_FACTOR_MIN = _get_balance_float("pet_farm_time_factor_min", 0.25, minimum=0.0)
+PET_FARM_TIME_FACTOR_MAX = _get_balance_float("pet_farm_time_factor_max", 2.0, minimum=0.1)
+PET_FARM_GEM_PER_PET_HOUR = _get_balance_float("pet_farm_gem_per_pet_hour", 2.0, minimum=0.0)
+PET_FARM_GEM_MAX = _get_balance_int("pet_farm_gem_max", 500, minimum=0)
+PET_FARM_GEM_VARIANCE_PER_PET = _get_balance_float("pet_farm_gem_variance_per_pet", 0.5, minimum=0.0)
+DAYCARE_MAX_PETS = _get_balance_int("daycare_max_pets", 10, minimum=1)
+DAYCARE_GEM_PER_PET_HOUR = _get_balance_float("daycare_gem_per_pet_hour", 4.0, minimum=0.0)
+DAYCARE_GEM_MAX = _get_balance_int("daycare_gem_max", 1500, minimum=0)
+PET_FARM_POTION_BASE = _get_balance_float("pet_farm_potion_base", 0.03, minimum=0.0)
+PET_FARM_POTION_PER_PET = _get_balance_float("pet_farm_potion_per_pet", 0.006, minimum=0.0)
+PET_FARM_POTION_MAX_CHANCE = _get_balance_float(
+    "pet_farm_potion_max_chance", 0.18, minimum=0.0, maximum=1.0
+)
+PET_FARM_ENCHANT_BASE = _get_balance_float("pet_farm_enchant_base", 0.01, minimum=0.0)
+PET_FARM_ENCHANT_PER_PET = _get_balance_float("pet_farm_enchant_per_pet", 0.0025, minimum=0.0)
+PET_FARM_ENCHANT_MAX_CHANCE = _get_balance_float(
+    "pet_farm_enchant_max_chance", 0.05, minimum=0.0, maximum=1.0
+)
+FUSION_COST_BASE = _get_balance_int("fusion_cost_base", 5_000, minimum=0)
+FUSION_COST_POWER_SCALE = _get_balance_float("fusion_cost_power_scale", 0.35, minimum=0.0)
+FUSION_COST_POWER_LOG_BASE = _get_balance_float(
+    "fusion_cost_power_log_base", 10.0, minimum=2.0
+)
+FUSION_COST_COUNT_EXPONENT = _get_balance_float(
+    "fusion_cost_count_exponent", 1.1, minimum=1.0
+)
+FUSION_COST_OUTPUT_MULTIPLIER = _get_balance_float(
+    "fusion_cost_output_multiplier", 0.6, minimum=0.0
+)
+FUSION_COST_MIN = _get_balance_int("fusion_cost_min", 1_000, minimum=0)
+FUSION_COST_MAX = _get_balance_int("fusion_cost_max", 5_000_000, minimum=FUSION_COST_MIN)
+FUSION_COST_RARITY_MULTIPLIERS = _get_balance_mapping(
+    "fusion_cost_rarity_multipliers",
+    {
+        "Commun": 1.0,
+        "Atypique": 1.4,
+        "Rare": 2.0,
+        "Épique": 3.0,
+        "Légendaire": 4.5,
+        "Mythique": 6.5,
+        "Secret": 9.0,
+        "Huge": 16.0,
+    },
+)
+STEAL_BASE_CHANCE = _get_balance_float("steal_base_chance", 0.5, minimum=0.0, maximum=1.0)
+STEAL_GRADE_BONUS_PER_LEVEL = _get_balance_float(
+    "steal_grade_bonus_per_level", 0.05, minimum=0.0
+)
+STEAL_GRADE_BONUS_CAP = _get_balance_float(
+    "steal_grade_bonus_cap", 0.5, minimum=0.0
+)
+STEAL_LOG_BASE = _get_balance_float("steal_log_base", 10.0, minimum=2.0)
+STEAL_LOG_SCALE = _get_balance_float("steal_log_scale", 1.2, minimum=0.0)
+STEAL_MIN_CHANCE = _get_balance_float("steal_min_chance", 0.05, minimum=0.0, maximum=1.0)
+STEAL_MAX_CHANCE = _get_balance_float("steal_max_chance", 0.9, minimum=0.0, maximum=1.0)
+CACHE_TTL_INVENTORY = _get_balance_int("cache_ttl_inventory_seconds", 20, minimum=0)
+CACHE_TTL_PETS = _get_balance_int("cache_ttl_pets_seconds", 20, minimum=0)
+CACHE_TTL_PROFILE = _get_balance_int("cache_ttl_profile_seconds", 15, minimum=0)
+PETS_PAGE_SIZE = _get_balance_int("pets_page_size", 8, minimum=1, maximum=25)
+INVENTORY_POTIONS_PAGE_SIZE = _get_balance_int("inventory_potions_page_size", 6, minimum=1, maximum=25)
+INVENTORY_ENCHANTMENTS_PAGE_SIZE = _get_balance_int(
+    "inventory_enchantments_page_size", 5, minimum=1, maximum=25
+)
+INVENTORY_PETS_PAGE_SIZE = _get_balance_int("inventory_pets_page_size", 4, minimum=1, maximum=25)
+QUEST_WEEKLY_RESET_WEEKDAY = _get_balance_int("quest_weekly_reset_weekday", 0, minimum=0, maximum=6)
+QUEST_WEEKLY_RESET_HOUR = _get_balance_int("quest_weekly_reset_hour", 0, minimum=0, maximum=23)
+DEBUG_CACHE = _get_balance_bool("debug_cache", False)
 
-FUSE_ZODIAQUE_WEIGHT_MULTIPLIER: Final[float] = 0.2
+# ---------------------------------------------------------------------------
+# Paramètres Clans
+# ---------------------------------------------------------------------------
+
+CLAN_CREATION_COST: Final[int] = 100_000
+CLAN_JOIN_COST: Final[int] = 100_000
+CLAN_BASE_CAPACITY: Final[int] = 5
+CLAN_MAX_MEMBERS: Final[int] = 5
+CLAN_WAR_MIN_MEMBERS: Final[int] = 3
+CLAN_CAPACITY_PER_LEVEL: Final[int] = 2
+CLAN_CAPACITY_UPGRADE_COSTS: Final[Tuple[int, ...]] = (
+    15_000,
+    35_000,
+    75_000,
+    150_000,
+    300_000,
+)
+CLAN_LEVEL_BASE_COST: Final[int] = 100_000
+CLAN_LEVEL_COST_GROWTH: Final[float] = 1.2
+CLAN_BOOST_INCREMENT: Final[float] = 0.0005
 
 
-HUGE_SHELLY_ALERT_CHANNEL_ID = 1236724293631611022
-EGG_OPEN_EMOJI = "<:Egg:1542057019664633887>"
-FALLBACK_EGG_EMOJI = "🐣"
+def _generate_clan_boost_costs(
+    *, base_cost: int = 50_000, growth_factor: float = 1.65, levels: int = 64
+) -> Tuple[int, ...]:
+    """Génère une séquence de coûts exponentiels pour les boosts de clan."""
 
-HUGE_GOLD_CHANCE = 0.1
-HUGE_RAINBOW_CHANCE = 0.01
-HUGE_SHINY_CHANCE = 0.004
-HUGE_GALAXY_CHANCE = 0.0001
-INDEX_SHINY_BONUS_PER_PET: Final[float] = 0.0005
-GOLD_MASTERY_POINTS: Final[int] = 10
-RAINBOW_MASTERY_POINTS: Final[int] = 100
-GALAXY_MASTERY_POINTS: Final[int] = 10_000
-
+    costs: list[int] = []
+    current = float(base_cost)
+    for _ in range(levels):
+        costs.append(int(round(current // 100 * 100)))
+        current *= growth_factor
+    return tuple(costs)
 
 
-@dataclass(frozen=True)
-class EggMasteryPerks:
-    """Regroupe les bonus associés à la maîtrise des œufs."""
+CLAN_BOOST_COSTS: Final[Tuple[int, ...]] = _generate_clan_boost_costs()
+CLAN_SHINY_LUCK_INCREMENT: Final[float] = 0.002
 
-    double_chance: float = 0.0
-    triple_chance: float = 0.0
-    gold_chance: float = 0.0
-    rainbow_chance: float = 0.0
-    animation_speed: float = 1.0
-    luck_bonus: float = 0.0
+# ---------------------------------------------------------------------------
+# Paramètres Statistiques
+# ---------------------------------------------------------------------------
 
-
-def _compute_egg_mastery_perks(level: int) -> EggMasteryPerks:
-    """Calcule les bonus actifs pour un niveau donné de maîtrise des œufs."""
-
-    double_chance = 0.0
-    triple_chance = 0.0
-    gold_chance = 0.0
-    rainbow_chance = 0.0
-    animation_speed = 1.0
-    luck_bonus = 0.0
-
-    if level >= 5:
-        double_chance = 0.03
-    if level >= 10:
-        gold_chance = 0.02
-    if level >= 20:
-        rainbow_chance = 0.005
-        animation_speed = 2.0
-    if level >= 30:
-        double_chance = 0.10
-        triple_chance = 0.005
-    if level >= 40:
-        double_chance = 0.12
-        triple_chance = 0.01
-        gold_chance = 0.03
-        rainbow_chance = 0.01
-    if level >= 50:
-        double_chance = 0.18
-        triple_chance = 0.03
-        gold_chance = 0.05
-        rainbow_chance = 0.015
-    if level >= 64:
-        luck_bonus = 1.0
-
-    return EggMasteryPerks(
-        double_chance=double_chance,
-        triple_chance=triple_chance,
-        gold_chance=gold_chance,
-        rainbow_chance=rainbow_chance,
-        animation_speed=animation_speed,
-        luck_bonus=luck_bonus,
-    )
+STATS_ACTIVE_WINDOW_DAYS = _get_int_env("STATS_ACTIVE_WINDOW_DAYS", 7, minimum=1)
+STATS_TOP_LIMIT = _get_int_env("STATS_TOP_LIMIT", 10, minimum=1)
 
 
-@dataclass(frozen=True)
-class PetMasteryPerks:
-    """Synthétise les bonus associés à la maîtrise des pets."""
+def compute_daily_streak_bonus(streak: int) -> float:
+    """Retourne le bonus multiplicatif pour le daily."""
 
-    fuse_unlocked: bool = False
-    auto_goldify: bool = False
-    auto_rainbowify: bool = False
-    egg_shiny_chance: float = 0.0
-    goldify_shiny_chance: float = 0.0
-    rainbowify_shiny_chance: float = 0.0
-    fuse_double_chance: float = 0.0
-    fuse_triple_chance: float = 0.0
-    egg_shiny_multiplier: float = 1.0
-    gold_luck_multiplier: float = 1.0
-    rainbow_luck_multiplier: float = 1.0
-
-
-@dataclass(frozen=True)
-class GemshopState:
-    """Représente l'état actuel du magasin de slots de pets pour un joueur."""
-
-    grade_level: int
-    base_capacity: int
-    extra_slots: int
-    hard_cap: int
-    total_slots: int
-    max_extra_allowed: int
-    next_cost: int | None
-    role_sales: Dict[int, int] = field(default_factory=dict)
-
-    @property
-    def has_reached_hard_cap(self) -> bool:
-        return self.total_slots >= self.hard_cap
-
-    @property
-    def can_purchase(self) -> bool:
-        return (
-            self.max_extra_allowed > 0
-            and self.extra_slots < self.max_extra_allowed
-            and not self.has_reached_hard_cap
+    safe_streak = max(0, int(streak))
+    if DAILY_STREAK_DIMINISH_ENABLED and safe_streak > DAILY_STREAK_DIMINISH_START:
+        excess = safe_streak - DAILY_STREAK_DIMINISH_START
+        safe_streak = int(
+            round(
+                DAILY_STREAK_DIMINISH_START
+                + (excess ** DAILY_STREAK_DIMINISH_EXPONENT)
+            )
         )
+    bonus = DAILY_STREAK_BONUS_BASE * (safe_streak ** DAILY_STREAK_BONUS_EXPONENT)
+    return max(0.0, min(DAILY_STREAK_BONUS_CAP, bonus))
+
+
+def compute_steal_success_chance(
+    *,
+    attacker_balance: int,
+    victim_balance: int,
+    grade_level: int = 0,
+    has_protection: bool = False,
+) -> float:
+    """Calcule la chance de vol en fonction du ratio et des bonus."""
+
+    base = STEAL_BASE_CHANCE + min(
+        max(0, int(grade_level)) * STEAL_GRADE_BONUS_PER_LEVEL,
+        STEAL_GRADE_BONUS_CAP,
+    )
+    attacker_safe = max(1.0, float(attacker_balance))
+    victim_safe = max(0.0, float(victim_balance))
+    ratio = max(1.0, victim_safe / attacker_safe)
+    log_base = max(2.0, STEAL_LOG_BASE)
+    try:
+        log_factor = math.log(ratio, log_base) if ratio > 1 else 0.0
+    except ValueError:
+        log_factor = 0.0
+    scale = max(0.0, STEAL_LOG_SCALE)
+    ratio_multiplier = 1.0 / (1.0 + scale * log_factor) if scale > 0 else 1.0
+    chance = base * ratio_multiplier
+    if has_protection:
+        chance /= 10
+    if not math.isfinite(chance):
+        chance = STEAL_MIN_CHANCE
+    chance = min(max(chance, STEAL_MIN_CHANCE), STEAL_MAX_CHANCE)
+    return max(0.0, min(1.0, chance))
+
+# ---------------------------------------------------------------------------
+# Paramètres Grades
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class GemshopPurchaseResult:
-    """Résultat d'une tentative d'achat dans le gemshop."""
+class GradeDefinition:
+    name: str
+    mastermind_goal: int
+    egg_goal: int
+    rap_goal: int
+    casino_loss_goal: int
+    potion_goal: int
+    reward_gems: int
 
-    embed: discord.Embed
-    state: GemshopState
-    success: bool
+
+def rebase_gems_amount(value: float | int, *, minimum: int = 0) -> int:
+    """Convert a gem value from the legacy scale to the rebased scale."""
+
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return max(0, int(minimum))
+    if numeric <= 0 or math.isnan(numeric):
+        return max(0, int(minimum))
+    if GEMS_REBASE_FACTOR <= 1:
+        return max(int(minimum), int(numeric))
+    scaled = int(math.floor(numeric / GEMS_REBASE_FACTOR))
+    if scaled < minimum:
+        scaled = int(minimum)
+    return max(0, scaled)
+
+
+def rebase_gems_price(value: float | int) -> int:
+    """Return a safe rebased gem price (never free when input is positive)."""
+
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if numeric <= 0 or math.isnan(numeric):
+        return 0
+    scaled = rebase_gems_amount(numeric, minimum=0)
+    return max(1, int(scaled))
+
+
+BASE_PET_SLOTS: Final[int] = 4
+PET_SLOT_MAX_CAPACITY: Final[int] = 40
+PET_SLOT_SHOP_BASE_COST: Final[int] = rebase_gems_price(5_000)
+PET_SLOT_SHOP_COST_GROWTH: Final[float] = 1.6
+PET_SLOT_SHOP_CURRENCY: Final[str] = "gem"
+MEXICO_DISTRIBUTOR_COOLDOWN: Final[timedelta] = timedelta(minutes=10)
+PET_VALUE_SCALE: Final[int] = _get_economy_int("pet_value_scale", 1, minimum=1)
+
+
+def scale_pet_value(raw_value: float | int, *, minimum: int = 0) -> int:
+    """Rebase a pet-related value according to ``PET_VALUE_SCALE``."""
+
+    try:
+        numeric = float(raw_value)
+    except (TypeError, ValueError):
+        return max(0, int(minimum))
+    if numeric <= 0 or math.isnan(numeric):
+        return max(0, int(minimum))
+    if PET_VALUE_SCALE <= 1:
+        return max(int(minimum), int(numeric))
+    scaled = int(math.floor(numeric / PET_VALUE_SCALE))
+    if scaled <= 0:
+        scaled = 1
+    return max(int(minimum), scaled)
+
+
+RAP_GOAL_UNIT: Final[int] = scale_pet_value(50_000, minimum=1)
+CASINO_LOSS_GOAL_UNIT: Final[int] = 5_000
+
+_GRADE_BLUEPRINTS: Tuple[tuple[str, int, int, int, int, int], ...] = (
+    ("Novice", 0, 3, 0, 0, 125),
+    ("Apprenti", 0, 5, 0, 0, 200),
+    ("Disciple", 0, 8, 0, 0, 275),
+    ("Explorateur", 1, 12, 3, 2, 350),
+    ("Aventurier", 2, 16, 5, 2, 450),
+    ("Expert", 2, 20, 8, 3, 550),
+    ("Champion", 2, 25, 12, 3, 700),
+    ("Maître", 3, 30, 18, 4, 850),
+    ("Prodige", 3, 36, 27, 4, 1_050),
+    ("Élite", 4, 43, 40, 5, 1_300),
+    ("Légende", 5, 51, 60, 5, 1_600),
+    ("Mythique", 6, 60, 90, 6, 1_950),
+    ("Cosmique", 7, 70, 135, 7, 2_350),
+    ("Divin", 8, 81, 200, 8, 2_800),
+    ("Parangon", 9, 93, 300, 9, 3_300),
+)
+
+
+def _build_grade_definitions() -> Tuple[GradeDefinition, ...]:
+    definitions: list[GradeDefinition] = []
+    for name, mastermind, eggs, sale_goal, potion, reward in _GRADE_BLUEPRINTS:
+        rap_goal = sale_goal * RAP_GOAL_UNIT
+        casino_loss_goal = sale_goal * CASINO_LOSS_GOAL_UNIT
+        definitions.append(
+            GradeDefinition(
+                name,
+                mastermind_goal=mastermind,
+                egg_goal=eggs,
+                rap_goal=rap_goal,
+                casino_loss_goal=casino_loss_goal,
+                potion_goal=potion,
+                reward_gems=reward,
+            )
+        )
+    return tuple(definitions)
+
+
+GRADE_DEFINITIONS: Tuple[GradeDefinition, ...] = _build_grade_definitions()
+
+GRADE_ROLE_IDS: Tuple[int, ...] = (
+    1430716817852203128,
+    1430721773497876530,
+    1430721718497837198,
+    1430721544874623016,
+    1430721477535334625,
+    1430721408849150052,
+    1430721364242993302,
+    1430721264963817528,
+    1430721259020484740,
+    1430721200048312493,
+    1430721137888985228,
+    1430721065524400289,
+    1430720939141763092,
+    1430720735625609276,
+    1430720400203055144,
+)
+
+# ---------------------------------------------------------------------------
+# Rôles spéciaux
+# ---------------------------------------------------------------------------
+
+VIP_ROLE_ID: Final[int] = 1_431_428_621_959_954_623
+TOP_PB_ROLE_ID: Final[int] = 1_454_894_276_768_174_244
+TOP_PB_ROLE_LIMIT: Final[int] = 30
+TOP_PB_ROLE_REFRESH_MINUTES: Final[int] = 10
+EGG_MASTERY_MAX_ROLE_ID: Final[int] = 1_433_423_014_065_602_600
+PET_MASTERY_MAX_ROLE_ID: Final[int] = 1_433_425_659_182_448_720
+MASTERMIND_MASTERY_MAX_ROLE_ID: Final[int] = 1_433_426_656_361_447_646
+
+# ---------------------------------------------------------------------------
+# Esthétique
+# ---------------------------------------------------------------------------
+
+
+class Colors:
+    PRIMARY = 0x5865F2
+    SUCCESS = 0x57F287
+    ERROR = 0xED4245
+    WARNING = 0xFEE75C
+    INFO = PRIMARY
+    GOLD = 0xF7B731
+    NEUTRAL = 0x99AAB5
+    ACCENT = 0xF47FFF
+
+
+class Emojis:
+    MONEY = "💰"
+    GEM = os.getenv("GEM_EMOJI", "<:Gem:1542057021866512454>")
+    COIN = os.getenv("COIN_EMOJI", "<:Coin:1546596530373271672>")
+    SUCCESS = "✅"
+    ERROR = "❌"
+    WARNING = "⚠️"
+    COOLDOWN = "⏳"
+    DAILY = "🎰"
+    LEADERBOARD = "🏆"
+    XP = "✨"
+
+
+# ---------------------------------------------------------------------------
+# Potions
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class GemshopRoleOffer:
-    role_id: int
-    description: str
-    price: int
-    stock: int
+class PotionDefinition:
     slug: str
-
-
-GEMSHOP_ROLE_OFFERS: Final[tuple[GemshopRoleOffer, ...]] = (
-    GemshopRoleOffer(
-        role_id=1388837886924685343,
-        description="Rôle Bourgeois",
-        price=rebase_gems_price(10_000),
-        stock=20,
-        slug="bourgeois",
-    ),
-)
-
-
-@dataclass(frozen=True)
-class MasteryTier:
-    level: int
-    title: str
+    name: str
+    effect_type: str
+    effect_value: float
     description: str
+    duration_seconds: int = 3600
 
 
-_EGG_MASTERY_TIERS: tuple[MasteryTier, ...] = (
-    MasteryTier(5, "Ouverture double", "3% de chance supplémentaire d'ouvrir un œuf bonus."),
-    MasteryTier(10, "Reflets dorés", "+2% de chance qu'un œuf devienne gold."),
-    MasteryTier(
-        20,
-        "Arc-en-ciel express",
-        "Animations deux fois plus rapides et +0.5% de chance d'œuf rainbow.",
+POTION_DEFINITIONS: Tuple[PotionDefinition, ...] = (
+    PotionDefinition(
+        "luck_i",
+        "Potion de chance I",
+        "egg_luck",
+        0.25,
+        "Augmente la chance d'œufs de 25% pendant une courte durée.",
     ),
-    MasteryTier(
-        30,
-        "Session frénétique",
-        "10% de doubles ouvertures et 0.5% de triples coups d'œil.",
+    PotionDefinition(
+        "luck_ii",
+        "Potion de chance II",
+        "egg_luck",
+        0.50,
+        "Augmente la chance d'œufs de 50% pendant une courte durée.",
     ),
-    MasteryTier(
-        40,
-        "Run légendaire",
-        "12% de doubles, 1% de triples, +3% or et +1% rainbow.",
+    PotionDefinition(
+        "luck_iii",
+        "Potion de chance III",
+        "egg_luck",
+        1.0,
+        "Augmente la chance d'œufs de 100% pendant une courte durée.",
     ),
-    MasteryTier(
-        50,
-        "Jackpot permanent",
-        "18% de doubles, 3% de triples, +5% or et +1.5% rainbow.",
+    PotionDefinition(
+        "fortune_i",
+        "Potion de fortune I",
+        "pb_boost",
+        0.15,
+        f"Augmente les gains de {Emojis.COIN} de 15% pendant une courte durée.",
     ),
-    MasteryTier(64, "Instinct cosmique", "+1.0 de luck constant sur tous les œufs."),
+    PotionDefinition(
+        "fortune_ii",
+        "Potion de fortune II",
+        "pb_boost",
+        0.30,
+        f"Augmente les gains de {Emojis.COIN} de 30% pendant une courte durée.",
+    ),
+    PotionDefinition(
+        "fortune_iii",
+        "Potion de fortune III",
+        "pb_boost",
+        0.50,
+        f"Augmente les gains de {Emojis.COIN} de 50% pendant une courte durée.",
+    ),
+    PotionDefinition(
+        "fortune_iv",
+        "Potion de fortune IV",
+        "pb_boost",
+        0.75,
+        f"Augmente les gains de {Emojis.COIN} de 75% pendant une courte durée.",
+    ),
+    PotionDefinition(
+        "fortune_v",
+        "Potion de fortune V",
+        "pb_boost",
+        1.0,
+        f"Augmente les gains de {Emojis.COIN} de 100% pendant une courte durée.",
+    ),
+    PotionDefinition(
+        "mastery_xp",
+        "Potion de maîtrise",
+        "mastery_xp",
+        1.0,
+        "Double l'XP de maîtrise pendant 5 minutes.",
+        duration_seconds=300,
+    ),
+    PotionDefinition(
+        "slots_luck",
+        "Potion chance slots",
+        "slots_luck",
+        0.30,
+        "Augmente tes chances et tes gains à la machine à sous pendant une courte durée.",
+    ),
 )
 
-_PET_MASTERY_TIERS: tuple[MasteryTier, ...] = (
-    MasteryTier(
-        5,
-        "Atelier fusion",
-        "Débloque la fusion, l'auto goldify et +1% de shiny via les œufs.",
-    ),
-    MasteryTier(10, "Artisan patient", "10% de chance de fusion double."),
-    MasteryTier(
-        20,
-        "Forge colorée",
-        "+3% de shiny sur les goldifies et +1% sur les rainbowifies.",
-    ),
-    MasteryTier(
-        30,
-        "Orfèvre spectral",
-        "Active l'auto rainbowify et booste la chance shiny des œufs à 3%.",
-    ),
-    MasteryTier(
-        40,
-        "Fusions maîtrisées",
-        "35% de doubles fusions et 10% de triples réussies.",
-    ),
-    MasteryTier(
-        50,
-        "Légende des altérations",
-        "50% de doubles, +5% shiny œufs et goldify, +3% shiny rainbowify.",
-    ),
-    MasteryTier(
-        64,
-        "Génie du polissage",
-        "Shiny œufs x1.2, luck gold x1.5 et luck rainbow x1.3.",
-    ),
-)
+POTION_DEFINITION_MAP: Dict[str, PotionDefinition] = {
+    potion.slug: potion for potion in POTION_DEFINITIONS
+}
 
-_MASTERMIND_TIERS: tuple[MasteryTier, ...] = (
-    MasteryTier(5, "Échauffement", "Récompenses Mastermind doublées."),
-    MasteryTier(10, "Mentaliste", "Total x8 et potions qui tombent deux fois plus."),
-    MasteryTier(
-        20,
-        "Visionnaire",
-        "Total x16 et une couleur en moins à deviner.",
-    ),
-    MasteryTier(30, "Chasseur d'Oni", "Chance de Kenji Oni doublée."),
-    MasteryTier(40, "Architecte", "Total x64 après chaque victoire."),
-    MasteryTier(50, "Maître absolu", "Total x256 sur les gains Mastermind."),
-    MasteryTier(64, "Grand stratège", "Deux couleurs en moins et rôle ultime."),
-)
-
-_MASTERY_TIERS: dict[str, tuple[MasteryTier, ...]] = {
-    EGG_MASTERY.slug: _EGG_MASTERY_TIERS,
-    PET_MASTERY.slug: _PET_MASTERY_TIERS,
-    MASTERMIND_MASTERY.slug: _MASTERMIND_TIERS,
+POTION_SELL_VALUES: Final[Dict[str, int]] = {
+    "luck_i": 600,
+    "luck_ii": 1_200,
+    "luck_iii": 2_500,
+    "fortune_i": 1_000,
+    "fortune_ii": 2_200,
+    "fortune_iii": 3_800,
+    "fortune_iv": 5_500,
+    "fortune_v": 7_500,
+    "slots_luck": 2_000,
 }
 
 
-class GemshopRoleButton(discord.ui.Button):
-    def __init__(
-        self, cog: "Pets", ctx: commands.Context, offer: GemshopRoleOffer, state: GemshopState
-    ) -> None:
-        super().__init__(
-            label="(Bourgeois)",
-            style=discord.ButtonStyle.blurple,
-            custom_id=f"gemshop:role:{offer.role_id}",
-        )
-        self.cog = cog
-        self.ctx = ctx
-        self.offer = offer
-        self.update_state(state)
-
-    def update_state(self, state: GemshopState) -> None:
-        sold = int(state.role_sales.get(self.offer.role_id, 0))
-        remaining = max(0, self.offer.stock - sold)
-        self.label = "(Bourgeois)"
-        self.disabled = remaining <= 0
-
-    async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
-        async with self.cog._gemshop_lock:
-            await interaction.response.defer(ephemeral=True, thinking=False)
-            result = await self.cog._attempt_gemshop_role_purchase(
-                interaction.user,
-                self.offer,
-                guild=interaction.guild,
-            )
-            self.view.state = result.state  # type: ignore[attr-defined]
-            self.view._refresh_buttons()  # type: ignore[attr-defined]
-            updated_embed = self.cog._render_gemshop_embed(  # type: ignore[attr-defined]
-                self.ctx.author, self.view.state
-            )
-            message = getattr(self.view, "message", None)  # type: ignore[attr-defined]
-            if message is not None:
-                with contextlib.suppress(discord.HTTPException):
-                    await message.edit(embed=updated_embed, view=self.view)
-            await interaction.followup.send(embed=result.embed, ephemeral=True)
+# ---------------------------------------------------------------------------
+# Animaux (Pets)
+# ---------------------------------------------------------------------------
 
 
-class GemshopView(discord.ui.View):
-    """Affiche le gemshop avec un bouton d'achat interactif."""
-
-    def __init__(self, cog: "Pets", ctx: commands.Context, state: GemshopState) -> None:
-        super().__init__(timeout=180)
-        self.cog = cog
-        self.ctx = ctx
-        self.state = state
-        self.message: discord.Message | None = None
-        self._lock = asyncio.Lock()
-        self._role_buttons: list[GemshopRoleButton] = [
-            GemshopRoleButton(cog, ctx, offer, state) for offer in GEMSHOP_ROLE_OFFERS
-        ]
-        for button in self._role_buttons:
-            self.add_item(button)
-        self._refresh_buttons()
-
-    def attach_message(self, message: discord.Message) -> None:
-        self.message = message
-
-    def _refresh_buttons(self) -> None:
-        label = "Acheter un slot"
-        if self.state.next_cost is not None:
-            label = f"Acheter un slot ({self.cog._format_slot_cost(self.state.next_cost)})"
-        self.buy_slot.label = label
-        self.buy_slot.disabled = not self.state.can_purchase
-        for button in self._role_buttons:
-            button.update_state(self.state)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message(
-                "Seul l'acheteur initial peut utiliser ce magasin.",
-                ephemeral=True,
-            )
-            return False
-        return True
-
-    async def on_timeout(self) -> None:
-        self.buy_slot.disabled = True
-        for button in self._role_buttons:
-            button.disabled = True
-        if self.message is None:
-            return
-        with contextlib.suppress(discord.HTTPException):
-            await self.message.edit(view=self)
-
-    @discord.ui.button(
-        label="Acheter un slot",
-        style=discord.ButtonStyle.green,
-        custom_id="gemshop:buy_slot",
-    )
-    async def buy_slot(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        del button
-        async with self.cog._gemshop_lock:
-            await interaction.response.defer(ephemeral=True, thinking=False)
-            result = await self.cog._attempt_gemshop_purchase(interaction.user)
-            self.state = result.state
-            self._refresh_buttons()
-            updated_embed = self.cog._render_gemshop_embed(
-                self.ctx.author, self.state
-            )
-            if self.message is not None:
-                with contextlib.suppress(discord.HTTPException):
-                    await self.message.edit(embed=updated_embed, view=self)
-            await interaction.followup.send(embed=result.embed, ephemeral=True)
-        
-
-def _compute_pet_mastery_perks(level: int) -> PetMasteryPerks:
-    """Calcule les bonus actifs pour la maîtrise des pets."""
-
-    fuse_unlocked = level >= 5
-    auto_goldify = level >= 5
-    auto_rainbowify = level >= 30
-    egg_shiny_chance = 0.01 if level >= 5 else 0.0
-    goldify_shiny_chance = 0.03 if level >= 20 else 0.0
-    rainbowify_shiny_chance = 0.01 if level >= 20 else 0.0
-    fuse_double_chance = 0.10 if level >= 10 else 0.0
-    fuse_triple_chance = 0.0
-    egg_shiny_multiplier = 1.0
-    gold_luck_multiplier = 1.0
-    rainbow_luck_multiplier = 1.0
-
-    if level >= 30:
-        egg_shiny_chance = 0.03
-    if level >= 40:
-        fuse_double_chance = 0.35
-        fuse_triple_chance = 0.10
-    if level >= 50:
-        fuse_double_chance = 0.50
-        egg_shiny_chance = 0.05
-        goldify_shiny_chance = 0.05
-        rainbowify_shiny_chance = 0.03
-    if level >= 64:
-        egg_shiny_multiplier = 1.2
-        gold_luck_multiplier = 1.5
-        rainbow_luck_multiplier = 1.3
-
-    return PetMasteryPerks(
-        fuse_unlocked=fuse_unlocked,
-        auto_goldify=auto_goldify,
-        auto_rainbowify=auto_rainbowify,
-        egg_shiny_chance=egg_shiny_chance,
-        goldify_shiny_chance=goldify_shiny_chance,
-        rainbowify_shiny_chance=rainbowify_shiny_chance,
-        fuse_double_chance=fuse_double_chance,
-        fuse_triple_chance=fuse_triple_chance,
-        egg_shiny_multiplier=egg_shiny_multiplier,
-        gold_luck_multiplier=gold_luck_multiplier,
-        rainbow_luck_multiplier=rainbow_luck_multiplier,
-    )
+# FIX: Cap pet income values to avoid overflow issues and sanitize drop rates.
+MAX_PET_INCOME: Final[int] = 9_223_372_036_854_775_807
 
 
-@dataclass
-class PetHatchResult:
-    definition: PetDefinition
-    income_per_hour: int
-    market_value: int | None
-    is_gold: bool = False
-    is_rainbow: bool = False
-    is_galaxy: bool = False
-    is_shiny: bool = False
+@dataclass(frozen=True)
+class PetDefinition:
+    name: str
+    rarity: str
+    image_url: str
+    base_income_per_hour: int
+    drop_rate: float
     is_huge: bool = False
-    auto_messages: List[str] = field(default_factory=list)
-    bonus: bool = False
-    was_forced_gold: bool = False
 
-
-class GoldifySelect(discord.ui.Select):
-    """Menu déroulant permettant de choisir quel pet fusionner en version or."""
-
-    def __init__(
-        self,
-        *,
-        ctx: commands.Context,
-        pets_cog: "Pets",
-        plan: List[tuple],
-    ) -> None:
-        price_text = f"{GOLDIFY_GEM_COST} Gemmes"
-        options = [
-            discord.SelectOption(
-                label=f"{definition.name} ({price_text})",
-                description=f"{quantity} fusion{'s' if quantity != 1 else ''} possible{'s' if quantity != 1 else ''}",
-                value=definition.name,
-            )
-            for definition, _pet_id, quantity in plan[:25]
-        ]
-        super().__init__(
-            placeholder="Choisis un pet à goldify…",
-            min_values=1,
-            max_values=1,
-            options=options,
-        )
-        self.ctx = ctx
-        self.pets_cog = pets_cog
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message(
-                "Seul le propriétaire de cet inventaire peut lancer un goldify.",
-                ephemeral=True,
-            )
-            return
-        pet_name = self.values[0]
-        await interaction.response.defer(ephemeral=True)
-        await self.ctx.invoke(self.pets_cog.goldify, pet_name=pet_name)
-        await interaction.followup.send(
-            f"✅ Fusion dorée lancée pour **{pet_name}** — regarde le message ci-dessus !",
-            ephemeral=True,
-        )
-
-
-class GoldifyPromptView(discord.ui.View):
-    """Vue éphémère contenant le menu de sélection Goldify."""
-
-    def __init__(
-        self,
-        *,
-        ctx: commands.Context,
-        pets_cog: "Pets",
-        plan: List[tuple],
-    ) -> None:
-        super().__init__(timeout=60)
-        self.add_item(GoldifySelect(ctx=ctx, pets_cog=pets_cog, plan=plan))
-
-
-class GoldifyButtonMixin:
-    """Mixin ajoutant un bouton Goldify ouvrant un menu de sélection éphémère."""
-
-    ctx: commands.Context
-
-    @discord.ui.button(label="🥇 Goldify", style=discord.ButtonStyle.success)
-    async def open_goldify_menu(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message(
-                "Seul le propriétaire de cet inventaire peut lancer un goldify.",
-                ephemeral=True,
-            )
-            return
-        pets_cog = self.ctx.cog
-        rows = await pets_cog.database.get_user_pets(self.ctx.author.id)
-        plan = pets_cog._build_bulk_fusion_plan(rows, mode="gold")
-        if not plan:
-            await interaction.response.send_message(
-                "Aucun pet n'est éligible au goldify pour le moment "
-                f"(il faut au moins {GOLD_PET_COMBINE_REQUIRED} exemplaires identiques).",
-                ephemeral=True,
-            )
-            return
-        view = GoldifyPromptView(ctx=self.ctx, pets_cog=pets_cog, plan=plan)
-        await interaction.response.send_message(
-            "Choisis le pet à fusionner en version or :",
-            view=view,
-            ephemeral=True,
-        )
-
-
-class PetInventoryView(GoldifyButtonMixin, discord.ui.View):
-    """Interface paginée pour afficher la collection de pets par lots de huit."""
-
-    def __init__(
-        self,
-        *,
-        ctx: commands.Context,
-        pets: Iterable[Mapping[str, Any]],
-        total_income: int,
-        total_count: int,
-        per_page: int = 8,
-        huge_descriptions: Mapping[str, str] | None = None,
-    ) -> None:
-        super().__init__(timeout=120)
-        self.ctx = ctx
-        self.member = ctx.author
-        self._pets: List[Dict[str, Any]] = [dict(pet) for pet in pets]
-        self._per_page = max(1, per_page)
-        self._total_income = int(total_income)
-        self._total_count = int(total_count)
-        self._huge_descriptions: Dict[str, str] = dict(huge_descriptions or {})
-        self.page_count = max(1, math.ceil(len(self._pets) / self._per_page))
-        self.page = 0
-        self.message: discord.Message | None = None
-        self._sync_buttons()
-
-    def _current_slice(self) -> List[Mapping[str, Any]]:
-        if not self._pets:
-            return []
-        start = self.page * self._per_page
-        end = start + self._per_page
-        return self._pets[start:end]
-
-    def build_embed(self) -> discord.Embed:
-        return embeds.pet_collection_embed(
-            member=self.member,
-            pets=self._current_slice(),
-            total_count=self._total_count,
-            total_income_per_hour=self._total_income,
-            page=self.page + 1,
-            page_count=self.page_count,
-            huge_descriptions=self._huge_descriptions,
-            group_duplicates=False,
-        )
-
-    def _sync_buttons(self) -> None:
-        has_multiple_pages = self.page_count > 1
-        if hasattr(self, "previous_page"):
-            self.previous_page.disabled = not has_multiple_pages or self.page <= 0
-        if hasattr(self, "next_page"):
-            self.next_page.disabled = not has_multiple_pages or self.page >= self.page_count - 1
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message(
-                "Seul le propriétaire de l'inventaire peut utiliser ces boutons.",
-                ephemeral=True,
-            )
-            return False
-        return True
-
-    @discord.ui.button(label="Précédent", style=discord.ButtonStyle.secondary)
-    async def previous_page(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        if self.page > 0:
-            self.page -= 1
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    @discord.ui.button(label="Suivant", style=discord.ButtonStyle.secondary)
-    async def next_page(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        if self.page < self.page_count - 1:
-            self.page += 1
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def on_timeout(self) -> None:
-        for item in self.children:
-            item.disabled = True
-        if self.message:
-            with contextlib.suppress(discord.HTTPException):
-                await self.message.edit(view=self)
-
-
-class PetsSinglePageView(GoldifyButtonMixin, discord.ui.View):
-    """Vue minimaliste (bouton Goldify uniquement) pour l'inventaire tenant sur une page."""
-
-    def __init__(self, *, ctx: commands.Context) -> None:
-        super().__init__(timeout=120)
-        self.ctx = ctx
-        self.message: discord.Message | None = None
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message(
-                "Seul le propriétaire de l'inventaire peut utiliser ces boutons.",
-                ephemeral=True,
-            )
-            return False
-        return True
-
-    async def on_timeout(self) -> None:
-        for item in self.children:
-            item.disabled = True
-        if self.message:
-            with contextlib.suppress(discord.HTTPException):
-                await self.message.edit(view=self)
-
-
-class ZoneOverviewView(discord.ui.View):
-    """Interface paginée pour présenter les zones et œufs disponibles."""
-
-    @dataclass
-    class PageState:
-        embed: discord.Embed
-        zone: PetZoneDefinition | None
-        has_unlocked: bool
-        meets_egg_mastery: bool
-        meets_pet_mastery: bool
-        meets_rebirth: bool
-        meets_income: bool
-
-    def __init__(
-        self,
-        ctx: commands.Context,
-        pages: Sequence[PageState],
-        pets_cog: "Pets",
-    ) -> None:
-        super().__init__(timeout=120)
-        self.ctx = ctx
-        self.pets_cog = pets_cog
-        self._pages: List[ZoneOverviewView.PageState] = [page for page in pages]
-        self.page = 0
-        self.page_count = max(1, len(self._pages))
-        self.message: discord.Message | None = None
-        self._sync_buttons()
-
-    def current_embed(self) -> discord.Embed:
-        if not self._pages:
-            return embeds.info_embed("Aucune zone disponible pour le moment.")
-        return self._pages[self.page].embed
-
-    def _current_page(self) -> PageState:
-        if not self._pages:
-            return ZoneOverviewView.PageState(
-                embed=embeds.info_embed("Aucune zone disponible pour le moment."),
-                zone=None,
-                has_unlocked=False,
-                meets_egg_mastery=False,
-                meets_pet_mastery=False,
-                meets_rebirth=False,
-                meets_income=False,
-            )
-        return self._pages[self.page]
-
-    def _refresh_footer(self) -> None:
-        total = self.page_count
-        for index, page in enumerate(self._pages, start=1):
-            page.embed.set_footer(text=f"Page {index}/{total}")
-
-    def _sync_buttons(self) -> None:
-        has_multiple_pages = self.page_count > 1
-        if hasattr(self, "previous_page"):
-            self.previous_page.disabled = not has_multiple_pages or self.page <= 0
-        if hasattr(self, "next_page"):
-            self.next_page.disabled = (
-                not has_multiple_pages or self.page >= self.page_count - 1
-            )
-        current = self._current_page()
-        can_open = bool(current.zone and current.zone.eggs and current.has_unlocked)
-        can_unlock = (
-            current.zone is not None
-            and current.zone.entry_cost > 0
-            and not current.has_unlocked
-        )
-        if hasattr(self, "open_egg"):
-            self.open_egg.disabled = not can_open
-        if hasattr(self, "unlock_zone"):
-            self.unlock_zone.disabled = not can_unlock
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message(
-                "Seul le propriétaire de la commande peut changer de page.",
-                ephemeral=True,
-            )
-            return False
-        return True
-
-    @discord.ui.button(label="Précédent", style=discord.ButtonStyle.secondary)
-    async def previous_page(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        if self.page > 0:
-            self.page -= 1
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self.current_embed(), view=self)
-
-    @discord.ui.button(label="Suivant", style=discord.ButtonStyle.secondary)
-    async def next_page(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        if self.page < self.page_count - 1:
-            self.page += 1
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self.current_embed(), view=self)
-
-    @discord.ui.button(label="Ouvrir l'œuf", style=discord.ButtonStyle.success)
-    async def open_egg(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        page = self._current_page()
-        if page.zone is None:
-            await interaction.response.send_message(
-                embed=embeds.error_embed("Aucune zone à ouvrir ici."), ephemeral=True
-            )
-            return
-        if not page.zone.eggs:
-            await interaction.response.send_message(
-                embed=embeds.error_embed("Aucun œuf disponible dans cette zone."),
-                ephemeral=True,
-            )
-            return
-        if not page.has_unlocked:
-            await interaction.response.send_message(
-                embed=embeds.error_embed("Débloque la zone avant d'ouvrir un œuf."),
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.defer()
-        await self.pets_cog._openbox_impl(self.ctx, page.zone.eggs[0].slug)
-
-    @discord.ui.button(label="Débloquer la zone", style=discord.ButtonStyle.primary)
-    async def unlock_zone(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        page = self._current_page()
-        if page.zone is None:
-            await interaction.response.send_message(
-                embed=embeds.error_embed("Aucune zone à débloquer ici."), ephemeral=True
-            )
-            return
-        if page.has_unlocked or page.zone.entry_cost <= 0:
-            await interaction.response.send_message(
-                embed=embeds.info_embed("Cette zone est déjà accessible."),
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.defer()
-        unlocked = await self.pets_cog._ensure_zone_access(self.ctx, page.zone)
-        if unlocked:
-            page.has_unlocked = True
-            page.embed = self.pets_cog._build_zone_overview_embed(
-                self.ctx,
-                page.zone,
-                has_unlocked=True,
-                meets_egg_mastery=page.meets_egg_mastery,
-                meets_pet_mastery=page.meets_pet_mastery,
-                meets_rebirth=page.meets_rebirth,
-            )
-            self._refresh_footer()
-            self._sync_buttons()
-            if self.message:
-                await self.message.edit(embed=self.current_embed(), view=self)
-
-    async def on_timeout(self) -> None:
-        for child in self.children:
-            child.disabled = True
-        if self.message:
-            with contextlib.suppress(discord.HTTPException):
-                await self.message.edit(view=self)
-
-
-class EggPreviewView(discord.ui.View):
-    """Embed de prévisualisation d'un œuf avant ouverture, avec boutons Ouvrir et AUTO."""
-
-    def __init__(
-        self,
-        ctx: commands.Context,
-        pets_cog: "Pets",
-        egg_slug: str,
-    ) -> None:
-        super().__init__(timeout=120)
-        self.ctx = ctx
-        self.pets_cog = pets_cog
-        self.egg_slug = egg_slug
-        self.confirmed: bool = False
-        self.auto: bool = False
-        self.message: discord.Message | None = None
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message(
-                "Seul l'acheteur peut utiliser ces boutons.",
-                ephemeral=True,
-            )
-            return False
-        return True
-
-    @discord.ui.button(label="Ouvrir", style=discord.ButtonStyle.success)
-    async def open_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        self.confirmed = True
-        self.auto = False
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(view=self)
-        self.stop()
-
-    @discord.ui.button(label="AUTO", style=discord.ButtonStyle.primary)
-    async def auto_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        self.confirmed = True
-        self.auto = True
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(view=self)
-        self.stop()
-
-    async def on_timeout(self) -> None:
-        for child in self.children:
-            child.disabled = True
-        if self.message is not None:
-            with contextlib.suppress(discord.HTTPException):
-                await self.message.edit(view=self)
-
-
-class HatchReplayView(discord.ui.View):
-    def __init__(self, ctx: commands.Context, pets_cog: "Pets", egg_slug: str) -> None:
-        super().__init__(timeout=60)
-        self.ctx = ctx
-        self.pets_cog = pets_cog
-        self.egg_slug = egg_slug
-        self.message: discord.Message | None = None
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message(
-                "Seul l'acheteur peut relancer l'ouverture.",
-                ephemeral=True,
-            )
-            return False
-        return True
-
-    @discord.ui.button(label="Encore!", style=discord.ButtonStyle.success)
-    async def replay(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await interaction.response.defer()
-        await self.pets_cog._openbox_impl(
-            self.ctx, self.egg_slug, channel_override=self.ctx.channel
-        )
-
-    @discord.ui.button(label="AUTO", style=discord.ButtonStyle.primary)
-    async def auto_open(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        is_dm = isinstance(interaction.channel, discord.DMChannel)
-        confirmation = (
-            "Ouverture automatique lancée ici même."
-            if is_dm
-            else "Ouverture automatique lancée dans un fil dédié."
-        )
-        await interaction.response.send_message(confirmation, ephemeral=True)
-        if self.message is None:
-            return
-        await self.pets_cog._start_auto_hatch(self.ctx, self.egg_slug, self.message)
-
-    async def on_timeout(self) -> None:
-        for child in self.children:
-            child.disabled = True
-        if self.message:
-            with contextlib.suppress(discord.HTTPException):
-                await self.message.edit(view=self)
-
-
-class PetIndexView(discord.ui.View):
-    @dataclass(frozen=True)
-    class CategoryDefinition:
-        slug: str
-        label: str
-        description: str
-        emoji: str
-        include_huge: bool = True
-        detail_hint: str | None = None
-
-    CATEGORIES: tuple[CategoryDefinition, ...] = (
-        CategoryDefinition(
-            slug="normal",
-            label="Index normal",
-            description="Découvre tous les pets dans leur forme classique.",
-            emoji="📘",
-        ),
-        CategoryDefinition(
-            slug="gold",
-            label="Index Gold",
-            description="Fusionne tes doublons pour compléter ta collection dorée.",
-            emoji="🥇",
-            include_huge=False,
-            detail_hint="Version or collectée",
-        ),
-        CategoryDefinition(
-            slug="rainbow",
-            label="Index Rainbow",
-            description="Transforme chaque pet en arc-en-ciel pour progresser dans cet index.",
-            emoji="🌈",
-            include_huge=False,
-            detail_hint="Variante rainbow obtenue",
-        ),
-        CategoryDefinition(
-            slug="galaxy",
-            label="Index Galaxy",
-            description="Pousse tes fusions au maximum pour réunir tous les pets Galaxy.",
-            emoji="🌌",
-            include_huge=False,
-            detail_hint="Variante galaxy enregistrée",
-        ),
-        CategoryDefinition(
-            slug="shiny",
-            label="Index Shiny",
-            description="Répertorie toutes les variantes scintillantes découvertes.",
-            emoji="✨",
-        ),
-    )
-
-    def __init__(
-        self,
-        *,
-        ctx: commands.Context,
-        pet_definitions: Sequence[PetDefinition],
-        pet_ids: Mapping[str, int],
-        variant_sets: Mapping[str, Set[int]],
-        huge_descriptions: Mapping[str, str] | None,
-        pet_counts: Mapping[str, int] | None,
-        market_values: Mapping[str, int] | None,
-        index_bonus_percent: float,
-    ) -> None:
-        super().__init__(timeout=120)
-        self.ctx = ctx
-        self.member = ctx.author
-        self._category_map: Dict[str, PetIndexView.CategoryDefinition] = {
-            category.slug: category for category in self.CATEGORIES
-        }
-        self._definitions: List[PetDefinition] = [
-            definition for definition in pet_definitions if definition.name
-        ]
-        self._non_huge_definitions: List[PetDefinition] = [
-            definition for definition in self._definitions if not definition.is_huge
-        ]
-        self._pet_ids = dict(pet_ids)
-        self._variant_sets: Dict[str, Set[int]] = {
-            slug: set(values) for slug, values in variant_sets.items()
-        }
-        self._huge_descriptions = dict(huge_descriptions or {})
-        self._pet_counts = {key.casefold(): value for key, value in (pet_counts or {}).items() if key}
-        self._market_values = {
-            key.casefold(): value for key, value in (market_values or {}).items() if key
-        }
-        self.index_bonus_percent = max(0.0, float(index_bonus_percent))
-        self.per_page = 6
-        self.current_category = "normal"
-        self.current_page = 0
-        self.message: discord.Message | None = None
-        self.category_select = self.CategorySelect(self)
-        self.previous_button = self.PreviousButton(self)
-        self.next_button = self.NextButton(self)
-        self.add_item(self.category_select)
-        self.add_item(self.previous_button)
-        self.add_item(self.next_button)
-        self._refresh_select_options()
-        self._update_navigation_state()
-
-    class CategorySelect(discord.ui.Select):
-        def __init__(self, view: "PetIndexView") -> None:
-            # ``discord.ui.Select`` already exposes a read-only ``view`` attribute
-            # provided by Discord once the component is added to a View.
-            # Keeping our own reference avoids assigning to that reserved attribute,
-            # which raised ``AttributeError: property 'view' ... has no setter``.
-            self._index_view = view
-            super().__init__(options=view._build_options(), row=0)
-
-        async def callback(self, interaction: discord.Interaction) -> None:
-            self._index_view.current_category = self.values[0]
-            self._index_view.current_page = 0
-            await self._index_view._refresh_view(interaction)
-
-    class PreviousButton(discord.ui.Button):
-        def __init__(self, view: "PetIndexView") -> None:
-            self._index_view = view
-            super().__init__(emoji="◀️", style=discord.ButtonStyle.secondary, row=1)
-
-        async def callback(self, interaction: discord.Interaction) -> None:
-            if self._index_view.current_page > 0:
-                self._index_view.current_page -= 1
-            await self._index_view._refresh_view(interaction)
-
-    class NextButton(discord.ui.Button):
-        def __init__(self, view: "PetIndexView") -> None:
-            self._index_view = view
-            super().__init__(emoji="▶️", style=discord.ButtonStyle.secondary, row=1)
-
-        async def callback(self, interaction: discord.Interaction) -> None:
-            max_page = max(0, self._index_view._page_count(self._index_view.current_category) - 1)
-            if self._index_view.current_page < max_page:
-                self._index_view.current_page += 1
-            await self._index_view._refresh_view(interaction)
-
-    def _build_options(self) -> List[discord.SelectOption]:
-        options: List[discord.SelectOption] = []
-        for category in self.CATEGORIES:
-            owned, total = self._category_progress(category.slug)
-            if total:
-                suffix = "s" if total != 1 else ""
-                description = f"{owned}/{total} découvert{suffix}"
-            else:
-                description = "Aucun pet enregistré"
-            options.append(
-                discord.SelectOption(
-                    label=category.label,
-                    description=description[:100],
-                    value=category.slug,
-                    emoji=category.emoji,
-                    default=category.slug == self.current_category,
-                )
-            )
-        return options
-
-    def _refresh_select_options(self) -> None:
-        self.category_select.options = self._build_options()
-
-    def _page_count(self, category_slug: str) -> int:
-        definitions = self._category_definitions(category_slug)
-        total = len(definitions)
-        if total <= 0:
-            return 1
-        return max(1, math.ceil(total / self.per_page))
-
-    def _update_navigation_state(self) -> None:
-        total_pages = self._page_count(self.current_category)
-        self.current_page = min(self.current_page, total_pages - 1)
-        disable_prev = total_pages <= 1 or self.current_page <= 0
-        disable_next = total_pages <= 1 or self.current_page >= total_pages - 1
-        self.previous_button.disabled = disable_prev
-        self.next_button.disabled = disable_next
-
-    def _category_definitions(
-        self, category_slug: str
-    ) -> List[PetDefinition]:
-        category = self._category_map.get(category_slug)
-        if category is None:
-            return self._definitions
-        return self._definitions if category.include_huge else self._non_huge_definitions
-
-    def _category_progress(self, category_slug: str) -> tuple[int, int]:
-        definitions = self._category_definitions(category_slug)
-        owned_ids = self._variant_sets.get(category_slug, set())
-        if not definitions:
-            return 0, 0
-        discovered = 0
-        for definition in definitions:
-            pet_id = self._pet_ids.get(definition.name)
-            if pet_id and pet_id in owned_ids:
-                discovered += 1
-        return discovered, len(definitions)
-
-    def _lines_for_page(self, category: CategoryDefinition) -> List[str]:
-        definitions = self._category_definitions(category.slug)
-        if not definitions:
-            return []
-        start = self.current_page * self.per_page
-        end = start + self.per_page
-        owned_ids = self._variant_sets.get(category.slug, set())
-        slice_definitions = definitions[start:end]
-        lines: List[str] = []
-        for definition in slice_definitions:
-            name = definition.name
-            if not name:
-                continue
-            pet_id = self._pet_ids.get(name)
-            owned = bool(pet_id and pet_id in owned_ids)
-            status = "✅" if owned else "🔒"
-            emoji_value = pet_emoji(name)
-            emoji_prefix = f"{emoji_value} " if emoji_value else ""
-            details: List[str] = [f"Rareté : {definition.rarity}"]
-            if category.slug == "normal":
-                key = name.casefold()
-                count = self._pet_counts.get(key)
-                if count is not None:
-                    plural = "s" if count != 1 else ""
-                    details.append(f"{count} existant{plural}")
-                market_value = int(self._market_values.get(key, 0))
-                if market_value > 0 and not definition.is_huge:
-                    details.append(f"Valeur marché : {embeds.format_gems(market_value)}")
-            elif category.detail_hint:
-                details.append(category.detail_hint)
-            detail_text = " • ".join(details)
-            line = f"{status} {emoji_prefix}**{name}** — {detail_text}".strip()
-            if definition.is_huge:
-                description = self._huge_descriptions.get(name)
-                if description:
-                    line += f"\n✨ Comment l'obtenir : {description}"
-            lines.append(line)
-        return lines
-
-    def _split_field_values(
-        self,
-        lines: List[str],
-        *,
-        limit: int = 1024,
-        max_fields: int = 25,
-    ) -> List[str]:
-        if not lines:
-            return []
-        fields: List[str] = []
-        current = ""
-
-        def push_current() -> None:
-            nonlocal current
-            if current:
-                fields.append(current)
-                current = ""
-
-        for line in lines:
-            segments = [line[i : i + limit] for i in range(0, len(line), limit)] or [""]
-            for segment in segments:
-                if len(fields) >= max_fields:
-                    return fields
-                if not current:
-                    current = segment
-                    continue
-                if len(current) + 1 + len(segment) <= limit:
-                    current = f"{current}\n{segment}"
-                else:
-                    push_current()
-                    if len(fields) >= max_fields:
-                        return fields
-                    current = segment
-        if current and len(fields) < max_fields:
-            fields.append(current)
-        return fields
-
-    def build_embed(self) -> discord.Embed:
-        category = self._category_map.get(self.current_category) or self.CATEGORIES[0]
-        total_pages = self._page_count(category.slug)
-        self.current_page = min(self.current_page, total_pages - 1)
-        discovered, total = self._category_progress(category.slug)
-        progress = (discovered / total) if total else 0.0
-        description_lines = [category.description]
-        description_lines.append(
-            f"Progression : **{discovered}/{total}** ({progress:.0%})"
-        )
-        if category.slug == "normal":
-            per_pet_bonus = INDEX_SHINY_BONUS_PER_PET * 100
-            description_lines.append(
-                f"Bonus shiny actuel : +{self.index_bonus_percent:.2f}% ({per_pet_bonus:.2f}% par pet découvert)"
-            )
-        embed = discord.Embed(
-            title=f"{category.emoji} {category.label}",
-            description="\n".join(description_lines),
-            color=embeds.Colors.INFO,
-        )
-        embed.set_author(
-            name=self.member.display_name, icon_url=self.member.display_avatar.url
-        )
-        lines = self._lines_for_page(category)
-        if lines:
-            field_values = self._split_field_values(lines)
-            for index, value in enumerate(field_values):
-                if index >= 25:
-                    break
-                name = "Catalogue" if index == 0 else "Catalogue (suite)"
-                embed.add_field(name=name, value=value, inline=False)
-        else:
-            embed.add_field(
-                name="Catalogue",
-                value="Aucun pet listé pour cette catégorie pour le moment.",
-                inline=False,
-            )
-        embed.set_footer(text=f"Page {self.current_page + 1}/{total_pages}")
-        return embed
-
-    async def _refresh_view(self, interaction: discord.Interaction | None = None) -> None:
-        self._refresh_select_options()
-        self._update_navigation_state()
-        embed = self.build_embed()
-        if interaction is not None:
-            await interaction.response.edit_message(embed=embed, view=self)
-            return
-        if self.message:
-            with contextlib.suppress(discord.HTTPException):
-                await self.message.edit(embed=embed, view=self)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message(
-                "Seul le propriétaire de l'index peut utiliser ce menu.",
-                ephemeral=True,
-            )
-            return False
-        return True
-
-    async def on_timeout(self) -> None:
-        for child in self.children:
-            child.disabled = True
-        if self.message:
-            with contextlib.suppress(discord.HTTPException):
-                await self.message.edit(view=self)
-
-
-class PetSelectionView(discord.ui.View):
-    """Vue interactive permettant de sélectionner un pet parmi plusieurs."""
-
-    PAGE_SIZE = 20
-
-    def __init__(
-        self,
-        *,
-        ctx: commands.Context,
-        candidates: Sequence[Mapping[str, Any]],
-        title: str,
-        description: str,
-    ) -> None:
-        super().__init__(timeout=60)
-        self.ctx = ctx
-        self.member = ctx.author
-        self.candidates: List[Mapping[str, Any]] = list(candidates)
-        self.selection: Optional[Mapping[str, Any]] = None
-        self.cancelled = False
-        self.message: discord.Message | None = None
-        self.title = title
-        self.description = description
-        self.page_size = max(1, min(self.PAGE_SIZE, len(self.candidates)))
-        self.page_count = max(1, math.ceil(len(self.candidates) / self.page_size))
-        self.page = 0
-
-        self.select = self.PetSelect(self)
-        self.previous_button = self.PreviousPageButton(self)
-        self.next_button = self.NextPageButton(self)
-        self.cancel_button = self.CancelButton(self)
-
-        self.add_item(self.select)
-        self.add_item(self.previous_button)
-        self.add_item(self.next_button)
-        self.add_item(self.cancel_button)
-        self._refresh_options()
-        self._sync_buttons()
-
-    class PetSelect(discord.ui.Select):
-        def __init__(self, view: "PetSelectionView") -> None:
-            self._selection_view = view
-            super().__init__(
-                placeholder="Sélectionne un pet",
-                min_values=1,
-                max_values=1,
-                options=[],
-                row=0,
-            )
-
-        async def callback(self, interaction: discord.Interaction) -> None:
-            selection_view = self._selection_view
-            if interaction.user.id != selection_view.ctx.author.id:
-                await interaction.response.send_message(
-                    "Tu ne peux pas sélectionner un pet pour quelqu'un d'autre.",
-                    ephemeral=True,
-                )
-                return
-            if not self.values:
-                return
-            try:
-                index = int(self.values[0])
-            except (TypeError, ValueError):
-                return
-            if index < 0 or index >= len(selection_view.candidates):
-                return
-            selection_view.selection = selection_view.candidates[index]
-            selection_view.disable_all()
-            if interaction.response.is_done():
-                await interaction.followup.edit_message(interaction.message.id, view=selection_view)
-            else:
-                await interaction.response.edit_message(view=selection_view)
-            selection_view.stop()
-
-    class PreviousPageButton(discord.ui.Button):
-        def __init__(self, view: "PetSelectionView") -> None:
-            self._selection_view = view
-            super().__init__(emoji="◀️", style=discord.ButtonStyle.secondary, row=1)
-
-        async def callback(self, interaction: discord.Interaction) -> None:
-            selection_view = self._selection_view
-            if selection_view.page > 0:
-                selection_view.page -= 1
-            selection_view._refresh_options()
-            selection_view._sync_buttons()
-            await interaction.response.edit_message(
-                embed=selection_view.build_embed(), view=selection_view
-            )
-
-    class NextPageButton(discord.ui.Button):
-        def __init__(self, view: "PetSelectionView") -> None:
-            self._selection_view = view
-            super().__init__(emoji="▶️", style=discord.ButtonStyle.secondary, row=1)
-
-        async def callback(self, interaction: discord.Interaction) -> None:
-            selection_view = self._selection_view
-            if selection_view.page < selection_view.page_count - 1:
-                selection_view.page += 1
-            selection_view._refresh_options()
-            selection_view._sync_buttons()
-            await interaction.response.edit_message(
-                embed=selection_view.build_embed(), view=selection_view
-            )
-
-    class CancelButton(discord.ui.Button):
-        def __init__(self, view: "PetSelectionView") -> None:
-            self._selection_view = view
-            super().__init__(label="Annuler", style=discord.ButtonStyle.secondary, row=1)
-
-        async def callback(self, interaction: discord.Interaction) -> None:
-            selection_view = self._selection_view
-            if interaction.user.id != selection_view.ctx.author.id:
-                await interaction.response.send_message(
-                    "Tu ne peux pas annuler cette sélection.",
-                    ephemeral=True,
-                )
-                return
-            selection_view.cancelled = True
-            selection_view.selection = None
-            selection_view.disable_all()
-            if interaction.response.is_done():
-                await interaction.followup.edit_message(
-                    interaction.message.id,
-                    embed=selection_view.build_embed(),
-                    view=selection_view,
-                )
-            else:
-                await interaction.response.edit_message(
-                    embed=selection_view.build_embed(), view=selection_view
-                )
-            selection_view.stop()
-
-    @staticmethod
-    def _build_label(candidate: Mapping[str, Any], index: int) -> str:
-        data = candidate.get("data", {})
-        record = candidate.get("record", {})
-        name = str(data.get("name", "Pet"))
-        is_galaxy = bool(data.get("is_galaxy"))
-        is_rainbow = bool(data.get("is_rainbow"))
-        is_gold = bool(data.get("is_gold"))
-        is_active = bool(data.get("is_active"))
-        income = scale_pet_value(int(data.get("base_income_per_hour", 0)))
-        identifier = record.get("id")
-        if is_galaxy:
-            marker = " 🌌"
-        elif is_rainbow:
-            marker = " 🌈"
-        elif is_gold:
-            marker = " 🥇"
-        else:
-            marker = ""
-        active_marker = "⭐ " if is_active else ""
-        id_label = f" #{identifier}" if identifier else ""
-        base_label = f"{index}. {active_marker}{name}{marker}{id_label}"
-        income_part = f" • {income:,} {Emojis.COIN}/h" if income else ""
-        label = f"{base_label}{income_part}".replace(",", " ")
-        return label[:80]
-
-    def _refresh_options(self) -> None:
-        start = self.page * self.page_size
-        end = start + self.page_size
-        options: list[discord.SelectOption] = []
-        for index, candidate in enumerate(self.candidates[start:end], start=start + 1):
-            label = self._build_label(candidate, index)
-            options.append(
-                discord.SelectOption(label=label, value=str(index - 1))
-            )
-        self.select.options = options
-        if self.page_count > 1:
-            self.select.placeholder = f"Sélectionne un pet (page {self.page + 1}/{self.page_count})"
-        else:
-            self.select.placeholder = "Sélectionne un pet"
-
-    def build_embed(self) -> discord.Embed:
-        start = self.page * self.page_size
-        end = start + self.page_size
-        lines: List[str] = []
-        for index, candidate in enumerate(self.candidates[start:end], start=start + 1):
-            data = candidate.get("data", {})
-            record = candidate.get("record", {})
-            name = str(data.get("name", "Pet"))
-            rarity = str(data.get("rarity", ""))
-            emoji = embeds._pet_emoji(name) if hasattr(embeds, "_pet_emoji") else ""
-            emoji_prefix = f"{emoji} " if emoji else ""
-            is_active = bool(data.get("is_active"))
-            is_gold = bool(data.get("is_gold"))
-            is_rainbow = bool(data.get("is_rainbow"))
-            income = scale_pet_value(int(data.get("base_income_per_hour", 0)))
-            acquired_at = record.get("acquired_at")
-            identifier = int(record.get("id") or 0)
-            acquired_text = ""
-            if isinstance(acquired_at, datetime):
-                acquired_text = acquired_at.strftime("%d/%m/%Y")
-            markers = ""
-            if is_rainbow:
-                markers += " 🌈"
-            elif is_gold:
-                markers += " 🥇"
-            status = "⭐ Actif" if is_active else "Disponible"
-            line = (
-                f"**{index}. {emoji_prefix}{name}{markers}** — {income:,} {Emojis.COIN}/h"
-            ).replace(",", " ")
-            if rarity:
-                line += f" ({rarity})"
-            line += f"\n{status}"
-            if identifier:
-                line += f" • ID: {identifier}"
-            if acquired_text:
-                line += f" • Obtenu le {acquired_text}"
-            lines.append(line)
-
-        body = self.description
-        if lines:
-            body = f"{self.description}\n\n" + "\n\n".join(lines)
-        embed = embeds.info_embed(body, title=self.title)
-        embed.set_author(name=self.ctx.author.display_name, icon_url=self.ctx.author.display_avatar.url)
-        if self.page_count > 1:
-            embed.set_footer(text=f"Page {self.page + 1}/{self.page_count}")
-        return embed
-
-    def _sync_buttons(self) -> None:
-        has_multiple_pages = self.page_count > 1
-        self.previous_button.disabled = not has_multiple_pages or self.page <= 0
-        self.next_button.disabled = not has_multiple_pages or self.page >= self.page_count - 1
-
-    def disable_all(self) -> None:
-        for child in self.children:
-            child.disabled = True
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message(
-                "Tu ne peux pas interagir avec ce menu.", ephemeral=True
-            )
-            return False
-        return True
-
-    async def on_timeout(self) -> None:
-        self.disable_all()
-        if self.message:
-            with contextlib.suppress(discord.HTTPException):
-                await self.message.edit(view=self)
-
-
-class MasteryDetailButton(discord.ui.Button["MasteryOverviewView"]):
-    """Bouton ouvrant un résumé détaillé d'une maîtrise."""
-
-    def __init__(
-        self,
-        *,
-        ctx: commands.Context,
-        mastery: MasteryDefinition,
-        progress: Mapping[str, object] | None,
-        tiers: Sequence[MasteryTier],
-    ) -> None:
-        super().__init__(label=mastery.display_name, style=discord.ButtonStyle.primary)
-        self.ctx = ctx
-        self.mastery = mastery
-        self.progress: Dict[str, object] = dict(progress or {})
-        self._tier_payload = [
-            {
-                "level": tier.level,
-                "title": tier.title,
-                "description": tier.description,
-            }
-            for tier in tiers
-        ]
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message(
-                "Seul le propriétaire de la commande peut consulter ces détails.",
-                ephemeral=True,
-            )
-            return
-        embed = embeds.mastery_detail_embed(
-            member=self.ctx.author,
-            mastery=self.mastery,
-            progress=self.progress,
-            tiers=self._tier_payload,
-        )
-        if interaction.response.is_done():
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-class MasteryOverviewView(discord.ui.View):
-    """Vue listant les maîtrises et offrant des boutons de détail."""
-
-    def __init__(
-        self,
-        ctx: commands.Context,
-        masteries: Sequence[MasteryDefinition],
-        progress: Mapping[str, Mapping[str, object]],
-    ) -> None:
-        super().__init__(timeout=120)
-        self.ctx = ctx
-        self.message: discord.Message | None = None
-        added_button = False
-        for mastery in masteries:
-            tiers = _MASTERY_TIERS.get(mastery.slug)
-            if not tiers:
-                continue
-            button = MasteryDetailButton(
-                ctx=ctx,
-                mastery=mastery,
-                progress=progress.get(mastery.slug),
-                tiers=tiers,
-            )
-            self.add_item(button)
-            added_button = True
-        if not added_button:
-            self.add_item(
-                discord.ui.Button(
-                    label="Aucun détail disponible",
-                    style=discord.ButtonStyle.secondary,
-                    disabled=True,
-                )
-            )
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message(
-                "Seul le propriétaire de la commande peut utiliser ces boutons.",
-                ephemeral=True,
-            )
-            return False
-        return True
-
-    async def on_timeout(self) -> None:
-        for child in self.children:
-            child.disabled = True
-        if self.message is not None:
-            with contextlib.suppress(discord.HTTPException):
-                await self.message.edit(view=self)
-
-
-class Pets(commands.Cog):
-    """Commande de collection de pets inspirée de Brawl Stars."""
-
-    def __init__(self, bot: commands.Bot) -> None:
-        self.bot = bot
-        self.database = bot.database
-        self._definitions: List[PetDefinition] = list(PET_DEFINITIONS)
-        self._definition_by_name: Dict[str, PetDefinition] = {pet.name: pet for pet in self._definitions}
-        self._definition_by_slug: Dict[str, PetDefinition] = {}
-        # FIX: Track hashed slugs to avoid collisions between similarly named pets.
-        self._slug_aliases: Dict[str, List[str]] = {}
-        slug_counters: Dict[str, int] = {}
-        for pet in self._definitions:
-            base_slug = self._normalize_pet_key(pet.name)
-            if base_slug:
-                count = slug_counters.get(base_slug, 0) + 1
-                slug_counters[base_slug] = count
-                hashed_slug = f"{base_slug}#{count}"
-                self._definition_by_slug[hashed_slug] = pet
-                self._slug_aliases.setdefault(base_slug, []).append(hashed_slug)
-                if count == 1:
-                    self._definition_by_slug[base_slug] = pet
-            self._definition_by_slug[pet.name.lower()] = pet
-            if pet.name.startswith(("Huge ", "Titanic ")):
-                base_name = pet.name.split(" ", 1)[1]
-                base_slug = self._normalize_pet_key(base_name)
-                if base_slug and base_slug not in self._definition_by_slug:
-                    self._definition_by_slug[base_slug] = pet
-        self._definition_by_id: Dict[int, PetDefinition] = {}
-        self._pet_ids: Dict[str, int] = {}
-        self._eggs: Dict[str, PetEggDefinition] = {
-            egg.slug: egg for egg in PET_EGG_DEFINITIONS
-        }
-        self._zones: Dict[str, PetZoneDefinition] = {zone.slug: zone for zone in PET_ZONES}
-        self._mastery_definitions: tuple[MasteryDefinition, ...] = tuple(iter_masteries())
-        self._default_egg_slug: str = (
-            DEFAULT_PET_EGG_SLUG if DEFAULT_PET_EGG_SLUG in self._eggs else next(iter(self._eggs), "")
-        )
-        self._gemshop_lock = asyncio.Lock()
-        self._egg_lookup: Dict[str, str] = {}
-        for egg in self._eggs.values():
-            aliases = {egg.slug, egg.name}
-            aliases.update(egg.aliases)
-            for token in aliases:
-                for variant in self._generate_alias_variants(token):
-                    self._egg_lookup[variant] = egg.slug
-        if self._default_egg_slug:
-            self._egg_lookup.setdefault(self._default_egg_slug, self._default_egg_slug)
-        self._egg_open_locks: Dict[int, asyncio.Lock] = {}
-        self._claim_locks: Dict[int, asyncio.Lock] = {}
-        self._last_clock_sample = datetime.now(timezone.utc)
-        self._auto_hatch_tasks: Dict[int, asyncio.Task] = {}
-        self._pets_cache = TTLCache[tuple[Sequence[Mapping[str, object]], Mapping[int, int]]](CACHE_TTL_PETS)
-
-    @staticmethod
-    def _normalize_pet_key(value: str) -> str:
-        normalized = unicodedata.normalize("NFKD", value)
-        normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
-        return "".join(ch for ch in normalized.lower() if ch.isalnum())
-
-    async def _ack_heavy_command(self, ctx: commands.Context) -> None:
-        interaction = getattr(ctx, "interaction", None)
-        if interaction is not None and not interaction.response.is_done():
-            await interaction.response.defer()
-            return
-        with contextlib.suppress(discord.HTTPException, AttributeError):
-            async with ctx.typing():
-                return
-        with contextlib.suppress(discord.HTTPException):
-            async with ctx.channel.typing():
-                return
-
-    @staticmethod
-    def _generate_alias_variants(token: str | None) -> Set[str]:
-        variants: Set[str] = set()
-        if not token:
-            return variants
-
-        def _add_variant(text: str) -> None:
-            stripped = text.strip().lower()
-            if stripped:
-                variants.add(stripped)
-
-        _add_variant(token)
-        _add_variant(token.replace("œ", "oe").replace("Œ", "oe"))
-
-        for candidate in list(variants):
-            decomposed = unicodedata.normalize("NFKD", candidate)
-            without_diacritics = "".join(
-                ch for ch in decomposed if not unicodedata.combining(ch)
-            )
-            _add_variant(without_diacritics)
-
-        return variants
-
-    @staticmethod
-    def _compute_fusion_cost(
-        *,
-        rarity: str,
-        power_value: int,
-        consumed_count: int,
-        output_count: int,
-    ) -> int:
-        rarity_multiplier = float(FUSION_COST_RARITY_MULTIPLIERS.get(rarity, 1.0))
-        safe_power = max(0, int(power_value))
-        log_base = max(2.0, float(FUSION_COST_POWER_LOG_BASE))
-        power_factor = math.log(safe_power + 1, log_base) if safe_power > 0 else 0.0
-        power_multiplier = 1.0 + float(FUSION_COST_POWER_SCALE) * power_factor
-        count_multiplier = max(1.0, float(consumed_count) ** float(FUSION_COST_COUNT_EXPONENT))
-        output_multiplier = 1.0 + float(FUSION_COST_OUTPUT_MULTIPLIER) * max(0, output_count - 1)
-        cost = float(FUSION_COST_BASE) * rarity_multiplier * power_multiplier * count_multiplier * output_multiplier
-        cost_int = int(round(cost))
-        return max(FUSION_COST_MIN, min(FUSION_COST_MAX, cost_int))
-
-    def _can_use_external_emojis(self, ctx: commands.Context) -> bool:
-        """Return True if the bot can use external emojis in the channel."""
-
-        guild = ctx.guild
-        channel = getattr(ctx, "channel", None)
-        if guild is None or channel is None:
-            return True
-
-        permissions_for = getattr(channel, "permissions_for", None)
-        if permissions_for is None:
-            return True
-
-        member = getattr(guild, "me", None)
-        if member is None:
-            bot_user = getattr(self.bot, "user", None)
-            if bot_user is not None:
-                get_member = getattr(guild, "get_member", None)
-                if callable(get_member):
-                    member = get_member(bot_user.id)
-        if member is None:
-            return True
-
-        try:
-            permissions = permissions_for(member)
-        except Exception:  # pragma: no cover - defensive branch for exotic channels
-            return True
-        return getattr(permissions, "use_external_emojis", True)
-
-    def _egg_emoji(self, ctx: commands.Context) -> str:
-        return EGG_OPEN_EMOJI if self._can_use_external_emojis(ctx) else FALLBACK_EGG_EMOJI
-
-    @staticmethod
-    def _market_variant_code(
-        *, is_gold: bool, is_rainbow: bool, is_galaxy: bool, is_shiny: bool
-    ) -> str:
-        if is_galaxy:
-            base = "galaxy"
-        elif is_rainbow:
-            base = "rainbow"
-        elif is_gold:
-            base = "gold"
-        else:
-            base = "normal"
-        return f"{base}+shiny" if is_shiny else base
-
-    @staticmethod
-    def _roll_chance(chance: float) -> bool:
-        return chance > 0 and random.random() < chance
-
-    @staticmethod
-    def _apply_index_bonus(base_chance: float, index_bonus: float) -> float:
-        chance = max(0.0, float(base_chance))
-        bonus = max(0.0, float(index_bonus))
-        if bonus <= 0:
-            return chance
-        return chance + bonus
-
-    @staticmethod
-    def _index_bonus_from_count(unique_count: int) -> float:
-        return max(0, int(unique_count)) * INDEX_SHINY_BONUS_PER_PET
-
-    async def _fetch_index_shiny_bonus(self, user_id: int) -> tuple[int, float]:
-        unique_count = await self.database.get_unique_pet_count(user_id)
-        return unique_count, self._index_bonus_from_count(unique_count)
-
-    @staticmethod
-    def _variant_income_multiplier(
-        *, is_gold: bool, is_rainbow: bool, is_galaxy: bool, is_shiny: bool
-    ) -> float:
-        multiplier = 1.0
-        if is_galaxy:
-            multiplier *= GALAXY_PET_MULTIPLIER
-        elif is_rainbow:
-            multiplier *= RAINBOW_PET_MULTIPLIER
-        elif is_gold:
-            multiplier *= GOLD_PET_MULTIPLIER
-        if is_shiny:
-            multiplier *= SHINY_PET_MULTIPLIER
-        return multiplier
-
-    def _roll_huge_variants(
-        self, *, index_bonus: float = 0.0
-    ) -> tuple[bool, bool, bool, bool]:
-        shiny_chance = min(
-            1.0, self._apply_index_bonus(HUGE_SHINY_CHANCE, index_bonus)
-        )
-        is_galaxy = self._roll_chance(HUGE_GALAXY_CHANCE)
-        if is_galaxy:
-            return False, False, True, self._roll_chance(shiny_chance)
-
-        is_rainbow = self._roll_chance(HUGE_RAINBOW_CHANCE)
-        is_gold = False if is_rainbow else self._roll_chance(HUGE_GOLD_CHANCE)
-        is_shiny = self._roll_chance(shiny_chance)
-        return is_gold, is_rainbow, False, is_shiny
-
-    def _roll_standard_pet_variants(
-        self,
-        *,
-        mastery_perks: EggMasteryPerks | None,
-        pet_mastery_perks: PetMasteryPerks | None,
-        clan_shiny_multiplier: float,
-        index_bonus: float = 0.0,
-    ) -> tuple[bool, bool, bool, bool]:
-        base_gold = max(0.0, float(GOLD_PET_CHANCE))
-        base_rainbow = max(0.0, float(RAINBOW_PET_CHANCE))
-        bonus_gold = 0.0
-        bonus_rainbow = 0.0
-        if mastery_perks is not None:
-            bonus_gold = max(0.0, float(mastery_perks.gold_chance))
-            bonus_rainbow = max(0.0, float(mastery_perks.rainbow_chance))
-
-        gold_chance = min(1.0, base_gold + bonus_gold)
-        rainbow_chance = min(1.0, base_rainbow + bonus_rainbow)
-        shiny_chance = 0.0
-        if pet_mastery_perks is not None:
-            gold_chance *= float(pet_mastery_perks.gold_luck_multiplier)
-            rainbow_chance *= float(pet_mastery_perks.rainbow_luck_multiplier)
-            shiny_chance = max(0.0, float(pet_mastery_perks.egg_shiny_chance))
-            shiny_chance = self._apply_index_bonus(shiny_chance, index_bonus)
-            shiny_chance *= float(pet_mastery_perks.egg_shiny_multiplier)
-        else:
-            shiny_chance = self._apply_index_bonus(0.0, index_bonus)
-
-        gold_chance = min(1.0, gold_chance)
-        rainbow_chance = min(1.0, rainbow_chance)
-        shiny_chance *= max(1.0, float(clan_shiny_multiplier))
-        shiny_chance = min(1.0, shiny_chance)
-
-        is_gold = self._roll_chance(gold_chance)
-        is_rainbow = self._roll_chance(rainbow_chance)
-        if is_rainbow:
-            is_gold = False
-        is_shiny = self._roll_chance(shiny_chance)
-        return is_gold, is_rainbow, False, is_shiny
-
-    @staticmethod
-    def _parse_toggle_argument(raw: str | None) -> bool | None:
-        if raw is None:
-            return None
-        normalized = raw.strip().lower()
-        if normalized in {"on", "enable", "enabled", "true", "1", "oui", "activer", "activé", "active"}:
-            return True
-        if normalized in {"off", "disable", "disabled", "false", "0", "non", "desactiver", "désactiver", "desactive", "désactivé"}:
-            return False
-        return None
-
-    def _get_open_lock(self, user_id: int) -> asyncio.Lock:
-        lock = self._egg_open_locks.get(user_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._egg_open_locks[user_id] = lock
-        return lock
-
-    def _resolve_market_value(
-        self,
-        market_values: Mapping[tuple[int, str], int],
-        *,
-        pet_id: int,
-        is_gold: bool,
-        is_rainbow: bool,
-        is_galaxy: bool,
-        is_shiny: bool,
-    ) -> int:
-        codes = [
-            self._market_variant_code(
-                is_gold=is_gold,
-                is_rainbow=is_rainbow,
-                is_galaxy=is_galaxy,
-                is_shiny=is_shiny,
-            )
-        ]
-        if is_shiny:
-            codes.append(
-                self._market_variant_code(
-                    is_gold=is_gold,
-                    is_rainbow=is_rainbow,
-                    is_galaxy=is_galaxy,
-                    is_shiny=False,
-                )
-            )
-        if is_galaxy:
-            codes.append(
-                self._market_variant_code(
-                    is_gold=is_gold,
-                    is_rainbow=is_rainbow,
-                    is_galaxy=False,
-                    is_shiny=is_shiny,
-                )
-            )
-        if is_rainbow or is_gold:
-            codes.append(
-                self._market_variant_code(
-                    is_gold=False,
-                    is_rainbow=False,
-                    is_galaxy=False,
-                    is_shiny=is_shiny,
-                )
-            )
-        codes.append(
-            self._market_variant_code(
-                is_gold=False, is_rainbow=False, is_galaxy=False, is_shiny=False
-            )
-        )
-
-        for code in codes:
-            key = (pet_id, code)
-            if key in market_values:
-                return int(market_values[key])
+    def __post_init__(self) -> None:
+        # FIX: Ensure the stored income stays within signed 64-bit bounds and drop rates are non-negative.
+        clamped_income = max(0, min(int(self.base_income_per_hour), MAX_PET_INCOME))
+        object.__setattr__(self, "base_income_per_hour", clamped_income)
+        object.__setattr__(self, "drop_rate", max(0.0, float(self.drop_rate)))
+
+
+@dataclass(frozen=True)
+class PetEggDefinition:
+    name: str
+    slug: str
+    price: int
+    pets: Tuple[PetDefinition, ...]
+    zone_slug: str
+    aliases: Tuple[str, ...] = ()
+    image_url: str | None = None
+    currency: str = "pb"
+
+
+@dataclass(frozen=True)
+class PetZoneDefinition:
+    name: str
+    slug: str
+    grade_required: int
+    entry_cost: int
+    eggs: Tuple[PetEggDefinition, ...]
+    egg_mastery_required: int = 0
+    pet_mastery_required: int = 0
+    rebirth_required: int = 0
+    min_income_required: int = 0
+    currency: str = "pb"
+
+
+EGG_FRENZY_LUCK_BONUS: Final[float] = 0.50
+REBIRTH_EGG_LUCK_BONUS: Final[float] = 0.50
+EGG_FRENZY_START_TIME: Final[time] = time(hour=20, minute=0)
+EGG_FRENZY_END_TIME: Final[time] = time(hour=21, minute=0)
+EGG_FRENZY_TIMEZONE: Final[timezone] = _resolve_timezone(
+    os.getenv("EGG_FRENZY_TIMEZONE", "Europe/Paris")
+)
+
+
+PET_EGG_PRICE: Final[int] = 500
+DEFAULT_PET_EGG_SLUG: Final[str] = "basique"
+STARTER_ZONE_SLUG: Final[str] = "starter"
+FORET_ZONE_SLUG: Final[str] = "foret"
+MANOIR_ZONE_SLUG: Final[str] = "manoir_hante"
+ROBOT_ZONE_SLUG: Final[str] = "robotique"
+ANIMALERIE_ZONE_SLUG: Final[str] = "animalerie"
+MEXICO_ZONE_SLUG: Final[str] = "mexico"
+CELESTE_ZONE_SLUG: Final[str] = "celeste"
+ZODIAQUE_ZONE_SLUG: Final[str] = "zodiaque"
+GOLD_PET_MULTIPLIER: Final[int] = 3
+GOLD_PET_CHANCE: Final[float] = _get_float_env("PET_GOLD_CHANCE", 0.0)
+GOLD_PET_COMBINE_REQUIRED: Final[int] = _get_int_env(
+    "PET_GOLD_COMBINE_REQUIRED", 10, minimum=2
+)
+RAINBOW_PET_MULTIPLIER: Final[int] = 10
+RAINBOW_PET_COMBINE_REQUIRED: Final[int] = 10
+RAINBOW_PET_CHANCE: Final[float] = 0.0
+GALAXY_PET_MULTIPLIER: Final[int] = 25
+GALAXY_PET_COMBINE_REQUIRED: Final[int] = 100
+GOLDIFY_GEM_COST: Final[int] = _get_balance_int("goldify_gem_cost", 100, minimum=0)
+RAINBOWIFY_GEM_COST: Final[int] = _get_balance_int("rainbowify_gem_cost", 500, minimum=0)
+GALAXY_GEM_COST: Final[int] = _get_balance_int("galaxy_gem_cost", 2_500, minimum=0)
+SHINY_PET_MULTIPLIER: Final[int] = 5
+HUGE_PET_NAME: Final[str] = "Huge Shelly"
+HUGE_PET_MULTIPLIER: Final[float] = 2
+HUGE_PET_MIN_INCOME: Final[int] = 600
+HUGE_PET_LEVEL_CAP: Final[int] = 99
+HUGE_PET_LEVEL_BASE_XP: Final[int] = 200
+HUGE_PET_LEVEL_EXPONENT: Final[float] = 2
+HUGE_GALE_NAME: Final[str] = "Huge Gale"
+HUGE_GRIFF_NAME: Final[str] = "Huge Griff"
+HUGE_BULL_NAME: Final[str] = "Huge Bull"
+TITANIC_GRIFF_NAME: Final[str] = "Titanic Griff"
+TITANIC_COLT_NAME: Final[str] = "Titanic Colt"
+HUGE_ASTRALIS_NAME: Final[str] = "Huge Astralis"
+TITANIC_ZENITH_NAME: Final[str] = "Titanic Zenith"
+HUGE_VIRGO_COLLETTE_NAME: Final[str] = "Huge Virgo Collette"
+TITANIC_CAPRICORN_STU_NAME: Final[str] = "Titanic Capricorn Stu"
+HUGE_KENJI_ONI_NAME: Final[str] = "Huge Kenji Oni"
+HUGE_RED_KING_FRANK_NAME: Final[str] = "Huge Red King Frank"
+HUGE_RED_KING_FRANK_MULTIPLIER: Final[float] = 40
+HUGE_GRIFF_MULTIPLIER: Final[float] = 6
+TITANIC_COLT_MULTIPLIER: Final[float] = 50
+TITANIC_GRIFF_MULTIPLIER: Final[float] = 35
+HUGE_ASTRALIS_MULTIPLIER: Final[float] = 25
+TITANIC_ZENITH_MULTIPLIER: Final[float] = 100
+HUGE_GALE_MULTIPLIER: Final[float] = 50
+HUGE_KENJI_ONI_MULTIPLIER: Final[float] = 12
+HUGE_BULL_MULTIPLIER: Final[float] = 3.5
+HUGE_BO_NAME: Final[str] = "Huge Bo"
+HUGE_BO_MULTIPLIER: Final[float] = 7
+HUGE_SHADE_NAME: Final[str] = "Huge Shade"
+HUGE_SHADE_MULTIPLIER: Final[float] = 2.5
+HUGE_MORTIS_NAME: Final[str] = "Huge Mortis"
+HUGE_MORTIS_MULTIPLIER: Final[float] = 15
+HUGE_SURGE_NAME: Final[str] = "Huge Surge"
+HUGE_SURGE_MULTIPLIER: Final[float] = 4
+TITANIC_MEEPLE_NAME: Final[str] = "Titanic Meeple"
+TITANIC_MEEPLE_MULTIPLIER: Final[float] = 100
+TITANIC_POCO_NAME: Final[str] = "Titanic Poco"
+TITANIC_POCO_MULTIPLIER: Final[float] = TITANIC_MEEPLE_MULTIPLIER
+TITANIC_ZOMBIBI_NAME: Final[str] = "Titanic Zombibi"
+TITANIC_ZOMBIBI_MULTIPLIER: Final[float] = 75
+TITANIC_SMOOTH_LOU_NAME: Final[str] = "Titanic Smooth Lou"
+TITANIC_SMOOTH_LOU_MULTIPLIER: Final[float] = 150
+HUGE_ROSA_NAME: Final[str] = "Huge Rosa"
+HUGE_ROSA_MULTIPLIER: Final[float] = 15
+HUGE_CLANCY_NAME: Final[str] = "Huge Clancy"
+HUGE_CLANCY_MULTIPLIER: Final[float] = 10
+HUGE_WISHED_NAME: Final[str] = "Huge Wished"
+HUGE_WISHED_MULTIPLIER: Final[float] = 20
+HUGE_VIRGO_COLLETTE_MULTIPLIER: Final[float] = 25
+TITANIC_CAPRICORN_STU_MULTIPLIER: Final[float] = 100
+HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
+    HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
+HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
+HUGE_KENJI_ONI_NAME: HUGE_KENJI_ONI_MULTIPLIER,
+HUGE_SHADE_NAME: HUGE_SHADE_MULTIPLIER,
+HUGE_MORTIS_NAME: HUGE_MORTIS_MULTIPLIER,
+TITANIC_GRIFF_NAME: TITANIC_GRIFF_MULTIPLIER,
+TITANIC_COLT_NAME: TITANIC_COLT_MULTIPLIER,
+HUGE_SURGE_NAME: HUGE_SURGE_MULTIPLIER,
+TITANIC_MEEPLE_NAME: TITANIC_MEEPLE_MULTIPLIER,
+    HUGE_ASTRALIS_NAME: HUGE_ASTRALIS_MULTIPLIER,
+    TITANIC_ZENITH_NAME: TITANIC_ZENITH_MULTIPLIER,
+    HUGE_VIRGO_COLLETTE_NAME: HUGE_VIRGO_COLLETTE_MULTIPLIER,
+    TITANIC_CAPRICORN_STU_NAME: TITANIC_CAPRICORN_STU_MULTIPLIER,
+    HUGE_BULL_NAME: HUGE_BULL_MULTIPLIER,
+    HUGE_BO_NAME: HUGE_BO_MULTIPLIER,
+    HUGE_CLANCY_NAME: HUGE_CLANCY_MULTIPLIER,
+    HUGE_ROSA_NAME: HUGE_ROSA_MULTIPLIER,
+    HUGE_WISHED_NAME: HUGE_WISHED_MULTIPLIER,
+    TITANIC_POCO_NAME: TITANIC_POCO_MULTIPLIER,
+    TITANIC_ZOMBIBI_NAME: TITANIC_ZOMBIBI_MULTIPLIER,
+    TITANIC_SMOOTH_LOU_NAME: TITANIC_SMOOTH_LOU_MULTIPLIER,
+    HUGE_RED_KING_FRANK_NAME: HUGE_RED_KING_FRANK_MULTIPLIER,
+}
+
+HUGE_PET_MIN_LEVEL_MULTIPLIERS: Final[Dict[str, float]] = {
+    TITANIC_GRIFF_NAME: 12.0,
+    HUGE_BULL_NAME: 2.55,
+}
+
+
+def get_huge_multiplier(name: str) -> float:
+    """Retourne le multiplicateur personnalisé associé à un énorme pet."""
+
+    normalized = name.strip().lower() if name else ""
+    for pet_name, multiplier in HUGE_PET_CUSTOM_MULTIPLIERS.items():
+        if pet_name.lower() == normalized:
+            return multiplier
+    return HUGE_PET_MULTIPLIER
+
+
+def huge_level_required_xp(level: int) -> int:
+    """Calcule l'expérience requise pour monter au niveau suivant."""
+
+    if level >= HUGE_PET_LEVEL_CAP:
         return 0
-
-    async def cog_load(self) -> None:
-        self._pet_ids = await self.database.sync_pets(self._definitions)
-        self._definition_by_id = {pet_id: self._definition_by_name[name] for name, pet_id in self._pet_ids.items()}
-        logger.info("Catalogue de pets synchronisé (%d entrées)", len(self._definition_by_id))
-
-    async def _resync_pets(self) -> None:
-        self._pet_ids = await self.database.sync_pets(self._definitions)
-        self._definition_by_id = {
-            pet_id: self._definition_by_name[name]
-            for name, pet_id in self._pet_ids.items()
-            if name in self._definition_by_name
-        }
-        logger.info(
-            "Catalogue de pets resynchronisé (%d entrées)",
-            len(self._definition_by_id),
-        )
-
-    async def _ensure_pet_registered(self, pet_name: str) -> bool:
-        definition = self._definition_by_name.get(pet_name)
-        if definition is None:
-            return False
-        try:
-            new_ids = await self.database.sync_pets([definition])
-        except Exception:
-            logger.exception(
-                "Impossible de synchroniser le pet manquant",
-                extra={"pet_name": pet_name},
-            )
-            return False
-        if not new_ids:
-            return False
-        self._pet_ids.update(new_ids)
-        for name, identifier in new_ids.items():
-            matched = self._definition_by_name.get(name)
-            if matched is not None:
-                self._definition_by_id[identifier] = matched
-        return pet_name in self._pet_ids
-
-    # ------------------------------------------------------------------
-    # Utilitaires internes
-    # ------------------------------------------------------------------
-    def _choose_pet(
-        self, egg: PetEggDefinition, *, luck_bonus: float = 0.0
-    ) -> tuple[PetDefinition, int]:
-        weights = [pet.drop_rate for pet in egg.pets]
-        if luck_bonus > 0 and egg.pets:
-            sorted_indices = sorted(
-                range(len(egg.pets)),
-                key=lambda idx: (
-                    egg.pets[idx].drop_rate,
-                    -egg.pets[idx].base_income_per_hour,
-                ),
-            )
-            rare_count = max(1, len(sorted_indices) // 3)
-            multiplier = 1.0 + float(luck_bonus)
-            for idx in sorted_indices[:rare_count]:
-                weights[idx] *= multiplier
-        pet = random.choices(egg.pets, weights=weights, k=1)[0]
-        pet_id = self._pet_ids[pet.name]
-        return pet, pet_id
-
-    def _egg_showcase_image(self, egg: PetEggDefinition) -> str | None:
-        if egg.image_url:
-            return egg.image_url
-        if not egg.pets:
-            return None
-
-        def _sort_key(pet: PetDefinition) -> tuple[int, int]:
-            rarity_rank = PET_RARITY_ORDER.get(pet.rarity, -1)
-            return rarity_rank, int(getattr(pet, "base_income_per_hour", 0))
-
-        for pet in sorted(egg.pets, key=_sort_key, reverse=True):
-            image = getattr(pet, "image_url", None)
-            if image:
-                return image
-        return None
-
-    def _monotonic_now(self) -> datetime:
-        current = datetime.now(timezone.utc)
-        if current < self._last_clock_sample:
-            return self._last_clock_sample
-        self._last_clock_sample = current
-        return current
-
-    def _build_egg_luck_breakdown(
-        self,
-        *,
-        mastery_perks: EggMasteryPerks | None,
-        active_potion: tuple[PotionDefinition, datetime] | None,
-        frenzy_active: bool,
-        rebirth_count: int,
-        has_luck_role: bool,
-    ) -> tuple[float, list[str]]:
-        total_bonus = 0.0
-        lines: list[str] = []
-
-        if mastery_perks and mastery_perks.luck_bonus > 0:
-            bonus = max(0.0, float(mastery_perks.luck_bonus))
-            total_bonus += bonus
-            lines.append(f"Maîtrise des œufs : +{bonus * 100:.0f}%")
-
-        if active_potion:
-            potion_definition, potion_expires_at = active_potion
-            if (
-                potion_definition.effect_type == "egg_luck"
-                and potion_expires_at > self._monotonic_now()
-            ):
-                bonus = max(0.0, float(potion_definition.effect_value))
-                total_bonus += bonus
-                lines.append(f"Potion : +{bonus * 100:.0f}%")
-
-        if frenzy_active:
-            bonus = max(0.0, float(EGG_FRENZY_LUCK_BONUS))
-            total_bonus += bonus
-            lines.append(f"Egg Frenzy : +{bonus * 100:.0f}%")
-
-        if rebirth_count > 0:
-            bonus = max(0.0, float(REBIRTH_EGG_LUCK_BONUS))
-            total_bonus += bonus
-            lines.append(f"Rebirth : +{bonus * 100:.0f}%")
-
-        if has_luck_role:
-            bonus = 0.10
-            total_bonus += bonus
-            lines.append(f"Rôle chance : +{bonus * 100:.0f}%")
-
-        return total_bonus, lines
-
-    @staticmethod
-    def _compute_huge_income(
-        reference_income: int | None,
-        *,
-        pet_name: str | None = None,
-        level: int = 1,
-    ) -> int:
-        best_value = max(0, int(reference_income or 0))
-        multiplier = get_huge_level_multiplier(pet_name or "", level)
-        return compute_huge_income(best_value, multiplier)
-
-    @staticmethod
-    def _apply_huge_progress_fields(data: Dict[str, Any], level: int, xp: int) -> None:
-        clamped_level = max(1, min(level, HUGE_PET_LEVEL_CAP))
-        xp = max(0, xp)
-        data["huge_level"] = clamped_level
-        if clamped_level >= HUGE_PET_LEVEL_CAP:
-            data["huge_xp"] = 0
-            data["huge_xp_required"] = 0
-            data["huge_progress"] = 1.0
-        else:
-            required = huge_level_required_xp(clamped_level)
-            progress_xp = min(xp, required)
-            data["huge_xp"] = progress_xp
-            data["huge_xp_required"] = required
-            data["huge_progress"] = get_huge_level_progress(clamped_level, progress_xp)
-
-    def _convert_record(
-        self, record: Mapping[str, Any], *, best_non_huge_income: int | None = None
-    ) -> Dict[str, Any]:
-        data = dict(record)
-        pet_identifier = int(record.get("pet_id", 0))
-        definition = self._definition_by_id.get(pet_identifier)
-        is_gold = bool(record.get("is_gold"))
-        is_rainbow = bool(record.get("is_rainbow"))
-        is_galaxy = bool(record.get("is_galaxy"))
-        is_shiny = bool(record.get("is_shiny"))
-        is_huge = bool(record.get("is_huge"))
-        data["is_gold"] = is_gold
-        data["is_rainbow"] = is_rainbow
-        data["is_galaxy"] = is_galaxy
-        data["is_shiny"] = is_shiny
-        base_income = int(record.get("base_income_per_hour", data.get("base_income_per_hour", 0)))
-        pet_name = str(data.get("name", ""))
-        if definition is not None:
-            data["image_url"] = definition.image_url
-            data["rarity"] = definition.rarity
-            pet_name = definition.name
-            data["name"] = pet_name
-            is_huge = definition.is_huge
-            base_income = definition.base_income_per_hour
-        else:
-            data["name"] = pet_name
-        data["is_huge"] = is_huge
-
-        if is_huge:
-            level = int(record.get("huge_level") or 1)
-            xp = int(record.get("huge_xp") or 0)
-            self._apply_huge_progress_fields(data, level, xp)
-            reference_income = (
-                best_non_huge_income
-                if best_non_huge_income and best_non_huge_income > 0
-                else base_income
-            )
-            data["_reference_income"] = int(reference_income or 0)
-            effective_income = self._compute_huge_income(
-                reference_income, pet_name=pet_name, level=level
-            )
-            effective_income = int(
-                effective_income
-                * self._variant_income_multiplier(
-                    is_gold=is_gold,
-                    is_rainbow=is_rainbow,
-                    is_galaxy=is_galaxy,
-                    is_shiny=is_shiny,
-                )
-            )
-        else:
-            data.pop("huge_level", None)
-            data.pop("huge_xp", None)
-            data.pop("huge_xp_required", None)
-            data.pop("huge_progress", None)
-            data.pop("_reference_income", None)
-            multiplier = self._variant_income_multiplier(
-                is_gold=is_gold,
-                is_rainbow=is_rainbow,
-                is_galaxy=is_galaxy,
-                is_shiny=is_shiny,
-            )
-            effective_income = base_income * multiplier
-
-        data["base_income_per_hour"] = int(effective_income)
-        return data
-
-    def _owned_pet_names(self, records: Iterable[Mapping[str, Any]]) -> Set[str]:
-        owned: Set[str] = set()
-        for record in records:
-            pet_id = int(record.get("pet_id", 0))
-            definition = self._definition_by_id.get(pet_id)
-            if definition is not None:
-                owned.add(definition.name.casefold())
-                continue
-            raw_name = str(record.get("name", "")).strip()
-            if raw_name:
-                owned.add(raw_name.casefold())
-        return owned
-
-    async def _prepare_pet_data(
-        self, user_id: int, rows: Sequence[Mapping[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        if not rows:
-            return []
-        market_values = await self.database.get_pet_market_values()
-        best_non_huge_income = await self.database.get_best_non_huge_income(user_id)
-        pets_data: List[Dict[str, Any]] = []
-        for row in rows:
-            data = self._convert_record(row, best_non_huge_income=best_non_huge_income)
-            pet_identifier = int(data.get("pet_id", 0))
-            data["market_value"] = self._resolve_market_value(
-                market_values,
-                pet_id=pet_identifier,
-                is_gold=bool(data.get("is_gold")),
-                is_rainbow=bool(data.get("is_rainbow")),
-                is_galaxy=bool(data.get("is_galaxy")),
-                is_shiny=bool(data.get("is_shiny")),
-            )
-            pets_data.append(data)
-        return pets_data
-
-    @staticmethod
-    def _resolve_member(ctx: commands.Context) -> Optional[discord.Member]:
-        if isinstance(ctx.author, discord.Member):
-            return ctx.author
-        guild = ctx.guild
-        if guild is not None:
-            member = guild.get_member(ctx.author.id)
-            if member is not None:
-                return member
-        return None
-
-    @staticmethod
-    def _embed_length(embed: discord.Embed) -> int:
-        total = len(embed.title or "") + len(embed.description or "")
-        for field in embed.fields:
-            total += len(field.name or "") + len(field.value or "")
-        footer = embed.footer
-        if footer and footer.text:
-            total += len(footer.text)
-        return total
-
-    def _dispatch_grade_progress(
-        self, ctx: commands.Context, quest_type: str, amount: int
-    ) -> None:
-        member = self._resolve_member(ctx)
-        if member is None:
-            return
-        self.bot.dispatch("grade_quest_progress", member, quest_type, amount, ctx.channel)
-
-    async def _apply_auto_upgrades(
-        self,
-        ctx: commands.Context,
-        definition: PetDefinition,
-        pet_id: int,
-        pet_perks: PetMasteryPerks,
-        *,
-        clan_shiny_multiplier: float = 1.0,
-        auto_settings: Mapping[str, bool] | None = None,
-        index_bonus: float = 0.0,
-    ) -> List[str]:
-        messages: List[str] = []
-        auto_gold_enabled = pet_perks.auto_goldify
-        auto_rainbow_enabled = pet_perks.auto_rainbowify
-        if auto_settings is not None:
-            auto_gold_enabled = auto_gold_enabled and auto_settings.get(
-                "auto_goldify", True
-            )
-            auto_rainbow_enabled = auto_rainbow_enabled and auto_settings.get(
-                "auto_rainbowify", True
-            )
-        if not (auto_gold_enabled or auto_rainbow_enabled):
-            return messages
-
-        shiny_multiplier = max(1.0, float(clan_shiny_multiplier))
-
-        def _roll_shiny(base_chance: float) -> bool:
-            chance = self._apply_index_bonus(base_chance, index_bonus)
-            if chance <= 0:
-                return False
-            chance *= float(pet_perks.egg_shiny_multiplier)
-            chance *= shiny_multiplier
-            chance = min(1.0, chance)
-            return random.random() < chance
-
-        if auto_gold_enabled:
-            while True:
-                try:
-                    make_shiny = _roll_shiny(pet_perks.goldify_shiny_chance)
-                    gold_records, consumed = await self.database.upgrade_pet_to_gold(
-                        ctx.author.id,
-                        pet_id,
-                        make_shiny=make_shiny,
-                        cost=GOLDIFY_GEM_COST,
-                    )
-                except DatabaseError:
-                    break
-
-                gold_record = gold_records[0]
-                name = str(gold_record.get("name", definition.name))
-                shiny_suffix = " shiny" if bool(gold_record.get("is_shiny")) else ""
-                messages.append(
-                    f"⚙️ Auto Goldify : **{name}** passe directement en version or{shiny_suffix}!"
-                )
-                mastery_update = await self.database.add_mastery_experience(
-                    ctx.author.id, PET_MASTERY.slug, GOLD_MASTERY_POINTS
-                )
-                await self._handle_mastery_notifications(
-                    ctx, mastery_update, mastery=PET_MASTERY
-                )
-
-        if auto_rainbow_enabled:
-            while True:
-                try:
-                    make_shiny = _roll_shiny(pet_perks.rainbowify_shiny_chance)
-                    rainbow_records, consumed = await self.database.upgrade_pet_to_rainbow(
-                        ctx.author.id,
-                        pet_id,
-                        make_shiny=make_shiny,
-                        cost=RAINBOWIFY_GEM_COST,
-                    )
-                except DatabaseError:
-                    break
-
-                rainbow_record = rainbow_records[0]
-                name = str(rainbow_record.get("name", definition.name))
-                shiny_suffix = " shiny" if bool(rainbow_record.get("is_shiny")) else ""
-                messages.append(
-                    f"🌈 Auto Rainbow : **{name}** se transforme en rainbow{shiny_suffix}!"
-                )
-                mastery_update = await self.database.add_mastery_experience(
-                    ctx.author.id, PET_MASTERY.slug, RAINBOW_MASTERY_POINTS
-                )
-                await self._handle_mastery_notifications(
-                    ctx, mastery_update, mastery=PET_MASTERY
-                )
-
-        return messages
-
-    async def _handle_mastery_notifications(
-        self,
-        ctx: commands.Context,
-        update: Mapping[str, object],
-        *,
-        mastery: MasteryDefinition = EGG_MASTERY,
-    ) -> None:
-        levels_gained = int(update.get("levels_gained", 0) or 0)
-        if levels_gained <= 0:
-            return
-
-        level = int(update.get("level", 1) or 1)
-        previous_level = int(update.get("previous_level", level) or level)
-        xp_to_next = int(update.get("xp_to_next_level", 0) or 0)
-        current_progress = int(update.get("experience", 0) or 0)
-
-        lines = [
-            f"Tu passes niveau **{level}** de {mastery.display_name} !"
-        ]
-        if xp_to_next > 0:
-            remaining = max(0, xp_to_next - current_progress)
-            remaining_text = f"Encore {remaining:,} points d'expérience pour le prochain palier.".replace(",", " ")
-            lines.append(remaining_text)
-        else:
-            lines.append("Tu as atteint le niveau maximal de maîtrise, félicitations !")
-
-        if mastery is EGG_MASTERY:
-            if previous_level < 5 <= level:
-                lines.append(
-                    "Tu as maintenant **5% de chance** d'obtenir un deuxième œuf gratuitement à chaque ouverture !"
-                )
-            if previous_level < 10 <= level:
-                lines.append(
-                    "Tu peux désormais PACK des pets **Gold** directement dans les œufs (3% de chance)."
-                )
-            if previous_level < 20 <= level:
-                lines.append(
-                    "Tu débloques **1% de chance** de pet rainbow et les animations d'ouverture sont 2× plus rapides."
-                )
-            if previous_level < 30 <= level:
-                lines.append(
-                    "Tu profites maintenant de **15% de chance** d'œuf double et **1% de chance** de triple ouverture."
-                )
-            if previous_level < 40 <= level:
-                lines.append(
-                    "Tes chances passent à **20% double**, **3% triple**, avec **5% Gold** et **2% Rainbow** dans les œufs."
-                )
-            if previous_level < 50 <= level:
-                lines.append(
-                    "Tu atteins **35%** de double, **10%** de triple et jusqu'à **10% Gold / 4% Rainbow** à chaque ouverture !"
-                )
-            if previous_level < 64 <= level:
-                lines.append(
-                    "Tu obtiens le rôle ultime avec **x2 chance** permanente sur tes ouvertures d'œufs !"
-                )
-        elif mastery is PET_MASTERY:
-            if previous_level < 5 <= level:
-                lines.append(
-                    "La machine de fusion est débloquée, auto-goldify activé et **1%** de shiny dans les œufs !"
-                )
-            if previous_level < 10 <= level:
-                lines.append(
-                    "La machine de fusion offre désormais **10%** de chance de double récompense !"
-                )
-            if previous_level < 20 <= level:
-                lines.append(
-                    "Tes goldify ont **3%** de chance de produire un shiny et les rainbowify **1%** !"
-                )
-            if previous_level < 30 <= level:
-                lines.append(
-                    "Auto-rainbowify débloqué et ta chance de shiny dans les œufs passe à **3%** !"
-                )
-            if previous_level < 40 <= level:
-                lines.append(
-                    "La machine de fusion atteint **35% double** et **10% triple** !"
-                )
-            if previous_level < 50 <= level:
-                lines.append(
-                    "Tu profites de **50%** de double fuse, **5%** de shiny dans les œufs et plus de chances via goldify/rainbowify !"
-                )
-            if previous_level < 64 <= level:
-                lines.append(
-                    "Ton rôle ultime booste tes chances : x1.5 Gold, x1.3 Rainbow et x1.2 Shiny !"
-                )
-
-        role_map = {
-            EGG_MASTERY.slug: EGG_MASTERY_MAX_ROLE_ID,
-            PET_MASTERY.slug: PET_MASTERY_MAX_ROLE_ID,
-        }
-        if mastery.slug in role_map and level >= mastery.max_level:
-            guild = ctx.guild
-            if guild is not None:
-                role = guild.get_role(role_map[mastery.slug])
-                member = guild.get_member(ctx.author.id) if role else None
-                if role is not None and member is not None and role not in member.roles:
-                    with contextlib.suppress(discord.HTTPException, discord.Forbidden):
-                        await member.add_roles(
-                            role, reason=f"{mastery.display_name} niveau {level}"
-                        )
-                    lines.append(f"🎖️ Tu obtiens {role.mention} !")
-
-        await ctx.send("\n".join(lines))
-
-        dm_content = "🥚 " + "\n".join(lines)
-        try:
-            await ctx.author.send(dm_content)
-        except discord.Forbidden:
-            logger.debug("Impossible d'envoyer le MP de maîtrise à %s", ctx.author.id)
-        except discord.HTTPException:
-            logger.warning("Échec de l'envoi du MP de maîtrise", exc_info=True)
-
-        new_levels = [int(level) for level in update.get("new_levels", [])]
-        milestone_levels = [lvl for lvl in new_levels if lvl in EGG_MASTERY.broadcast_levels]
-        if not milestone_levels or ctx.guild is None:
-            return
-
-        highest_milestone = max(milestone_levels)
-        channel = ctx.channel
-        if not hasattr(channel, "permissions_for"):
-            return
-
-        me = ctx.guild.me
-        if me is None or not channel.permissions_for(me).send_messages:
-            return
-
-        announcement_lines = [
-            f"🥚 **{ctx.author.display_name}** vient d'atteindre le niveau {highest_milestone} de {EGG_MASTERY.display_name}!",
-        ]
-        if highest_milestone >= 64:
-            announcement_lines.append(
-                "Ils obtiennent le rôle suprême et voient leur chance d'œuf doublée en permanence !"
-            )
-        elif highest_milestone >= 50:
-            announcement_lines.append(
-                "Ils profitent maintenant de 35% de chance d'œuf double et 10% de triple à chaque ouverture !"
-            )
-        elif highest_milestone >= 30:
-            announcement_lines.append(
-                "Ils débloquent des triples ouvertures et 15% de chance d'œuf bonus !"
-            )
-        elif highest_milestone >= 10:
-            announcement_lines.append(
-                "Ils débloquent désormais une chance d'obtenir des œufs bonus à chaque ouverture !"
-            )
-
-        try:
-            await channel.send("\n".join(announcement_lines))
-        except discord.HTTPException:
-            logger.warning("Impossible d'envoyer l'annonce de maîtrise", exc_info=True)
-
-    @staticmethod
-    def _split_pet_quantity(raw: str) -> tuple[str, int]:
-        tokens = [token for token in raw.split() if token]
-        if not tokens:
-            return "", 1
-        if len(tokens) > 1 and tokens[-1].isdigit():
-            quantity = int(tokens[-1])
-            name = " ".join(tokens[:-1]).strip()
-            if name:
-                return name, quantity
-        return raw.strip(), 1
-
-    @staticmethod
-    def _is_all_token(raw: str | None) -> bool:
-        return bool(raw) and raw.strip().lower() in {"all", "tout"}
-
-    def _build_bulk_fusion_plan(
-        self,
-        rows: Sequence[Mapping[str, Any]],
-        *,
-        mode: str,
-    ) -> list[tuple[PetDefinition, int, int]]:
-        if mode == "gold":
-            required = GOLD_PET_COMBINE_REQUIRED
-        elif mode == "rainbow":
-            required = RAINBOW_PET_COMBINE_REQUIRED
-        elif mode == "galaxy":
-            required = GALAXY_PET_COMBINE_REQUIRED
-        else:
-            raise ValueError("Mode de fusion inconnu.")
-
-        counts: Dict[int, int] = {}
-        for row in rows:
-            if bool(row.get("is_active")) or bool(row.get("on_market")):
-                continue
-            is_gold = bool(row.get("is_gold"))
-            is_rainbow = bool(row.get("is_rainbow"))
-            is_galaxy = bool(row.get("is_galaxy"))
-            if mode == "gold":
-                if is_gold or is_rainbow or is_galaxy:
-                    continue
-            elif mode == "rainbow":
-                if not is_gold or is_rainbow or is_galaxy:
-                    continue
-            elif mode == "galaxy":
-                if not is_rainbow or is_galaxy:
-                    continue
-            pet_id = int(row.get("pet_id") or 0)
-            if pet_id <= 0:
-                continue
-            counts[pet_id] = counts.get(pet_id, 0) + 1
-
-        plan: list[tuple[PetDefinition, int, int]] = []
-        for pet_id, count in counts.items():
-            definition = self._definition_by_id.get(pet_id)
-            if definition is None:
-                continue
-            quantity = count // required
-            if quantity > 0:
-                plan.append((definition, pet_id, quantity))
-        plan.sort(key=lambda entry: entry[0].name)
-        return plan
-
-    def _parse_pet_query(self, raw: str) -> tuple[str, Optional[int], Optional[str]]:
-        tokens = [token for token in raw.split() if token]
-        if not tokens:
-            return "", None, None
-
-        variant: Optional[str] = None
-        ordinal: Optional[int] = None
-        name_parts: List[str] = []
-        slug_suffix: Optional[str] = None
-
-        gold_aliases = {"gold", "doré", "doree", "or"}
-        rainbow_aliases = {"rainbow", "rb", "arcenciel", "arc-en-ciel"}
-        normal_aliases = {"normal", "base", "standard"}
-
-        for token in tokens:
-            lowered = token.lower()
-            if lowered.isdigit():
-                ordinal = int(lowered)
-                continue
-            if lowered.startswith("#") and lowered[1:].isdigit():
-                slug_suffix = lowered
-                continue
-            if "#" in lowered:
-                base_part, suffix_part = lowered.split("#", 1)
-                if suffix_part.isdigit():
-                    slug_suffix = f"#{suffix_part}"
-                    if base_part:
-                        name_parts.append(base_part)
-                    continue
-            if lowered in gold_aliases:
-                variant = "gold"
-                continue
-            if lowered in rainbow_aliases:
-                variant = "rainbow"
-                continue
-            if lowered in normal_aliases:
-                variant = "normal"
-                continue
-            name_parts.append(token)
-
-        if not name_parts:
-            name_parts = tokens
-
-        normalized = self._normalize_pet_key(" ".join(name_parts))
-        if slug_suffix:
-            normalized = f"{normalized}{slug_suffix}"
-        else:
-            aliases = self._slug_aliases.get(normalized)
-            if aliases:
-                normalized = aliases[0]
-        return normalized, ordinal, variant
-
-    async def _resolve_user_pet_candidates(
-        self,
-        ctx: commands.Context,
-        raw_name: str,
-        *,
-        include_active: bool = True,
-        include_inactive: bool = True,
-        include_daycare: bool = True,
-    ) -> tuple[Optional[PetDefinition], List[Mapping[str, Any]], Optional[int], Optional[str]]:
-        slug, ordinal, variant = self._parse_pet_query(raw_name)
-        if not slug:
-            return None, [], None, None
-
-        definition = self._definition_by_slug.get(slug)
-        if definition is None:
-            return None, [], ordinal, variant
-
-        is_gold: Optional[bool]
-        is_rainbow: Optional[bool]
-        if variant == "gold":
-            is_gold = True
-            is_rainbow = False
-        elif variant == "rainbow":
-            is_gold = False
-            is_rainbow = True
-        elif variant == "normal":
-            is_gold = False
-            is_rainbow = False
-        else:
-            is_gold = None
-            is_rainbow = None
-
-        rows = await self.database.get_user_pet_by_name(
-            ctx.author.id,
-            definition.name,
-            is_gold=is_gold,
-            is_rainbow=is_rainbow,
-            include_active=include_active,
-            include_inactive=include_inactive,
-            include_daycare=include_daycare,
-        )
-        return definition, list(rows), ordinal, variant
-
-    async def _prompt_pet_selection(
-        self,
-        ctx: commands.Context,
-        *,
-        title: str,
-        description: str,
-        candidates: Sequence[Mapping[str, Any]],
-    ) -> Optional[Mapping[str, Any]]:
-        if not candidates:
-            return None
-
-        view = PetSelectionView(
-            ctx=ctx,
-            candidates=candidates,
-            title=title,
-            description=description,
-        )
-        message = await ctx.send(embed=view.build_embed(), view=view)
-        view.message = message
-        timed_out = await view.wait()
-
-        if view.selection is not None:
-            return view.selection
-
-        if view.cancelled:
-            await ctx.send(embed=embeds.warning_embed("Sélection annulée."))
-        elif timed_out:
-            await ctx.send(embed=embeds.warning_embed("Temps écoulé pour la sélection."))
-        return None
-
-    async def _make_candidates(
-        self, ctx: commands.Context, rows: Sequence[Mapping[str, Any]]
-    ) -> List[Mapping[str, Any]]:
-        pet_data = await self._prepare_pet_data(ctx.author.id, rows)
-        return [
-            {"record": row, "data": data}
-            for row, data in zip(rows, pet_data)
-        ]
-
-    async def _build_pet_equip_embed(
-        self,
-        ctx: commands.Context,
-        record: Mapping[str, Any],
-        *,
-        activated: bool,
-        active_count: int,
-        slot_limit: int,
-    ) -> discord.Embed:
-        best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
-        pet_data = self._convert_record(record, best_non_huge_income=best_non_huge_income)
-        market_values = await self.database.get_pet_market_values()
-        pet_identifier = int(pet_data.get("pet_id", 0))
-        pet_data["market_value"] = self._resolve_market_value(
-            market_values,
-            pet_id=pet_identifier,
-            is_gold=bool(pet_data.get("is_gold")),
-            is_rainbow=bool(pet_data.get("is_rainbow")),
-            is_galaxy=bool(pet_data.get("is_galaxy")),
-            is_shiny=bool(pet_data.get("is_shiny")),
-        )
-        embed = embeds.pet_equip_embed(
-            member=ctx.author,
-            pet=pet_data,
-            activated=activated,
-            active_count=active_count,
-            slot_limit=slot_limit,
-        )
-        return embed
-
-    def _resolve_egg(self, raw: str | None) -> PetEggDefinition | None:
-        if not self._eggs:
-            return None
-        if raw is None or not raw.strip():
-            if self._default_egg_slug:
-                return self._eggs.get(self._default_egg_slug) or next(
-                    iter(self._eggs.values()), None
-                )
-            return next(iter(self._eggs.values()), None)
-        key = raw.strip().lower()
-        slug = self._egg_lookup.get(key)
-        if slug is None:
-            return None
-        return self._eggs.get(slug)
-
-    def _get_zone_for_egg(self, egg: PetEggDefinition) -> PetZoneDefinition | None:
-        return self._zones.get(egg.zone_slug)
-
-    @staticmethod
-    def _grade_label(level: int) -> str:
-        if 1 <= level <= len(GRADE_DEFINITIONS):
-            return GRADE_DEFINITIONS[level - 1].name
-        return f"Grade {level}"
-
-    @staticmethod
-    def _format_zone_cost(zone: PetZoneDefinition) -> str:
-        if zone.currency == "gem":
-            return embeds.format_gems(zone.entry_cost)
-        return embeds.format_currency(zone.entry_cost)
-
-    @staticmethod
-    def _parse_pet_id_tokens(tokens: Iterable[str]) -> List[int]:
-        ids: List[int] = []
-        for token in tokens:
-            cleaned = token.replace(",", " ").strip()
-            for part in cleaned.split():
-                if part.isdigit():
-                    ids.append(int(part))
-        return ids
-
-    async def _send_daycare_status(self, ctx: commands.Context) -> None:
-        pets = await self.database.get_daycare_pets(ctx.author.id)
-        last_claim = await self.database.get_daycare_last_claim(ctx.author.id)
-        now = datetime.now(timezone.utc)
-        count = len(pets)
-
-        elapsed_hours = 0.0
-        if isinstance(last_claim, datetime):
-            elapsed_seconds = max(0.0, (now - last_claim).total_seconds())
-            elapsed_hours = elapsed_seconds / 3600 if elapsed_seconds > 0 else 0.0
-
-        estimated = 0
-        if count > 0 and elapsed_hours > 0:
-            estimated = int(round(count * elapsed_hours * DAYCARE_GEM_PER_PET_HOUR))
-            if DAYCARE_GEM_MAX > 0:
-                estimated = min(estimated, DAYCARE_GEM_MAX)
-
-        lines = [
-            f"• Slots occupés : **{count}/{DAYCARE_MAX_PETS}**",
-            f"• Production : **{DAYCARE_GEM_PER_PET_HOUR:g}** {Emojis.GEM} / heure / pet",
-        ]
-        if DAYCARE_GEM_MAX > 0:
-            lines.append(f"• Cap par récolte : {embeds.format_gems(DAYCARE_GEM_MAX)}")
-        if count > 0:
-            lines.append(f"• {Emojis.GEM} disponibles : {embeds.format_gems(estimated)}")
-        else:
-            lines.append(f"• Dépose des pets pour commencer à générer {Emojis.GEM}.")
-
-        embed = embeds.info_embed(
-            "\n".join(lines),
-            title="🍼 Garderie céleste",
-        )
-
-        if pets:
-            pet_line = " ".join(
-                f"{pet_emoji(str(pet.get('name', 'Pet')))} #{int(pet.get('user_pet_id') or 0)}"
-                for pet in pets
-            )
-            embed.add_field(name="Pets en garde", value=pet_line, inline=False)
-
-        if isinstance(last_claim, datetime):
-            embed.set_footer(
-                text=f"Dernière récolte : {discord.utils.format_dt(last_claim, style='R')}"
-            )
-
-        await ctx.send(embed=embed)
-
-    @staticmethod
-    def _compute_slot_purchase_cost(extra_slots: int) -> int:
-        exponent = max(0, int(extra_slots))
-        base = Decimal(PET_SLOT_SHOP_BASE_COST)
-        growth = Decimal(str(PET_SLOT_SHOP_COST_GROWTH))
-        cost = base * (growth**exponent)
-        rounded = cost.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-        return max(1, int(rounded))
-
-    @staticmethod
-    def _format_slot_cost(amount: int) -> str:
-        if PET_SLOT_SHOP_CURRENCY == "gem":
-            return embeds.format_gems(amount)
-        return embeds.format_currency(amount)
-
-    async def _get_active_income(self, user_id: int) -> int:
-        records = await self.database.get_user_pets(user_id)
-        pets = self._sort_pets_for_display(records, market_values=None)
-        return sum(int(pet["income"]) for pet in pets if pet.get("is_active"))
-
-    async def _ensure_zone_access(
-        self, ctx: commands.Context, zone: PetZoneDefinition
-    ) -> bool:
-        if zone.entry_cost > 0:
-            unlocked = await self.database.has_unlocked_zone(ctx.author.id, zone.slug)
-            if unlocked:
-                return True
-
-        if zone.egg_mastery_required > 0:
-            egg_mastery = await self.database.get_mastery_progress(
-                ctx.author.id, EGG_MASTERY.slug
-            )
-            egg_level = int(egg_mastery.get("level", 1))
-            if egg_level < zone.egg_mastery_required:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        f"Tu dois atteindre le niveau {zone.egg_mastery_required} de {EGG_MASTERY.display_name} pour accéder à {zone.name}."
-                    )
-                )
-                return False
-
-        if zone.pet_mastery_required > 0:
-            pet_mastery = await self.database.get_mastery_progress(
-                ctx.author.id, PET_MASTERY.slug
-            )
-            pet_level = int(pet_mastery.get("level", 1))
-            if pet_level < zone.pet_mastery_required:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        f"Tu dois atteindre le niveau {zone.pet_mastery_required} de {PET_MASTERY.display_name} pour accéder à {zone.name}."
-                    )
-                )
-                return False
-
-        if zone.rebirth_required > 0:
-            rebirth_count = await self.database.get_rebirth_count(ctx.author.id)
-            if rebirth_count < zone.rebirth_required:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Tu dois effectuer au moins "
-                        f"{zone.rebirth_required} rebirth{'s' if zone.rebirth_required > 1 else ''} "
-                        f"pour accéder à {zone.name}."
-                    )
-                )
-                return False
-
-        if zone.min_income_required > 0:
-            active_income = await self._get_active_income(ctx.author.id)
-            if active_income < zone.min_income_required:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Tu dois générer au moins "
-                        f"{embeds.format_currency(zone.min_income_required)}/h "
-                        f"pour accéder à {zone.name}."
-                    )
-                )
-                return False
-
-        if zone.entry_cost <= 0:
-            return True
-
-        if zone.currency == "gem":
-            balance = await self.database.fetch_gems(ctx.author.id)
-        else:
-            balance = await self.database.fetch_balance(ctx.author.id)
-
-        if balance < zone.entry_cost:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    f"Il te faut {self._format_zone_cost(zone)} pour débloquer {zone.name}."
-                )
-            )
-            return False
-
-        if zone.currency == "gem":
-            await self.database.increment_gems(
-                ctx.author.id,
-                -zone.entry_cost,
-                transaction_type="zone_unlock",
-                description=f"Déblocage zone {zone.name}",
-            )
-        else:
-            await self.database.increment_balance(
-                ctx.author.id,
-                -zone.entry_cost,
-                transaction_type="zone_unlock",
-                description=f"Déblocage zone {zone.name}",
-            )
-        await self.database.unlock_zone(ctx.author.id, zone.slug)
-
-        eggs_commands = ", ".join(f"`e!openbox {egg.slug}`" for egg in zone.eggs)
-        lines = [
-            f"{ctx.author.mention}, tu as débloqué **{zone.name}** !",
-            f"Coût : {self._format_zone_cost(zone)}.",
-        ]
-        if eggs_commands:
-            lines.append(f"Œufs disponibles : {eggs_commands}")
-        await ctx.send(
-            embed=embeds.success_embed("\n".join(lines), title="Nouvelle zone débloquée")
-        )
-        return True
-
-    def _build_zone_overview_embed(
-        self,
-        ctx: commands.Context,
-        zone: PetZoneDefinition,
-        *,
-        has_unlocked: bool,
-        meets_egg_mastery: bool,
-        meets_pet_mastery: bool,
-        meets_rebirth: bool,
-        meets_income: bool,
-    ) -> discord.Embed:
-        status_emoji = "✅" if has_unlocked else "🔒"
-        title = f"{status_emoji} {zone.name}"
-        cost_text = "Gratuit" if zone.entry_cost <= 0 else self._format_zone_cost(zone)
-        cost_suffix = ""
-        if zone.entry_cost > 0 and has_unlocked:
-            cost_suffix = " (déjà payé)"
-        description_lines = [
-            f"Statut : {'Débloquée' if has_unlocked else 'Verrouillée'}",
-            f"Prix d'accès : {cost_text}{cost_suffix}",
-        ]
-        accessible = (
-            has_unlocked
-            and meets_egg_mastery
-            and meets_pet_mastery
-            and meets_rebirth
-            and meets_income
-        )
-        description_lines.append(
-            f"Accès actuel : {'Disponible' if accessible else 'Conditions à remplir'}"
-        )
-
-        requirements: List[str] = []
-        if zone.egg_mastery_required > 0:
-            requirements.append(
-                f"{'✅' if meets_egg_mastery else '❌'} {EGG_MASTERY.display_name} niveau {zone.egg_mastery_required}"
-            )
-        if zone.pet_mastery_required > 0:
-            requirements.append(
-                f"{'✅' if meets_pet_mastery else '❌'} {PET_MASTERY.display_name} niveau {zone.pet_mastery_required}"
-            )
-        if zone.rebirth_required > 0:
-            plural = "s" if zone.rebirth_required > 1 else ""
-            requirements.append(
-                f"{'✅' if meets_rebirth else '❌'} {zone.rebirth_required} rebirth{plural}"
-            )
-        if zone.min_income_required > 0:
-            requirements.append(
-                f"{'✅' if meets_income else '❌'} {embeds.format_currency(zone.min_income_required)}/h"
-            )
-        if zone.entry_cost > 0:
-            requirements.append(
-                f"{'✅' if has_unlocked else '❌'} {self._format_zone_cost(zone)}"
-            )
-
-        embed = embeds.info_embed(
-            "\n".join(description_lines),
-            title=title,
-        )
-        embed.set_author(
-            name=ctx.author.display_name,
-            icon_url=ctx.author.display_avatar.url,
-        )
-
-        if requirements:
-            embed.add_field(
-                name="Conditions",
-                value="\n".join(requirements),
-                inline=False,
-            )
-
-        if zone.eggs:
-            for egg in zone.eggs:
-                emoji_sequence = [pet_emoji(pet.name) for pet in egg.pets]
-                unique_emojis = list(dict.fromkeys(emoji_sequence))
-                if egg.currency == "gem":
-                    price_display = embeds.format_gems(egg.price)
-                else:
-                    price_display = embeds.format_currency(egg.price)
-                field_lines = [f"Prix : {price_display}"]
-                if has_unlocked:
-                    field_lines.append(f"Commande : `e!openbox {egg.slug}`")
-                else:
-                    field_lines.append(
-                        f"Commande : `e!openbox {egg.slug}` (après déblocage)"
-                    )
-                    field_lines.append("Débloque la zone pour ouvrir cet œuf.")
-                if unique_emojis:
-                    field_lines.append(f"Pets : {' '.join(unique_emojis)}")
-                field_name = egg.name if has_unlocked else f"🔒 {egg.name}"
-                embed.add_field(
-                    name=field_name,
-                    value="\n".join(field_lines),
-                    inline=False,
-                )
-        elif has_unlocked:
-            embed.add_field(
-                name="Œufs disponibles",
-                value="Aucun œuf n'est proposé ici.",
-                inline=False,
-            )
-        else:
-            embed.add_field(name="Prix des œufs", value="???", inline=False)
-            embed.add_field(name="Commande", value="???", inline=False)
-            embed.add_field(name="Pets possibles", value="???", inline=False)
-
-        return embed
-
-    async def _send_egg_overview(self, ctx: commands.Context) -> None:
-        unlocked_zones = await self.database.get_unlocked_zones(ctx.author.id)
-        egg_mastery = await self.database.get_mastery_progress(ctx.author.id, EGG_MASTERY.slug)
-        pet_mastery = await self.database.get_mastery_progress(ctx.author.id, PET_MASTERY.slug)
-        egg_level = int(egg_mastery.get("level", 1))
-        pet_level = int(pet_mastery.get("level", 1))
-        rebirth_count = await self.database.get_rebirth_count(ctx.author.id)
-        active_income = await self._get_active_income(ctx.author.id)
-
-        zone_pages: List[ZoneOverviewView.PageState] = []
-        for zone in PET_ZONES:
-            has_unlocked = zone.entry_cost <= 0 or zone.slug in unlocked_zones
-            meets_egg_mastery = egg_level >= zone.egg_mastery_required
-            meets_pet_mastery = pet_level >= zone.pet_mastery_required
-            meets_rebirth = rebirth_count >= zone.rebirth_required
-            meets_income = active_income >= zone.min_income_required
-
-            embed = self._build_zone_overview_embed(
-                ctx,
-                zone,
-                has_unlocked=has_unlocked,
-                meets_egg_mastery=meets_egg_mastery,
-                meets_pet_mastery=meets_pet_mastery,
-                meets_rebirth=meets_rebirth,
-                meets_income=meets_income,
-            )
-            zone_pages.append(
-                ZoneOverviewView.PageState(
-                    embed=embed,
-                    zone=zone,
-                    has_unlocked=has_unlocked,
-                    meets_egg_mastery=meets_egg_mastery,
-                    meets_pet_mastery=meets_pet_mastery,
-                    meets_rebirth=meets_rebirth,
-                    meets_income=meets_income,
-                )
-            )
-
-        if rebirth_count > 0:
-            mystery_embed = embeds.info_embed(
-                "Zone encore mystérieuse... Revenez bientôt pour en savoir plus !",
-                title="✨ Zone Mystérieuse",
-            )
-            mystery_embed.set_author(
-                name=ctx.author.display_name,
-                icon_url=ctx.author.display_avatar.url,
-            )
-            zone_pages.append(
-                ZoneOverviewView.PageState(
-                    embed=mystery_embed,
-                    zone=None,
-                    has_unlocked=False,
-                    meets_egg_mastery=False,
-                    meets_pet_mastery=False,
-                    meets_rebirth=False,
-                    meets_income=False,
-                )
-            )
-
-        if not zone_pages:
-            embed = embeds.info_embed(
-                "Aucun œuf n'est disponible pour le moment.",
-                title="Œufs & zones disponibles",
-            )
-            embed.set_author(
-                name=ctx.author.display_name,
-                icon_url=ctx.author.display_avatar.url,
-            )
-            await ctx.send(embed=embed)
-            return
-
-        total_pages = len(zone_pages)
-        for index, page in enumerate(zone_pages, start=1):
-            page.embed.set_footer(text=f"Page {index}/{total_pages}")
-
-        view = ZoneOverviewView(ctx, zone_pages, self)
-        message = await ctx.send(embed=zone_pages[0].embed, view=view)
-        view.message = message
-
-    async def _send_huge_shelly_alert(self, ctx: commands.Context) -> None:
-        channel = self.bot.get_channel(HUGE_SHELLY_ALERT_CHANNEL_ID)
-        if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(HUGE_SHELLY_ALERT_CHANNEL_ID)
-            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
-                logger.warning("Canal Huge Shelly introuvable pour l'alerte hype")
-                return
-        if not isinstance(channel, discord.abc.Messageable):
-            logger.warning(
-                "Canal Huge Shelly non compatible pour l'envoi : %s",
-                type(channel).__name__,
-            )
-            return
-
-        hype_message = (
-            "🚨🚨🚨 **ALERTE ÉPIQUE !** 🚨🚨🚨\n"
-            f"**{ctx.author.display_name}** vient de PACK la **{HUGE_PET_NAME.upper()}** !!!\n"
-            "🔥🔥 FLAMMES, CRIS, HYPE ABSOLUE 🔥🔥\n"
-            f"{ctx.author.mention} rejoint le club des légendes, spammez les GGs et sortez les confettis !!!"
-        )
-        try:
-            # FIX: Guard against unexpected HTTP errors when broadcasting the alert.
-            await channel.send(hype_message)
-        except Exception as exc:  # pragma: no cover - defensive logging
-            logger.error("Impossible d'envoyer l'alerte Huge Shelly", exc_info=exc)
-
-    async def _hatch_pet(
-        self,
-        ctx: commands.Context,
-        egg: PetEggDefinition,
-        *,
-        mastery_perks: EggMasteryPerks | None = None,
-        pet_mastery_perks: PetMasteryPerks | None = None,
-        clan_shiny_multiplier: float = 1.0,
-        active_potion: tuple[PotionDefinition, datetime] | None = None,
-        rebirth_count: int = 0,
-        charge_cost: bool = True,
-        bonus: bool = False,
-        price_multiplier: int = 1,
-        force_gold: bool = False,
-        index_bonus: float = 0.0,
-        extra_luck_bonus: float = 0.0,
-    ) -> PetHatchResult | None:
-        await self.database.ensure_user(ctx.author.id)
-        if charge_cost:
-            effective_price = egg.price * max(1, int(price_multiplier))
-            if egg.currency == "gem":
-                balance = await self.database.fetch_gems(ctx.author.id)
-                if balance < effective_price:
-                    await ctx.send(
-                        embed=embeds.error_embed(
-                            f"Tu n'as pas assez de {Emojis.GEM}. Il t'en faut "
-                            f"**{embeds.format_gems(effective_price)}** pour acheter {egg.name}."
-                        )
-                    )
-                    return None
-
-                await self.database.increment_gems(
-                    ctx.author.id,
-                    -effective_price,
-                    transaction_type="pet_purchase",
-                    description=f"Achat de {egg.name}",
-                )
-            else:
-                balance = await self.database.fetch_balance(ctx.author.id)
-                if balance < effective_price:
-                    await ctx.send(
-                        embed=embeds.error_embed(
-                            f"Tu n'as pas assez de {Emojis.COIN}. Il te faut "
-                            f"**{embeds.format_currency(effective_price)}** pour acheter {egg.name}."
-                        )
-                    )
-                    return None
-
-                await self.database.increment_balance(
-                    ctx.author.id,
-                    -effective_price,
-                    transaction_type="pet_purchase",
-                    description=f"Achat de {egg.name}",
-                )
-        effective_luck_bonus = 0.0
-        frenzy_active = is_egg_frenzy_active()
-        if mastery_perks:
-            effective_luck_bonus += max(0.0, float(mastery_perks.luck_bonus))
-        if active_potion:
-            potion_definition, potion_expires_at = active_potion
-            if (
-                potion_definition.effect_type == "egg_luck"
-                and potion_expires_at > self._monotonic_now()
-            ):
-                effective_luck_bonus += max(0.0, float(potion_definition.effect_value))
-        if frenzy_active:
-            effective_luck_bonus += max(0.0, float(EGG_FRENZY_LUCK_BONUS))
-        if rebirth_count > 0:
-            effective_luck_bonus += max(0.0, float(REBIRTH_EGG_LUCK_BONUS))
-        if isinstance(ctx.author, discord.Member) and any(
-            role.id == EGG_LUCK_ROLE_ID for role in ctx.author.roles
-        ):
-            effective_luck_bonus += 0.10
-        effective_luck_bonus += max(0.0, float(extra_luck_bonus))
-        pet_definition: PetDefinition | None = None
-        pet_id: int | None = None
-        last_missing_name = ""
-        for attempt in range(3):
-            try:
-                pet_definition, pet_id = self._choose_pet(
-                    egg, luck_bonus=effective_luck_bonus
-                )
-                break
-            except KeyError as exc:
-                missing_name = exc.args[0] if exc.args else ""
-                last_missing_name = str(missing_name)
-                if attempt == 0:
-                    await self._resync_pets()
-                    continue
-                if attempt == 1 and last_missing_name:
-                    ensured = await self._ensure_pet_registered(last_missing_name)
-                    if ensured:
-                        continue
-                logger.exception(
-                    "Pet introuvable lors de l'ouverture d'œuf",
-                    extra={
-                        "user_id": ctx.author.id,
-                        "egg": egg.slug,
-                        "missing_pet": last_missing_name,
-                    },
-                )
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Impossible d'ouvrir cet œuf pour le moment. "
-                        "Réessaie dans quelques instants."
-                    )
-                )
-                return None
-
-        if pet_definition is None or pet_id is None:
-            logger.error(
-                "Aucun pet sélectionné après plusieurs tentatives",
-                extra={
-                    "user_id": ctx.author.id,
-                    "egg": egg.slug,
-                    "missing_pet": last_missing_name,
-                },
-            )
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Impossible d'ouvrir cet œuf pour le moment. "
-                    "Réessaie dans quelques instants."
-                )
-            )
-            return None
-        is_gold = False
-        is_rainbow = False
-        is_galaxy = False
-        is_shiny = False
-        if pet_definition.is_huge:
-            (
-                is_gold,
-                is_rainbow,
-                is_galaxy,
-                is_shiny,
-            ) = self._roll_huge_variants(index_bonus=index_bonus)
-        else:
-            (
-                is_gold,
-                is_rainbow,
-                is_galaxy,
-                is_shiny,
-            ) = self._roll_standard_pet_variants(
-                mastery_perks=mastery_perks,
-                pet_mastery_perks=pet_mastery_perks,
-                clan_shiny_multiplier=clan_shiny_multiplier,
-                index_bonus=index_bonus,
-            )
-
-        if force_gold and not pet_definition.is_huge:
-            is_rainbow = False
-            is_galaxy = False
-            is_gold = True
-
-        await self.database.add_user_pet(
-            ctx.author.id,
-            pet_id,
-            is_huge=pet_definition.is_huge,
-            is_gold=is_gold,
-            is_rainbow=is_rainbow,
-            is_galaxy=is_galaxy,
-            is_shiny=is_shiny,
-        )
-        await self.database.record_pet_opening(ctx.author.id, pet_id)
-
-        auto_messages: List[str] = []
-        if frenzy_active:
-            auto_messages.append(
-                "🍀 **Egg Frenzy** : tes chances ont profité d'un bonus de "
-                f"{EGG_FRENZY_LUCK_BONUS * 100:.0f}% !"
-            )
-        if pet_mastery_perks is not None and not pet_definition.is_huge:
-            auto_settings: Mapping[str, bool] | None = None
-            if pet_mastery_perks.auto_goldify or pet_mastery_perks.auto_rainbowify:
-                try:
-                    auto_settings = await self.database.get_pet_auto_settings(
-                        ctx.author.id
-                    )
-                except DatabaseError:
-                    logger.exception(
-                        "Impossible de récupérer les préférences auto pet",
-                        extra={"user_id": ctx.author.id},
-                    )
-            auto_messages.extend(
-                await self._apply_auto_upgrades(
-                    ctx,
-                    pet_definition,
-                    pet_id,
-                    pet_mastery_perks,
-                    clan_shiny_multiplier=clan_shiny_multiplier,
-                    auto_settings=auto_settings,
-                    index_bonus=index_bonus,
-                )
-            )
-
-        market_values = await self.database.get_pet_market_values()
-        market_value = self._resolve_market_value(
-            market_values,
-            pet_id=pet_id,
-            is_gold=is_gold,
-            is_rainbow=is_rainbow,
-            is_galaxy=is_galaxy,
-            is_shiny=is_shiny,
-        )
-        if pet_definition.is_huge:
-            best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
-            reference_income = (
-                best_non_huge_income
-                if best_non_huge_income and best_non_huge_income > 0
-                else pet_definition.base_income_per_hour
-            )
-            income_per_hour = self._compute_huge_income(
-                reference_income, pet_name=pet_definition.name, level=1
-            )
-        else:
-            multiplier = self._variant_income_multiplier(
-                is_gold=is_gold,
-                is_rainbow=is_rainbow,
-                is_galaxy=is_galaxy,
-                is_shiny=is_shiny,
-            )
-            income_per_hour = int(pet_definition.base_income_per_hour * multiplier)
-
-        if pet_definition.name == HUGE_PET_NAME:
-            await self._send_huge_shelly_alert(ctx)
-
-        mastery_update = await self.database.add_mastery_experience(
-            ctx.author.id, EGG_MASTERY.slug, 1
-        )
-        await self._handle_mastery_notifications(ctx, mastery_update)
-
-        self._dispatch_grade_progress(ctx, "egg", 1)
-        return PetHatchResult(
-            definition=pet_definition,
-            income_per_hour=income_per_hour,
-            market_value=market_value,
-            is_gold=is_gold,
-            is_rainbow=is_rainbow,
-            is_galaxy=is_galaxy,
-            is_shiny=is_shiny,
-            is_huge=pet_definition.is_huge,
-            auto_messages=auto_messages,
-            bonus=bonus,
-            was_forced_gold=force_gold,
-        )
-
-    async def _display_hatch_results(
-        self,
-        ctx: commands.Context,
-        egg: PetEggDefinition,
-        results: Sequence[PetHatchResult],
-        *,
-        mastery_perks: EggMasteryPerks | None = None,
-        luck_bonus_total: float = 0.0,
-        luck_bonus_lines: Sequence[str] | None = None,
-        channel_override: discord.abc.Messageable | None = None,
-        replay_view: discord.ui.View | None = None,
-    ) -> None:
-        target_channel = channel_override or ctx.channel
-        egg_title = egg.name
-        egg_emoji = self._egg_emoji(ctx)
-        animation_steps = (
-            (egg_title, "L'œuf commence à bouger…"),
-            (egg_title, "Des fissures apparaissent !"),
-            (egg_title, "Ça y est, il est sur le point d'éclore !"),
-        )
-        speed_factor = 1.0
-        if mastery_perks is not None:
-            speed_factor = max(0.5, min(5.0, float(mastery_perks.animation_speed)))
-        step_delay = max(0.2, 1.1 / speed_factor)
-        reveal_delay = max(0.2, 1.2 / speed_factor)
-
-        _egg_image_url = egg.image_url or "https://cdn.discordapp.com/emojis/1542057019664633887.png?size=256"
-        _anim_embed = embeds.pet_animation_embed(
-            title=animation_steps[0][0],
-            description=animation_steps[0][1],
-            emoji=egg_emoji,
-        )
-        _anim_embed.set_image(url=_egg_image_url)
-        message = await target_channel.send(embed=_anim_embed)
-        for title, description in animation_steps[1:]:
-            await asyncio.sleep(step_delay)
-            _anim_embed = embeds.pet_animation_embed(
-                title=title,
-                description=description,
-                emoji=egg_emoji,
-            )
-            _anim_embed.set_image(url=_egg_image_url)
-            await message.edit(embed=_anim_embed)
-
-        await asyncio.sleep(reveal_delay)
-
-        if not results:
-            return
-
-        if len(results) == 1:
-            result = results[0]
-            embed = embeds.pet_reveal_embed(
-                name=result.definition.name,
-                rarity=result.definition.rarity,
-                image_url=result.definition.image_url,
-                income_per_hour=result.income_per_hour,
-                is_huge=result.is_huge,
-                is_gold=result.is_gold,
-                is_galaxy=result.is_galaxy,
-                is_rainbow=result.is_rainbow,
-                is_shiny=result.is_shiny,
-                market_value=int(result.market_value or 0),
-            )
-            footer_parts: list[str] = []
-            if result.was_forced_gold:
-                footer_parts.append("Gold garanti")
-            if result.bonus:
-                footer_parts.append("Bonus gratuit")
-            footer_parts.append(f"Utilise e!equip {result.definition.name} pour l'équiper !")
-            embed.set_footer(text=" • ".join(footer_parts))
-        else:
-            payloads: list[dict[str, object]] = []
-            for entry in results:
-                payloads.append(
-                    {
-                        "name": entry.definition.name,
-                        "rarity": entry.definition.rarity,
-                        "image_url": entry.definition.image_url,
-                        "income_per_hour": entry.income_per_hour,
-                        "is_huge": entry.is_huge,
-                        "is_gold": entry.is_gold,
-                        "is_galaxy": entry.is_galaxy,
-                        "is_rainbow": entry.is_rainbow,
-                        "is_shiny": entry.is_shiny,
-                        "market_value": int(entry.market_value or 0),
-                        "bonus": entry.bonus,
-                        "forced": entry.was_forced_gold,
-                    }
-                )
-            embed = embeds.pet_multi_reveal_embed(
-                egg_name=egg.name,
-                pets=payloads,
-            )
-            names = list(dict.fromkeys(entry.definition.name for entry in results))
-            if names:
-                if len(names) == 1:
-                    footer_text = f"Utilise e!equip {names[0]} pour l'équiper !"
-                elif len(names) == 2:
-                    footer_text = f"Utilise e!equip {names[0]} ou {names[1]} pour les équiper !"
-                else:
-                    footer_text = (
-                        "Utilise e!equip "
-                        + ", ".join(names[:-1])
-                        + f" ou {names[-1]} pour les équiper !"
-                    )
-                embed.set_footer(text=footer_text)
-
-        if luck_bonus_lines is not None:
-            if luck_bonus_lines:
-                bonus_details = [f"Bonus total : **+{luck_bonus_total * 100:.0f}%**"]
-                bonus_details.extend(f"• {line}" for line in luck_bonus_lines)
-            else:
-                bonus_details = [
-                    f"Bonus total : **+{luck_bonus_total * 100:.0f}%**",
-                    "Aucun bonus actif.",
-                ]
-            embed.add_field(
-                name="🍀 Bonus de chance",
-                value="\n".join(bonus_details),
-                inline=False,
-            )
-
-        embed.set_author(
-            name=ctx.author.display_name,
-            icon_url=ctx.author.display_avatar.url,
-        )
-        replay_view = replay_view or HatchReplayView(ctx, self, egg.slug)
-        replay_view.message = message
-        await message.edit(embed=embed, view=replay_view)
-
-    async def hatch_external_egg(
-        self,
-        ctx: commands.Context,
-        egg: PetEggDefinition,
-        *,
-        replay_view: discord.ui.View | None = None,
-        channel_override: discord.abc.Messageable | None = None,
-        extra_luck_bonus: float = 0.0,
-        extra_luck_label: str | None = None,
-    ) -> bool:
-        """Ouvre un œuf déjà payé par un système externe avec le pipeline normal."""
-        user_id = ctx.author.id
-        egg_progress = await self.database.get_mastery_progress(user_id, EGG_MASTERY.slug)
-        pet_progress = await self.database.get_mastery_progress(user_id, PET_MASTERY.slug)
-        egg_perks = _compute_egg_mastery_perks(int(egg_progress.get("level", 1)))
-        pet_perks = _compute_pet_mastery_perks(int(pet_progress.get("level", 1)))
-        clan_row = await self.database.get_user_clan(user_id)
-        clan_shiny_multiplier = 1.0
-        if clan_row is not None:
-            clan_shiny_multiplier = max(
-                1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
-            )
-        _, index_bonus = await self._fetch_index_shiny_bonus(user_id)
-        active_potion = await self.database.get_active_potion(user_id)
-        rebirth_count = await self.database.get_rebirth_count(user_id)
-        frenzy_active = is_egg_frenzy_active()
-        has_luck_role = isinstance(ctx.author, discord.Member) and any(
-            role.id == EGG_LUCK_ROLE_ID for role in ctx.author.roles
-        )
-        luck_bonus_total, luck_bonus_lines = self._build_egg_luck_breakdown(
-            mastery_perks=egg_perks, active_potion=active_potion,
-            frenzy_active=frenzy_active, rebirth_count=rebirth_count,
-            has_luck_role=has_luck_role,
-        )
-        extra_luck_bonus = max(0.0, float(extra_luck_bonus))
-        if extra_luck_bonus:
-            luck_bonus_total += extra_luck_bonus
-            luck_bonus_lines.append(
-                f"{extra_luck_label or 'Bonus spécial'} : +{extra_luck_bonus * 100:.1f}%"
-            )
-        hatch_kwargs = {
-            "mastery_perks": egg_perks,
-            "pet_mastery_perks": pet_perks,
-            "clan_shiny_multiplier": clan_shiny_multiplier,
-            "active_potion": active_potion,
-            "rebirth_count": rebirth_count,
-            "charge_cost": False,
-            "index_bonus": index_bonus,
-            "extra_luck_bonus": extra_luck_bonus,
-        }
-        primary = await self._hatch_pet(ctx, egg, **hatch_kwargs)
-        if primary is None:
-            return False
-        results = [primary]
-        bonus_eggs = 0
-        if egg_perks.triple_chance > 0 and random.random() < egg_perks.triple_chance:
-            bonus_eggs = 2
-        elif egg_perks.double_chance > 0 and random.random() < egg_perks.double_chance:
-            bonus_eggs = 1
-        for _ in range(bonus_eggs):
-            result = await self._hatch_pet(ctx, egg, bonus=True, **hatch_kwargs)
-            if result is not None:
-                results.append(result)
-        await self._display_hatch_results(
-            ctx, egg, results, mastery_perks=egg_perks,
-            luck_bonus_total=luck_bonus_total, luck_bonus_lines=luck_bonus_lines,
-            channel_override=channel_override, replay_view=replay_view,
-        )
-        target_channel = channel_override or ctx.channel
-        for result in results:
-            for auto_message in result.auto_messages:
-                await target_channel.send(auto_message)
-        return True
-
-    async def _open_pet_egg(
-        self,
-        ctx: commands.Context,
-        egg: PetEggDefinition,
-        *,
-        mastery_perks: EggMasteryPerks | None = None,
-        pet_mastery_perks: PetMasteryPerks | None = None,
-        clan_shiny_multiplier: float = 1.0,
-        active_potion: tuple[PotionDefinition, datetime] | None = None,
-        charge_cost: bool = True,
-        bonus: bool = False,
-        index_bonus: float | None = None,
-    ) -> bool:
-        """Compatibilité héritée pour les tests existants.
-
-        La nouvelle implémentation découpe l'éclosion en deux méthodes
-        (`_hatch_pet` et `_display_hatch_results`). Ce wrapper conserve
-        l'ancienne signature pour éviter d'adapter tous les appelants
-        historiques, notamment dans la suite de tests.
-        """
-
-        if index_bonus is None:
-            _, index_bonus = await self._fetch_index_shiny_bonus(ctx.author.id)
-
-        result = await self._hatch_pet(
-            ctx,
-            egg,
-            mastery_perks=mastery_perks,
-            pet_mastery_perks=pet_mastery_perks,
-            clan_shiny_multiplier=clan_shiny_multiplier,
-            active_potion=active_potion,
-            charge_cost=charge_cost,
-            bonus=bonus,
-            index_bonus=index_bonus,
-        )
-        if result is None:
-            return False
-
-        await self._display_hatch_results(
-            ctx,
-            egg,
-            [result],
-            mastery_perks=mastery_perks,
-        )
-        return True
-
-    def _sort_pets_for_display(
-        self,
-        records: Iterable[Mapping[str, Any]],
-        market_values: Mapping[tuple[int, str], int] | None = None,
-    ) -> List[Dict[str, Any]]:
-        record_list = list(records)
-        best_non_huge_income = 0
-        for record in record_list:
-            if not bool(record.get("is_huge")):
-                base_income = int(record.get("base_income_per_hour", 0))
-                multiplier = self._variant_income_multiplier(
-                    is_gold=bool(record.get("is_gold")),
-                    is_rainbow=bool(record.get("is_rainbow")),
-                    is_galaxy=bool(record.get("is_galaxy")),
-                    is_shiny=bool(record.get("is_shiny")),
-                )
-                effective_income = int(base_income * multiplier)
-                if effective_income > best_non_huge_income:
-                    best_non_huge_income = effective_income
-
-        converted = []
-        for record in record_list:
-            data = self._convert_record(record, best_non_huge_income=best_non_huge_income)
-            data["income"] = int(data.get("base_income_per_hour", 0))
-            pet_identifier = int(data.get("pet_id", 0))
-            if market_values:
-                data["market_value"] = self._resolve_market_value(
-                    market_values,
-                    pet_id=pet_identifier,
-                    is_gold=bool(data.get("is_gold")),
-                    is_rainbow=bool(data.get("is_rainbow")),
-                    is_galaxy=bool(data.get("is_galaxy")),
-                    is_shiny=bool(data.get("is_shiny")),
-                )
-            data.pop("_reference_income", None)
-            converted.append(data)
-
-        converted.sort(
-            key=lambda pet: (
-                -PET_RARITY_ORDER.get(str(pet.get("rarity", "")), -1),
-                -int(pet.get("income", 0)),
-                str(pet.get("name", "")),
-            )
-        )
-        return converted
-
-    @staticmethod
-    def _group_inventory_pets(
-        pets: Sequence[Mapping[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        grouped: OrderedDict[tuple[object, ...], Dict[str, Any]] = OrderedDict()
-        for pet in pets:
-            display = PetDisplay.from_mapping(pet)
-            key: tuple[object, ...] = display.collection_key()
-            if display.is_huge:
-                key = (key, display.identifier or id(pet))
-            entry = grouped.get(key)
-            if entry is None:
-                entry = display.to_mutable_mapping()
-                entry["identifier"] = display.identifier
-                entry["quantity"] = 1
-                if display.is_huge and display.identifier:
-                    entry["identifiers"] = [int(display.identifier)]
-                grouped[key] = entry
-                continue
-
-            entry["quantity"] = int(entry.get("quantity", 1)) + 1
-            if display.is_huge and display.identifier:
-                identifiers = entry.setdefault("identifiers", [])
-                if isinstance(identifiers, list):
-                    identifiers.append(int(display.identifier))
-
-        return list(grouped.values())
-
-
-    # ------------------------------------------------------------------
-    # Commandes
-    # ------------------------------------------------------------------
-    @commands.group(name="buy", invoke_without_command=True)
-    async def buy(self, ctx: commands.Context, *, item: str | None = None) -> None:
-        if item:
-            egg_definition = self._resolve_egg(item)
-            if egg_definition is not None:
-                await ctx.invoke(self.openbox, egg=item)
-                return
-        await ctx.send(
-            embed=embeds.info_embed(
-                "Utilise `e!openbox [œuf]` pour ouvrir un œuf ou `e!eggs` pour voir les zones disponibles."
-            )
-        )
-
-    @buy.command(name="egg")
-    async def buy_egg(self, ctx: commands.Context, *, egg: str | None = None) -> None:
-        await ctx.invoke(self.openbox, egg=egg)
-
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    @commands.command(name="openbox", aliases=("buyegg", "openegg", "egg"))
-    async def openbox(self, ctx: commands.Context, egg: str | None = None) -> None:
-        # Le verrou par utilisateur est désormais pris à l'intérieur de
-        # _openbox_impl, uniquement autour de l'ouverture effective (après
-        # confirmation), pas autour de l'affichage/attente de l'aperçu.
-        await self._openbox_impl(ctx, egg)
-
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    @commands.command(name="flower")
-    async def flower(self, ctx: commands.Context) -> None:
-        await self._openbox_impl(ctx, "flower")
-
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    @commands.command(name="spectral")
-    async def spectral(self, ctx: commands.Context) -> None:
-        await self._openbox_impl(ctx, "spectral")
-
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    @commands.command(name="maudit")
-    async def maudit(self, ctx: commands.Context) -> None:
-        await self._openbox_impl(ctx, "maudit")
-
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    @commands.command(name="robot")
-    async def robot(self, ctx: commands.Context) -> None:
-        await self._openbox_impl(ctx, "metallique")
-
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    @commands.command(name="animal", aliases=("animalerie",))
-    async def animal(self, ctx: commands.Context) -> None:
-        await self._openbox_impl(ctx, "vivant")
-
-    def _build_egg_preview_embed(
-        self,
-        egg: PetEggDefinition,
-        *,
-        discovered_pet_ids: Set[int],
-    ) -> discord.Embed:
-        """Construit l'embed de prévisualisation d'un œuf avec les pets et leurs chances."""
-        if egg.currency == "gem":
-            price_text = embeds.format_gems(egg.price)
-        else:
-            price_text = embeds.format_currency(egg.price)
-
-        total_weight = sum(max(0.0, float(p.drop_rate)) for p in egg.pets)
-
-        lines: List[str] = []
-        for pet in egg.pets:
-            pet_id = self._pet_ids.get(pet.name)
-            discovered = pet_id is not None and pet_id in discovered_pet_ids
-            rate = max(0.0, float(pet.drop_rate))
-            pct = (rate / total_weight * 100) if total_weight > 0 else 0.0
-
-            if discovered:
-                emoji = pet_emoji(pet.name)
-                emoji_prefix = f"{emoji} " if emoji else ""
-                pct_text = f"{pct:.2f}%"
-                lines.append(f"{emoji_prefix}**{pet.name}** — {pct_text}")
-            else:
-                lines.append(f"⬛ **???** — ??")
-
-        description = f"# 🥚 {egg.name}\n## {price_text}\n\n" + "\n".join(lines) if lines else f"# 🥚 {egg.name}\n## {price_text}"
-        embed = discord.Embed(
-            title="",
-            description=description,
-            color=embeds.Colors.INFO,
-        )
-        embed.set_thumbnail(url="https://cdn.discordapp.com/emojis/1542057019664633887.png?size=256")
-        embed.set_footer(text="Les pets non découverts sont masqués. Ouvre l'œuf pour les révéler !")
-        return embed
-
-    async def _openbox_impl(
-        self,
-        ctx: commands.Context,
-        egg: str | None,
-        *,
-        channel_override: discord.abc.Messageable | None = None,
-    ) -> None:
-        log_context: Dict[str, Any] = {
-            "user_id": ctx.author.id,
-            "guild_id": getattr(ctx.guild, "id", None),
-            "channel_id": getattr(
-                channel_override or getattr(ctx, "channel", None), "id", None
-            ),
-            "raw_request": egg,
-            "stage": "start",
-        }
-        target_channel: discord.abc.Messageable = channel_override or ctx.channel
-
-        try:
-            log_context["stage"] = "normalize_request"
-            raw_request = (egg or "").strip()
-            double_request = False
-            force_gold_request = False
-            if raw_request:
-                tokens = raw_request.split()
-                while tokens:
-                    token = tokens[-1].lower()
-                    if token in {"x2", "2", "double"}:
-                        double_request = True
-                        tokens.pop()
-                        continue
-                    if token in {"gold", "golden", "garanti", "garantie", "guaranteed", "100x", "x100"}:
-                        force_gold_request = True
-                        tokens.pop()
-                        continue
-                    break
-                raw_request = " ".join(tokens).strip()
-
-            log_context["double_request"] = double_request
-            log_context["force_gold_initial"] = force_gold_request
-
-            normalized_request = raw_request or None
-            log_context["normalized_request"] = normalized_request
-
-            if normalized_request and normalized_request.lower() in {"list", "liste", "eggs", "oeufs"}:
-                log_context["stage"] = "send_overview"
-                await self._send_egg_overview(ctx)
-                return
-
-            log_context["stage"] = "resolve_egg"
-            egg_definition = self._resolve_egg(normalized_request)
-            if egg_definition is None:
-                if normalized_request:
-                    await target_channel.send(
-                        embed=embeds.error_embed("Œuf introuvable. Voici les options disponibles :")
-                    )
-                    await self._send_egg_overview(ctx)
-                else:
-                    await target_channel.send(
-                        embed=embeds.error_embed("Aucun œuf n'est disponible pour le moment.")
-                    )
-                return
-
-            log_context["resolved_egg"] = egg_definition.slug
-
-            log_context["stage"] = "resolve_zone"
-            zone = self._get_zone_for_egg(egg_definition)
-            if zone is None:
-                await target_channel.send(
-                    embed=embeds.error_embed("La zone associée à cet œuf est introuvable.")
-                )
-                return
-
-            log_context["zone"] = zone.slug
-
-            # Afficher le preview immédiatement sans attendre les checks DB
-            if channel_override is None:
-                log_context["stage"] = "egg_preview"
-                preview_embed = self._build_egg_preview_embed(
-                    egg_definition, discovered_pet_ids=set()
-                )
-                preview_view = EggPreviewView(ctx, self, egg_definition.slug)
-                preview_msg = await target_channel.send(embed=preview_embed, view=preview_view)
-                preview_view.message = preview_msg
-
-                async def _update_preview_with_discovered() -> None:
-                    try:
-                        discovered_ids = await self.database.get_discovered_pet_ids(ctx.author.id)
-                        updated_embed = self._build_egg_preview_embed(
-                            egg_definition, discovered_pet_ids=discovered_ids
-                        )
-                        await preview_msg.edit(embed=updated_embed)
-                    except Exception:
-                        pass
-
-                asyncio.ensure_future(_update_preview_with_discovered())
-                timed_out = await preview_view.wait()
-                if timed_out or not preview_view.confirmed:
-                    return
-                if preview_view.auto:
-                    await self._start_auto_hatch(ctx, egg_definition.slug, preview_msg)
-                    return
-
-            # Verrou par utilisateur : à partir d'ici on manipule le solde
-            # et on octroie des pets, donc on sérialise les ouvertures d'un
-            # même utilisateur pour éviter tout double-dépense. Le verrou ne
-            # couvre plus l'affichage de l'aperçu ni l'attente du clic sur les
-            # boutons (Ouvrir/AUTO), qui pouvait bloquer pendant jusqu'à 120s
-            # (durée du timeout de la vue) toute nouvelle commande de cet
-            # utilisateur avant même d'afficher son propre aperçu.
-            lock = self._get_open_lock(ctx.author.id)
-            async with lock:
-                log_context["stage"] = "ensure_zone_access"
-                if not await self._ensure_zone_access(ctx, zone):
-                    return
-
-                # Ces 6 lectures sont indépendantes les unes des autres : on les
-                # envoie en parallèle plutôt qu'en série pour éviter de cumuler
-                # 6x la latence réseau vers la base de données à chaque ouverture.
-                log_context["stage"] = "load_parallel_context"
-                (
-                    mastery_progress,
-                    pet_mastery_progress,
-                    clan_row,
-                    index_unique_count,
-                    rebirth_count,
-                    active_potion,
-                ) = await asyncio.gather(
-                    self.database.get_mastery_progress(ctx.author.id, EGG_MASTERY.slug),
-                    self.database.get_mastery_progress(ctx.author.id, PET_MASTERY.slug),
-                    self.database.get_user_clan(ctx.author.id),
-                    self.database.get_unique_pet_count(ctx.author.id),
-                    self.database.get_rebirth_count(ctx.author.id),
-                    self.database.get_active_potion(ctx.author.id),
-                )
-
-                mastery_level = int(mastery_progress.get("level", 1))
-                log_context["egg_mastery_level"] = mastery_level
-                egg_perks = _compute_egg_mastery_perks(mastery_level)
-
-                pet_mastery_level = int(pet_mastery_progress.get("level", 1))
-                log_context["pet_mastery_level"] = pet_mastery_level
-                pet_perks = _compute_pet_mastery_perks(pet_mastery_level)
-
-                clan_shiny_multiplier = 1.0
-                if clan_row is not None:
-                    clan_shiny_multiplier = max(
-                        1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
-                    )
-                log_context["clan_shiny_multiplier"] = clan_shiny_multiplier
-
-                index_bonus_ratio = self._index_bonus_from_count(index_unique_count)
-                log_context["index_unique"] = index_unique_count
-                log_context["rebirth_count"] = rebirth_count
-                if active_potion is not None:
-                    potion_definition, potion_expires_at = active_potion
-                    log_context["active_potion"] = getattr(potion_definition, "slug", None)
-                    log_context["potion_expires_at"] = getattr(
-                        potion_expires_at, "isoformat", lambda: None
-                    )()
-                else:
-                    log_context["active_potion"] = None
-
-                if double_request:
-                    log_context["stage"] = "inform_double_request"
-                    if egg_perks.double_chance > 0:
-                        await target_channel.send(
-                            embed=embeds.info_embed(
-                                "Le mode double est désormais automatique : tu as "
-                                f"{egg_perks.double_chance * 100:.0f}% de chances d'obtenir un œuf bonus gratuitement à chaque ouverture."
-                            )
-                        )
-                    else:
-                        await target_channel.send(
-                            embed=embeds.warning_embed(
-                                "Atteins le niveau 5 de Maîtrise des œufs pour débloquer 5% de chance d'obtenir un deuxième œuf gratuit."
-                            )
-                        )
-
-                price_multiplier = 1
-                if force_gold_request:
-                    log_context["stage"] = "handle_force_gold"
-                    if rebirth_count <= 0:
-                        await target_channel.send(
-                            embed=embeds.warning_embed(
-                                "Le gold garanti se débloque après ton premier rebirth."
-                            )
-                        )
-                        force_gold_request = False
-                    else:
-                        price_multiplier = 100
-                        price_text = (
-                            embeds.format_gems(egg_definition.price * price_multiplier)
-                            if egg_definition.currency == "gem"
-                            else embeds.format_currency(egg_definition.price * price_multiplier)
-                        )
-                        await target_channel.send(
-                            embed=embeds.info_embed(
-                                f"Tu choisis de payer **{price_text}** pour garantir un pet or.",
-                                title="Gold garanti activé",
-                            )
-                        )
-
-                log_context["price_multiplier"] = price_multiplier
-                log_context["force_gold_final"] = force_gold_request
-
-                frenzy_active = is_egg_frenzy_active()
-                has_luck_role = (
-                    isinstance(ctx.author, discord.Member)
-                    and any(role.id == EGG_LUCK_ROLE_ID for role in ctx.author.roles)
-                )
-                luck_bonus_total, luck_bonus_lines = self._build_egg_luck_breakdown(
-                    mastery_perks=egg_perks,
-                    active_potion=active_potion,
-                    frenzy_active=frenzy_active,
-                    rebirth_count=rebirth_count,
-                    has_luck_role=has_luck_role,
-                )
-
-                log_context["stage"] = "hatch_primary"
-                primary_result = await self._hatch_pet(
-                    ctx,
-                    egg_definition,
-                    pet_mastery_perks=pet_perks,
-                    clan_shiny_multiplier=clan_shiny_multiplier,
-                    active_potion=active_potion,
-                    mastery_perks=egg_perks,
-                    rebirth_count=rebirth_count,
-                    price_multiplier=price_multiplier,
-                    force_gold=force_gold_request,
-                    index_bonus=index_bonus_ratio,
-                )
-                if primary_result is None:
-                    return
-
-                results: List[PetHatchResult] = [primary_result]
-
-                log_context["stage"] = "compute_bonus_eggs"
-                bonus_eggs = 0
-                triple_triggered = False
-                if egg_perks.triple_chance > 0 and random.random() < egg_perks.triple_chance:
-                    bonus_eggs = 2
-                    triple_triggered = True
-                elif egg_perks.double_chance > 0 and random.random() < egg_perks.double_chance:
-                    bonus_eggs = 1
-
-                log_context["bonus_eggs"] = bonus_eggs
-                log_context["triple_triggered"] = triple_triggered
-
-                if bonus_eggs:
-                    egg_emoji = self._egg_emoji(ctx)
-                    if triple_triggered:
-                        await target_channel.send(
-                            f"{egg_emoji} 🎉 **Chance triple !** Tu ouvres deux œufs bonus gratuitement !"
-                        )
-                    else:
-                        await target_channel.send(
-                            f"{egg_emoji} 🎉 **Chance !** Tu ouvres un œuf bonus gratuitement !"
-                        )
-                    for bonus_index in range(bonus_eggs):
-                        log_context["stage"] = "hatch_bonus"
-                        log_context["bonus_iteration"] = bonus_index + 1
-                        bonus_result = await self._hatch_pet(
-                            ctx,
-                            egg_definition,
-                            pet_mastery_perks=pet_perks,
-                            clan_shiny_multiplier=clan_shiny_multiplier,
-                            active_potion=active_potion,
-                            mastery_perks=egg_perks,
-                            rebirth_count=rebirth_count,
-                            charge_cost=False,
-                            bonus=True,
-                            index_bonus=index_bonus_ratio,
-                        )
-                        if bonus_result is not None:
-                            results.append(bonus_result)
-                    log_context.pop("bonus_iteration", None)
-
-                log_context["stage"] = "display_results"
-                await self._display_hatch_results(
-                    ctx,
-                    egg_definition,
-                    results,
-                    mastery_perks=egg_perks,
-                    luck_bonus_total=luck_bonus_total,
-                    luck_bonus_lines=luck_bonus_lines,
-                    channel_override=target_channel,
-                )
-
-                log_context["stage"] = "send_auto_messages"
-                for result in results:
-                    for auto_message in result.auto_messages:
-                        await target_channel.send(auto_message)
-
-                log_context["stage"] = "completed"
-        except asyncio.CancelledError:
-            raise
-        except commands.CommandError:
-            raise
-        except Exception as exc:  # pragma: no cover - diagnostic logging
-            error_reference = (
-                f"egg-{ctx.author.id}-{int(datetime.now(timezone.utc).timestamp())}"
-            )
-            log_context["error_reference"] = error_reference
-            log_context["exception_type"] = type(exc).__name__
-            logger.exception(
-                "Erreur inattendue lors de l'ouverture d'œuf",
-                extra=log_context,
-            )
-            try:
-                await target_channel.send(
-                    embed=embeds.error_embed(
-                        "Une erreur inattendue est survenue pendant l'ouverture de l'œuf. "
-                        f"Merci de réessayer plus tard. (code : `{error_reference}`)"
-                    )
-                )
-            except Exception:  # pragma: no cover - fallback logging
-                logger.error(
-                    "Impossible d'envoyer le message d'erreur à l'utilisateur",
-                    exc_info=True,
-                    extra=log_context,
-                )
-
-    async def _start_auto_hatch(
-        self,
-        ctx: commands.Context,
-        egg_slug: str,
-        parent_message: discord.Message,
-    ) -> None:
-        if ctx.author.id in self._auto_hatch_tasks:
-            await ctx.send(
-                embed=embeds.warning_embed(
-                    "Une ouverture automatique est déjà en cours."
-                )
-            )
-            return
-
-        channel = parent_message.channel
-        is_dm = isinstance(channel, discord.DMChannel)
-        if not isinstance(channel, (discord.TextChannel, discord.Thread, discord.DMChannel)):
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Le mode AUTO n'est disponible que dans un salon textuel ou en message privé."
-                )
-            )
-            return
-
-        if is_dm:
-            # Pas de fils possibles en message privé : on ouvre directement dans le DM.
-            thread = channel
-        else:
-            try:
-                thread = await parent_message.create_thread(
-                    name=f"Auto œufs — {ctx.author.display_name}",
-                    auto_archive_duration=60,
-                )
-            except discord.HTTPException:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Impossible de créer un fil pour l'ouverture automatique."
-                    )
-                )
-                return
-
-        egg_definition = self._resolve_egg(egg_slug)
-        if egg_definition is None:
-            await thread.send(
-                embed=embeds.error_embed(
-                    "Cet œuf n'est plus disponible pour l'ouverture automatique."
-                )
-            )
-            if not is_dm:
-                with contextlib.suppress(discord.HTTPException):
-                    await thread.delete()
-            return
-
-        stop_event = asyncio.Event()
-
-        def _message_check(message: discord.Message) -> bool:
-            return (
-                message.author.id == ctx.author.id
-                and not message.author.bot
-                and message.content is not None
-            )
-
-        async def _wait_for_user_message() -> None:
-            try:
-                await ctx.bot.wait_for("message", check=_message_check)
-            except asyncio.CancelledError:
-                return
-            stop_event.set()
-
-        wait_task = asyncio.create_task(_wait_for_user_message())
-
-        async def _runner() -> None:
-            await thread.send(
-                embed=embeds.info_embed(
-                    "Ouverture automatique activée. Envoie n'importe quel message pour arrêter.",
-                    title="AUTO en cours",
-                )
-            )
-            try:
-                while not stop_event.is_set():
-                    if egg_definition.currency == "gem":
-                        balance = await self.database.fetch_gems(ctx.author.id)
-                        if balance < egg_definition.price:
-                            await thread.send(
-                                embed=embeds.warning_embed(
-                                    f"Tu n'as plus assez de {Emojis.GEM} pour continuer l'ouverture automatique."
-                                )
-                            )
-                            stop_event.set()
-                            break
-                    else:
-                        balance = await self.database.fetch_balance(ctx.author.id)
-                        if balance < egg_definition.price:
-                            await thread.send(
-                                embed=embeds.warning_embed(
-                                    f"Tu n'as plus assez de {Emojis.COIN} pour continuer l'ouverture automatique."
-                                )
-                            )
-                            stop_event.set()
-                            break
-                    # Le verrou par utilisateur est désormais pris à l'intérieur
-                    # de _openbox_impl : ne pas le reprendre ici, `asyncio.Lock`
-                    # n'étant pas réentrant (double-acquisition = deadlock).
-                    await self._openbox_impl(
-                        ctx, egg_slug, channel_override=thread
-                    )
-
-                    try:
-                        await asyncio.wait_for(wait_task, timeout=1.5)
-                    except asyncio.TimeoutError:
-                        continue
-            finally:
-                stop_event.set()
-                if not wait_task.done():
-                    wait_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await wait_task
-                with contextlib.suppress(discord.HTTPException):
-                    if is_dm:
-                        await thread.send(
-                            embed=embeds.warning_embed(
-                                "Ouverture automatique arrêtée."
-                            )
-                        )
-                    else:
-                        await thread.send(
-                            embed=embeds.warning_embed(
-                                "Ouverture automatique arrêtée. Le fil va être supprimé."
-                            )
-                        )
-                        await thread.delete()
-
-        task = asyncio.create_task(_runner())
-        self._auto_hatch_tasks[ctx.author.id] = task
-
-        def _cleanup(_task: asyncio.Task) -> None:
-            self._auto_hatch_tasks.pop(ctx.author.id, None)
-
-        task.add_done_callback(_cleanup)
-
-    @commands.command(name="stop")
-    async def stop_auto_hatch(self, ctx: commands.Context) -> None:
-        task = self._auto_hatch_tasks.get(ctx.author.id)
-        if task is None or task.done():
-            await ctx.send(
-                embed=embeds.warning_embed(
-                    "Aucune ouverture automatique en cours."
-                )
-            )
-            return
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-        await ctx.send(
-            embed=embeds.success_embed(
-                "Ouverture automatique arrêtée.",
-                title="AUTO arrêté",
-            )
-        )
-
-    @commands.group(
-        name="petauto",
-        invoke_without_command=True,
-        aliases=("autopet", "petsettings"),
+    if level < 1:
+        level = 1
+    log_factor = 1.0 + math.log1p(level)
+    required = math.ceil(
+        HUGE_PET_LEVEL_BASE_XP * (level**HUGE_PET_LEVEL_EXPONENT) * log_factor
     )
-    async def pet_auto_settings(self, ctx: commands.Context) -> None:
-        settings = await self.database.get_pet_auto_settings(ctx.author.id)
-        lines = [
-            f"Auto goldify : {'✅ activé' if settings['auto_goldify'] else '❌ désactivé'}",
-            f"Auto rainbow : {'✅ activé' if settings['auto_rainbowify'] else '❌ désactivé'}",
-        ]
-        embed = embeds.info_embed(
-            "\n".join(lines),
-            title="Préférences d'amélioration automatique",
-        )
-        embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
-        embed.set_footer(
-            text="Utilise e!petauto gold [on/off] ou e!petauto rainbow [on/off] pour modifier ces options."
-        )
-        await ctx.send(embed=embed)
-
-    @pet_auto_settings.command(name="gold", aliases=("goldify", "or"))
-    async def pet_auto_gold(self, ctx: commands.Context, state: str | None = None) -> None:
-        value = self._parse_toggle_argument(state)
-        if value is None:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Précise `on` ou `off` pour activer ou désactiver l'auto goldify."
-                )
-            )
-            return
-        settings = await self.database.set_pet_auto_settings(
-            ctx.author.id, auto_goldify=value
-        )
-        status = "activé" if settings["auto_goldify"] else "désactivé"
-        await ctx.send(
-            embed=embeds.success_embed(
-                f"Auto goldify {status}.", title="Préférence mise à jour"
-            )
-        )
-
-    @pet_auto_settings.command(name="rainbow", aliases=("rainbowify", "rb"))
-    async def pet_auto_rainbow(
-        self, ctx: commands.Context, state: str | None = None
-    ) -> None:
-        value = self._parse_toggle_argument(state)
-        if value is None:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Précise `on` ou `off` pour activer ou désactiver l'auto rainbow."
-                )
-            )
-            return
-        settings = await self.database.set_pet_auto_settings(
-            ctx.author.id, auto_rainbowify=value
-        )
-        status = "activé" if settings["auto_rainbowify"] else "désactivé"
-        await ctx.send(
-            embed=embeds.success_embed(
-                f"Auto rainbow {status}.", title="Préférence mise à jour"
-            )
-        )
-
-    @commands.command(name="eggs", aliases=("zones", "zone"))
-    async def eggs(self, ctx: commands.Context) -> None:
-        await self._send_egg_overview(ctx)
-
-    @commands.command(name="eggindex", aliases=("eggdex", "oeufsdex", "oeufindex"))
-    async def egg_index(self, ctx: commands.Context) -> None:
-        embed = embeds.egg_index_embed(eggs=PET_EGG_DEFINITIONS)
-        embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
-
-        if self._embed_length(embed) > 5_500:
-            try:
-                dm = await ctx.author.create_dm()
-                await dm.send(embed=embed)
-            except (discord.Forbidden, discord.HTTPException):
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Impossible de t'envoyer l'index des œufs en message privé. Active tes MP et réessaie."
-                    )
-                )
-                return
-
-            await ctx.send(
-                embed=embeds.info_embed(
-                    "L'index complet est un peu long, je te l'ai envoyé en message privé.",
-                    title="Index des œufs",
-                )
-            )
-            return
-
-        await ctx.send(embed=embed)
-
-    @commands.command(
-        name="mastery",
-        aliases=("masteries", "maitrise", "maitrises"),
-    )
-    async def mastery_overview(self, ctx: commands.Context) -> None:
-        definitions = self._mastery_definitions
-        try:
-            progress_rows = await asyncio.gather(
-                *[
-                    self.database.get_mastery_progress(ctx.author.id, mastery.slug)
-                    for mastery in definitions
-                ]
-            )
-        except Exception:
-            logger.exception(
-                "Impossible de récupérer la progression des maîtrises",
-                extra={"user_id": ctx.author.id},
-            )
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Impossible de récupérer tes maîtrises pour le moment. "
-                    "Réessaie plus tard."
-                )
-            )
-            return
-
-        progress_map = {
-            mastery.slug: data for mastery, data in zip(definitions, progress_rows)
-        }
-        embed = embeds.mastery_overview_embed(
-            member=ctx.author,
-            masteries=definitions,
-            progress=progress_map,
-        )
-        view = MasteryOverviewView(ctx, definitions, progress_map)
-        message = await ctx.send(embed=embed, view=view)
-        view.message = message
-
-    @commands.command(name="pets", aliases=("collection",))
-    async def pets_command(self, ctx: commands.Context) -> None:
-        await self._ack_heavy_command(ctx)
-        loading_message: discord.Message | None = None
-        with contextlib.suppress(discord.HTTPException):
-            loading_message = await ctx.send("Chargement…")
-        cached = self._pets_cache.get(ctx.author.id)
-        if cached is not None:
-            records, market_values = cached
-        else:
-            records, market_values = await asyncio.gather(
-                self.database.get_user_pets(ctx.author.id),
-                self.database.get_pet_market_values(),
-            )
-            self._pets_cache.set(ctx.author.id, (records, market_values))
-            if DEBUG_CACHE:
-                logger.debug("Cache pets mis à jour", extra={"user_id": ctx.author.id})
-        pets = self._sort_pets_for_display(records, market_values)
-        grouped_pets = self._group_inventory_pets(pets)
-        active_income = sum(int(pet["income"]) for pet in pets if pet.get("is_active"))
-        per_page = PETS_PAGE_SIZE
-        total_count = len(pets)
-        page_count = max(1, math.ceil(len(grouped_pets) / per_page))
-        if page_count <= 1:
-            embed = embeds.pet_collection_embed(
-                member=ctx.author,
-                pets=grouped_pets,
-                total_count=total_count,
-                total_income_per_hour=active_income,
-                page=1,
-                page_count=1,
-                huge_descriptions=HUGE_PET_SOURCES,
-                group_duplicates=False,
-            )
-            single_view = PetsSinglePageView(ctx=ctx)
-            if loading_message is not None:
-                await loading_message.edit(content=None, embed=embed, view=single_view)
-                single_view.message = loading_message
-            else:
-                message = await ctx.send(embed=embed, view=single_view)
-                single_view.message = message
-        else:
-            view = PetInventoryView(
-                ctx=ctx,
-                pets=grouped_pets,
-                total_income=active_income,
-                total_count=total_count,
-                per_page=per_page,
-                huge_descriptions=HUGE_PET_SOURCES,
-            )
-            embed = view.build_embed()
-            if loading_message is not None:
-                await loading_message.edit(content=None, embed=embed, view=view)
-                view.message = loading_message
-            else:
-                message = await ctx.send(embed=embed, view=view)
-                view.message = message
-
-    @commands.command(name="sellpet", aliases=("sellpets", "vendrepet", "vendrepets"))
-    async def sell_pet(self, ctx: commands.Context, user_pet_id: int | None = None) -> None:
-        if user_pet_id is None:
-            await ctx.send(
-                embed=embeds.info_embed(
-                    f"Utilise `e!sellpet <id>` pour revendre un pet contre {Emojis.GEM}.",
-                )
-            )
-            return
-
-        record = await self.database.get_user_pet(ctx.author.id, user_pet_id)
-        if record is None:
-            await ctx.send(embed=embeds.error_embed("Pet introuvable."))
-            return
-
-        if bool(record.get("is_active")):
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Ce pet est actuellement équipé. Retire-le avant de le revendre.",
-                )
-            )
-            return
-        if bool(record.get("on_market")):
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Ce pet est en vente sur la plaza. Retire-le avant de le revendre.",
-                )
-            )
-            return
-
-        market_values = await self.database.get_pet_market_values()
-        price = self._resolve_market_value(
-            market_values,
-            pet_id=int(record.get("pet_id") or 0),
-            is_gold=bool(record.get("is_gold")),
-            is_rainbow=bool(record.get("is_rainbow")),
-            is_galaxy=bool(record.get("is_galaxy")),
-            is_shiny=bool(record.get("is_shiny")),
-        )
-        if price <= 0:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Ce pet ne peut pas être revendu pour le moment.",
-                )
-            )
-            return
-
-        status, payout, gems_before, gems_after = await self.database.sell_user_pet_for_gems(
-            ctx.author.id,
-            user_pet_id,
-            price,
-        )
-        if status == "missing":
-            await ctx.send(embed=embeds.error_embed("Pet introuvable."))
-            return
-        if status == "forbidden":
-            await ctx.send(embed=embeds.error_embed("Ce pet ne t'appartient pas."))
-            return
-        if status == "active":
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Ce pet est actuellement équipé. Retire-le avant de le revendre.",
-                )
-            )
-            return
-        if status == "on_market":
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Ce pet est en vente sur la plaza. Retire-le avant de le revendre.",
-                )
-            )
-            return
-        if status == "daycare":
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Ce pet est actuellement à la garderie. Retire-le avant de le revendre.",
-                )
-            )
-            return
-        if status != "sold":
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Impossible de finaliser la vente pour le moment.",
-                )
-            )
-            return
-
-        name = str(record.get("name", "Pet"))
-        lines = [
-            f"{name} (ID {user_pet_id}) vendu pour {embeds.format_gems(payout)}.",
-            f"{Emojis.GEM} avant : {embeds.format_gems(gems_before)}",
-            f"{Emojis.GEM} après : {embeds.format_gems(gems_after)}",
-        ]
-        await ctx.send(embed=embeds.success_embed("\n".join(lines), title="Vente de pet"))
-
-    @commands.command(name="index", aliases=("petindex", "dex"))
-    async def pet_index_command(self, ctx: commands.Context) -> None:
-        (
-            records,
-            pet_counts_by_id,
-            market_values_by_id,
-        ) = await asyncio.gather(
-            self.database.get_user_pets(ctx.author.id),
-            self.database.get_pet_counts(),
-            self.database.get_pet_market_values(),
-        )
-        variant_sets: Dict[str, Set[int]] = {
-            "normal": set(),
-            "gold": set(),
-            "rainbow": set(),
-            "galaxy": set(),
-            "shiny": set(),
-        }
-        for record in records:
-            pet_id = int(record.get("pet_id") or 0)
-            if pet_id <= 0:
-                continue
-            variant_sets["normal"].add(pet_id)
-            if bool(record.get("is_gold")):
-                variant_sets["gold"].add(pet_id)
-            if bool(record.get("is_rainbow")):
-                variant_sets["rainbow"].add(pet_id)
-            if bool(record.get("is_galaxy")):
-                variant_sets["galaxy"].add(pet_id)
-            if bool(record.get("is_shiny")):
-                variant_sets["shiny"].add(pet_id)
-        count_lookup: Dict[str, int] = {}
-        market_lookup: Dict[str, int] = {}
-        for definition in self._definitions:
-            pet_id = self._pet_ids.get(definition.name)
-            if pet_id is None:
-                continue
-            key = definition.name.casefold()
-            count_lookup[key] = int(pet_counts_by_id.get(pet_id, 0))
-            market_lookup[key] = self._resolve_market_value(
-                market_values_by_id,
-                pet_id=pet_id,
-                is_gold=False,
-                is_rainbow=False,
-                is_galaxy=False,
-                is_shiny=False,
-            )
-        normal_unique = len(variant_sets["normal"])
-        index_bonus_percent = self._index_bonus_from_count(normal_unique) * 100
-
-        view = PetIndexView(
-            ctx=ctx,
-            pet_definitions=self._definitions,
-            pet_ids=self._pet_ids,
-            variant_sets=variant_sets,
-            huge_descriptions=HUGE_PET_SOURCES,
-            pet_counts=count_lookup,
-            market_values=market_lookup,
-            index_bonus_percent=index_bonus_percent,
-        )
-        embed = view.build_embed()
-        message = await ctx.send(embed=embed, view=view)
-        view.message = message
-
-    @commands.command(name="equipbest", aliases=("bestpets", "autoequip"))
-    async def equip_best_pets(self, ctx: commands.Context, *, scope: str | None = None) -> None:
-        if scope and scope.strip().lower() in ("event", "festif", "festive", "anniversaire"):
-            event_cog = self.bot.get_cog("EventAnniversaire")
-            if event_cog is not None:
-                await event_cog._run_autoequip_event(ctx)
-                return
-
-        await self.database.ensure_user(ctx.author.id)
-        rows = await self.database.get_user_pets(ctx.author.id)
-        if not rows:
-            await ctx.send(
-                embed=embeds.warning_embed(
-                    "Tu n'as pas encore de pet à équiper. Ouvre un œuf avec `e!openbox`."
-                )
-            )
-            return
-
-        daycare_pets = await self.database.get_daycare_pets(ctx.author.id)
-        daycare_ids = {int(pet.get("user_pet_id") or 0) for pet in daycare_pets}
-        available_rows = [
-            row
-            for row in rows
-            if not bool(row.get("on_market"))
-            and int(row.get("id") or 0) not in daycare_ids
-        ]
-        if not available_rows:
-            await ctx.send(
-                embed=embeds.warning_embed(
-                    "Tous tes pets disponibles sont indisponibles (stand ou garderie). Retire-en un pour utiliser cette commande."
-                )
-            )
-            return
-
-        max_slots = await self.database.get_pet_slot_limit(ctx.author.id)
-        if max_slots <= 0:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Impossible d'équiper un pet pour le moment. Monte en grade pour débloquer un premier slot."
-                )
-            )
-            return
-
-        best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
-        entry_by_id: Dict[int, Dict[str, Any]] = {}
-        scored_entries: List[Dict[str, Any]] = []
-        for row in available_rows:
-            user_pet_id = int(row.get("id") or 0)
-            if user_pet_id <= 0:
-                continue
-            data = self._convert_record(row, best_non_huge_income=best_non_huge_income)
-            base_income = int(data.get("base_income_per_hour", 0))
-            if bool(data.get("is_huge")):
-                reference_income = int(data.get("_reference_income") or 0)
-                if reference_income <= 0:
-                    reference_income = base_income
-                max_income = self._compute_huge_income(
-                    reference_income,
-                    pet_name=str(data.get("name", "")),
-                    level=HUGE_PET_LEVEL_CAP,
-                )
-                max_income = int(
-                    max_income
-                    * self._variant_income_multiplier(
-                        is_gold=bool(data.get("is_gold")),
-                        is_rainbow=bool(data.get("is_rainbow")),
-                        is_galaxy=bool(data.get("is_galaxy")),
-                        is_shiny=bool(data.get("is_shiny")),
-                    )
-                )
-                income = scale_pet_value(max_income)
-            else:
-                income = scale_pet_value(base_income)
-            rarity = str(data.get("rarity", ""))
-            rarity_rank = PET_RARITY_ORDER.get(rarity, -1)
-            acquired_at = row.get("acquired_at")
-            if isinstance(acquired_at, datetime):
-                acquired_sort = acquired_at.timestamp()
-            else:
-                acquired_sort = float("inf")
-            name = str(data.get("name", "Pet"))
-            entry = {
-                "id": user_pet_id,
-                "record": row,
-                "data": data,
-                "income": income,
-                "rarity_rank": rarity_rank,
-                "acquired_sort": acquired_sort,
-                "name": name,
-            }
-            entry_by_id[user_pet_id] = entry
-            scored_entries.append(entry)
-
-        if not scored_entries:
-            await ctx.send(
-                embed=embeds.warning_embed(
-                    "Aucun pet disponible n'a pu être évalué. Vérifie que tes pets ne sont pas verrouillés sur le marché."
-                )
-            )
-            return
-
-        scored_entries.sort(
-            key=lambda item: (
-                -int(item.get("income", 0)),
-                -int(item.get("rarity_rank", -1)),
-                float(item.get("acquired_sort", float("inf"))),
-                str(item.get("name", "")),
-            )
-        )
-        desired_entries = scored_entries[:max_slots]
-        desired_ids = {int(entry["id"]) for entry in desired_entries if int(entry["id"]) > 0}
-
-        if not desired_ids:
-            await ctx.send(
-                embed=embeds.warning_embed(
-                    "Tu n'as aucun pet libre à équiper pour le moment."
-                )
-            )
-            return
-
-        current_active_ids = {int(row.get("id") or 0) for row in rows if bool(row.get("is_active"))}
-        to_deactivate = [pet_id for pet_id in current_active_ids if pet_id not in desired_ids]
-        to_activate = [pet_id for pet_id in desired_ids if pet_id not in current_active_ids]
-
-        removed_names: List[str] = []
-        for user_pet_id in to_deactivate:
-            try:
-                await self.database.deactivate_user_pet(ctx.author.id, user_pet_id)
-            except DatabaseError as exc:
-                await ctx.send(embed=embeds.error_embed(str(exc)))
-                return
-            entry = entry_by_id.get(user_pet_id)
-            if entry:
-                removed_names.append(entry.get("name", "Pet"))
-
-        added_names: List[str] = []
-        for user_pet_id in to_activate:
-            try:
-                await self.database.activate_user_pet(ctx.author.id, user_pet_id)
-            except ActivePetLimitError as exc:
-                message = (
-                    "❌ Tous tes slots sont déjà utilisés "
-                    f"({exc.active}/{exc.limit}). Déséquipe un pet avant de relancer la commande."
-                )
-                await ctx.send(embed=embeds.error_embed(message))
-                return
-            except DatabaseError as exc:
-                await ctx.send(embed=embeds.error_embed(str(exc)))
-                return
-            entry = entry_by_id.get(user_pet_id)
-            if entry:
-                added_names.append(entry.get("name", "Pet"))
-
-        updated_rows = await self.database.get_user_pets(ctx.author.id)
-        active_rows = [row for row in updated_rows if bool(row.get("is_active"))]
-        pets_data = await self._prepare_pet_data(ctx.author.id, active_rows)
-
-        active_entries: List[Dict[str, Any]] = []
-        for row, data in zip(active_rows, pets_data):
-            user_pet_id = int(row.get("id") or 0)
-            income = scale_pet_value(int(data.get("base_income_per_hour", 0)))
-            rarity = str(data.get("rarity", ""))
-            active_entries.append(
-                {
-                    "id": user_pet_id,
-                    "data": data,
-                    "income": income,
-                    "rarity_rank": PET_RARITY_ORDER.get(rarity, -1),
-                    "name": str(data.get("name", "Pet")),
-                }
-            )
-
-        active_entries.sort(
-            key=lambda item: (
-                -int(item.get("income", 0)),
-                -int(item.get("rarity_rank", -1)),
-                str(item.get("name", "")),
-            )
-        )
-
-        total_income = sum(int(item.get("income", 0)) for item in active_entries)
-        summary_lines: List[str] = []
-        if added_names or removed_names:
-            if added_names:
-                summary_lines.append(
-                    "✅ Activés : " + ", ".join(pet_emoji(name) or f"**{name}**" for name in added_names)
-                )
-            if removed_names:
-                summary_lines.append(
-                    "♻️ Retirés : " + ", ".join(pet_emoji(name) or f"**{name}**" for name in removed_names)
-                )
-        else:
-            summary_lines.append("🔄 Tes meilleurs pets étaient déjà équipés.")
-
-        summary_lines.append(
-            f"Slots utilisés : **{len(active_entries)}/{max_slots}**"
-        )
-        summary_lines.append(
-            f"Revenus actifs : **{embeds.format_currency(total_income)}**/h"
-        )
-
-        if active_entries:
-            detail_lines = []
-            for index, item in enumerate(active_entries, start=1):
-                data = item.get("data", {})
-                name = str(data.get("name", "Pet"))
-                income = int(item.get("income", 0))
-                markers: List[str] = []
-                if bool(data.get("is_rainbow")):
-                    markers.append("🌈")
-                elif bool(data.get("is_gold")):
-                    markers.append("🥇")
-                if bool(data.get("is_huge")):
-                    markers.append("✨")
-                marker_text = " ".join(markers)
-                rarity = str(data.get("rarity", ""))
-                emoji = pet_emoji(name)
-                emoji_prefix = f"{emoji} " if emoji else ""
-                line = (
-                    f"{index}. {emoji_prefix}{marker_text} **{name}** ({rarity}) — {income:,} {Emojis.COIN}/h"
-                ).replace(",", " ")
-                detail_lines.append(line.strip())
-            summary_lines.append("")
-            summary_lines.extend(detail_lines)
-
-        description = "\n".join(summary_lines)
-        embed = embeds.success_embed(
-            description,
-            title="Équipe de pets optimisée",
-        )
-        embed.set_author(
-            name=ctx.author.display_name,
-            icon_url=ctx.author.display_avatar.url,
-        )
-        await ctx.send(embed=embed)
-
-    def _fetch_gemshop_role_counts(
-        self, guild: discord.Guild | None = None
-    ) -> Dict[int, int]:
-        counts: Dict[int, int] = {}
-        guilds = [guild] if guild is not None else list(self.bot.guilds)
-        for offer in GEMSHOP_ROLE_OFFERS:
-            total = 0
-            for candidate in guilds:
-                if candidate is None:
-                    continue
-                role = candidate.get_role(offer.role_id)
-                if role is None:
-                    continue
-                total += sum(1 for member in role.members if not member.bot)
-            counts[offer.role_id] = total
-        return counts
-
-    async def _fetch_gemshop_state(
-        self, user_id: int, *, guild: discord.Guild | None = None
-    ) -> GemshopState:
-        grade_level = await self.database.get_grade_level(user_id)
-        extra_slots = await self.database.get_extra_pet_slots(user_id)
-        base_capacity = BASE_PET_SLOTS + grade_level
-        hard_cap = PET_SLOT_MAX_CAPACITY
-        total_slots = min(hard_cap, base_capacity + extra_slots)
-        max_extra_allowed = max(0, hard_cap - base_capacity)
-        next_cost: int | None = None
-        if (
-            max_extra_allowed > 0
-            and extra_slots < max_extra_allowed
-            and total_slots < hard_cap
-        ):
-            next_cost = self._compute_slot_purchase_cost(extra_slots)
-        role_sales = self._fetch_gemshop_role_counts(guild)
-        return GemshopState(
-            grade_level=grade_level,
-            base_capacity=base_capacity,
-            extra_slots=extra_slots,
-            hard_cap=hard_cap,
-            total_slots=total_slots,
-            max_extra_allowed=max_extra_allowed,
-            next_cost=next_cost,
-            role_sales=role_sales,
-        )
-
-    @staticmethod
-    def _resolve_role_offer(query: str | None) -> GemshopRoleOffer | None:
-        if not query:
-            return None
-        stripped = query.replace("<@&", "").replace("<@", "").replace(">", "").strip()
-        normalized = stripped.lower().replace(" ", "").replace("-", "")
-        for offer in GEMSHOP_ROLE_OFFERS:
-            if normalized == offer.slug.lower():
-                return offer
-            if normalized == str(offer.role_id):
-                return offer
-        if stripped.isdigit():
-            role_id = int(stripped)
-            for offer in GEMSHOP_ROLE_OFFERS:
-                if offer.role_id == role_id:
-                    return offer
-        return None
-
-    def _render_gemshop_embed(
-        self, user: discord.abc.User, state: GemshopState
-    ) -> discord.Embed:
-        guild = user.guild if isinstance(user, discord.Member) else None
-        lines = [
-            f"• Slots équipables : **{state.total_slots}/{state.hard_cap}**",
-            f"• Slots via les grades : **{state.base_capacity}**",
-            f"• Slots achetés : **{state.extra_slots}**",
-        ]
-
-        if state.can_purchase and state.next_cost is not None:
-            lines.append(
-                f"• Prochain slot : **{self._format_slot_cost(state.next_cost)}**"
-            )
-            lines.append(
-                "Appuie sur le bouton ci-dessous ou utilise `e!shop buy` pour acheter un slot."
-            )
-        else:
-            if state.has_reached_hard_cap or state.base_capacity >= state.hard_cap:
-                lines.append(
-                    "Tu as déjà atteint la capacité maximale de pets équipés."
-                )
-            elif state.extra_slots >= state.max_extra_allowed:
-                lines.append(
-                    "Tu devras monter en grade pour débloquer de nouveaux achats de slots."
-                )
-            else:
-                lines.append("Le magasin est temporairement indisponible.")
-
-        description = "\n".join(lines)
-        embed = embeds.info_embed(description, title=f"{Emojis.GEM} Gemshop")
-        embed.set_author(
-            name=user.display_name,
-            icon_url=user.display_avatar.url,
-        )
-        role_lines: list[str] = []
-        for offer in GEMSHOP_ROLE_OFFERS:
-            role_obj = guild.get_role(offer.role_id) if guild else None
-            mention = role_obj.mention if role_obj else f"<@&{offer.role_id}>"
-            sold = int(state.role_sales.get(offer.role_id, 0))
-            remaining = max(0, offer.stock - sold)
-            stock_label = "Rupture de stock" if remaining <= 0 else f"Stock : {remaining}/{offer.stock}"
-            role_lines.append(
-                f"{mention}\n{offer.description}\nPrix : {embeds.format_gems(offer.price)} • {stock_label}"
-            )
-        if role_lines:
-            embed.add_field(
-                name="🛡️ Rôles exclusifs",
-                value="\n\n".join(role_lines),
-                inline=False,
-            )
-        if state.can_purchase:
-            embed.set_footer(text="Le prix augmente à chaque slot acheté.")
-        return embed
-
-    async def _attempt_gemshop_purchase(
-        self, user: discord.abc.User
-    ) -> GemshopPurchaseResult:
-        guild = user.guild if isinstance(user, discord.Member) else None
-        state = await self._fetch_gemshop_state(user.id, guild=guild)
-
-        if state.has_reached_hard_cap or state.base_capacity >= state.hard_cap:
-            embed = embeds.error_embed(
-                "Tu as déjà atteint la capacité maximale de pets équipés."
-            )
-            return GemshopPurchaseResult(embed=embed, state=state, success=False)
-        if state.max_extra_allowed <= 0:
-            embed = embeds.error_embed(
-                "Tes grades te donnent déjà accès à tous les slots disponibles."
-            )
-            return GemshopPurchaseResult(embed=embed, state=state, success=False)
-        if state.extra_slots >= state.max_extra_allowed:
-            embed = embeds.error_embed(
-                "Tu devras monter en grade pour débloquer de nouveaux achats de slots."
-            )
-            return GemshopPurchaseResult(embed=embed, state=state, success=False)
-
-        price = self._compute_slot_purchase_cost(state.extra_slots)
-        balance_after: int | None = None
-
-        if PET_SLOT_SHOP_CURRENCY == "gem":
-            balance = await self.database.fetch_gems(user.id)
-            if balance < price:
-                missing = price - balance
-                embed = embeds.error_embed(
-                    f"Il te manque {self._format_slot_cost(missing)} pour acheter ce slot."
-                )
-                return GemshopPurchaseResult(embed=embed, state=state, success=False)
-            _, balance_after = await self.database.increment_gems(
-                user.id,
-                -price,
-                transaction_type="gemshop_slot",
-                description="Achat slot supplémentaire",
-            )
-        else:
-            balance = await self.database.fetch_balance(user.id)
-            if balance < price:
-                missing = price - balance
-                embed = embeds.error_embed(
-                    f"Il te manque {self._format_slot_cost(missing)} pour acheter ce slot."
-                )
-                return GemshopPurchaseResult(embed=embed, state=state, success=False)
-            _, balance_after = await self.database.increment_balance(
-                user.id,
-                -price,
-                transaction_type="gemshop_slot",
-                description="Achat slot supplémentaire",
-            )
-
-        _new_extra, added = await self.database.add_extra_pet_slot(
-            user.id, grade_level=state.grade_level
-        )
-        if not added:
-            if PET_SLOT_SHOP_CURRENCY == "gem":
-                await self.database.increment_gems(
-                    user.id,
-                    price,
-                    transaction_type="gemshop_refund",
-                    description="Remboursement slot pets",
-                )
-            else:
-                await self.database.increment_balance(
-                    user.id,
-                    price,
-                    transaction_type="gemshop_refund",
-                    description="Remboursement slot pets",
-                )
-            new_state = await self._fetch_gemshop_state(user.id, guild=guild)
-            embed = embeds.error_embed(
-                "Impossible d'ajouter un slot supplémentaire pour le moment. Tes fonds ont été remboursés."
-            )
-            return GemshopPurchaseResult(embed=embed, state=new_state, success=False)
-
-        new_state = await self._fetch_gemshop_state(user.id, guild=guild)
-        lines = [
-            f"Slot acheté pour {self._format_slot_cost(price)}.",
-            f"Tu peux maintenant équiper **{new_state.total_slots}** pet{'s' if new_state.total_slots > 1 else ''}.",
-        ]
-        if PET_SLOT_SHOP_CURRENCY == "gem" and balance_after is not None:
-            lines.append(f"{Emojis.GEM} restantes : {embeds.format_gems(balance_after)}")
-        elif balance_after is not None:
-            lines.append(f"Solde restant : {embeds.format_currency(balance_after)}")
-
-        if new_state.can_purchase and new_state.next_cost is not None:
-            lines.append(
-                f"Prochain slot : {self._format_slot_cost(new_state.next_cost)}."
-            )
-            lines.append("Utilise le bouton du magasin ou `e!shop buy`.")
-        else:
-            if new_state.has_reached_hard_cap:
-                lines.append("Tu as atteint la capacité maximale de 40 pets équipés.")
-            elif new_state.extra_slots >= new_state.max_extra_allowed:
-                lines.append(
-                    "Tu as atteint la limite de slots disponible pour ton grade actuel."
-                )
-
-        embed = embeds.success_embed("\n".join(lines), title=f"{Emojis.GEM} Gemshop")
-        return GemshopPurchaseResult(embed=embed, state=new_state, success=True)
-
-    async def _attempt_gemshop_role_purchase(
-        self,
-        user: discord.abc.User,
-        offer: GemshopRoleOffer,
-        *,
-        guild: discord.Guild | None = None,
-    ) -> GemshopPurchaseResult:
-        state = await self._fetch_gemshop_state(user.id, guild=guild)
-
-        if not isinstance(user, discord.Member) or guild is None:
-            embed = embeds.error_embed(
-                "Ce rôle ne peut être acheté que depuis le serveur principal."
-            )
-            return GemshopPurchaseResult(embed=embed, state=state, success=False)
-
-        role = guild.get_role(offer.role_id)
-        if role is None:
-            embed = embeds.error_embed("Impossible de trouver ce rôle sur le serveur.")
-            return GemshopPurchaseResult(embed=embed, state=state, success=False)
-        current_count = sum(1 for member in role.members if not member.bot)
-        remaining = offer.stock - current_count
-        if remaining <= 0:
-            embed = embeds.error_embed("Ce rôle est déjà en rupture de stock.")
-            return GemshopPurchaseResult(embed=embed, state=state, success=False)
-        if role in user.roles:
-            embed = embeds.error_embed("Tu possèdes déjà ce rôle.")
-            return GemshopPurchaseResult(embed=embed, state=state, success=False)
-        if not role.is_assignable():
-            embed = embeds.error_embed("Je n'ai pas la permission d'attribuer ce rôle.")
-            return GemshopPurchaseResult(embed=embed, state=state, success=False)
-
-        try:
-            purchase = await self.database.purchase_gemshop_role(
-                user.id,
-                role_id=offer.role_id,
-                price=offer.price,
-                stock=offer.stock,
-            )
-        except InsufficientBalanceError:
-            embed = embeds.error_embed(
-                f"Il te manque {embeds.format_gems(offer.price)} pour acheter {role.mention}."
-            )
-            return GemshopPurchaseResult(embed=embed, state=state, success=False)
-        except DatabaseError as exc:
-            embed = embeds.error_embed(str(exc))
-            return GemshopPurchaseResult(embed=embed, state=state, success=False)
-
-        try:
-            await user.add_roles(role, reason="Achat Gemshop")
-            assignment_failed = False
-        except (discord.Forbidden, discord.HTTPException):
-            assignment_failed = True
-
-        if assignment_failed:
-            await self.database.refund_gemshop_role_purchase(
-                user.id, role_id=offer.role_id, price=offer.price
-            )
-            new_state = await self._fetch_gemshop_state(user.id, guild=guild)
-            embed = embeds.error_embed(
-                f"Impossible d'attribuer le rôle automatiquement. Tes {Emojis.GEM} ont été remboursées."
-            )
-            return GemshopPurchaseResult(embed=embed, state=new_state, success=False)
-
-        new_state = await self._fetch_gemshop_state(user.id, guild=guild)
-        gems_after = int(purchase.get("buyer_after", 0))
-        lines = [
-            f"{role.mention} acheté pour {embeds.format_gems(offer.price)}.",
-            f"Stock restant : **{max(0, offer.stock - int(new_state.role_sales.get(offer.role_id, 0)))}**",
-        ]
-        if gems_after:
-            lines.append(f"{Emojis.GEM} restantes : {embeds.format_gems(gems_after)}")
-        embed = embeds.success_embed("\n".join(lines), title=f"{Emojis.GEM} Gemshop")
-        return GemshopPurchaseResult(embed=embed, state=new_state, success=True)
-
-    @commands.command(
-        name="shop",
-        aliases=("gemshop", "gem", "gems"),
-    )
-    async def gemshop(self, ctx: commands.Context, *, action: str | None = None) -> None:
-        await self._ack_heavy_command(ctx)
-        await self.database.ensure_user(ctx.author.id)
-
-        state = await self._fetch_gemshop_state(ctx.author.id, guild=ctx.guild)
-
-        raw_action = (action or "").strip()
-        normalized_action = raw_action.lower().replace(" ", "").replace("-", "")
-        purchase_aliases = {
-            "buy",
-            "acheter",
-            "slot",
-            "buyslot",
-            "acheterslot",
-            "acheterunslot",
-            "achete",
-        }
-        tokens = raw_action.split()
-        role_offer: GemshopRoleOffer | None = None
-        if tokens and tokens[0].lower() in purchase_aliases and len(tokens) > 1:
-            role_offer = self._resolve_role_offer(" ".join(tokens[1:]))
-        elif raw_action:
-            role_offer = self._resolve_role_offer(raw_action)
-        attempting_purchase = normalized_action in purchase_aliases
-
-        if role_offer is not None:
-            result = await self._attempt_gemshop_role_purchase(
-                ctx.author, role_offer, guild=ctx.guild
-            )
-            await ctx.send(embed=result.embed)
-            return
-        if attempting_purchase:
-            result = await self._attempt_gemshop_purchase(ctx.author)
-            await ctx.send(embed=result.embed)
-            return
-
-        embed = self._render_gemshop_embed(ctx.author, state)
-        view = GemshopView(self, ctx, state)
-        message = await ctx.send(embed=embed, view=view)
-        view.attach_message(message)
-
-    @commands.command(
-        name="distributeur",
-        aliases=("mexico", "mexicodispenser", "dispenser"),
-    )
-    async def mexico_dispenser(self, ctx: commands.Context) -> None:
-        await self.database.ensure_user(ctx.author.id)
-
-        zone = self._zones.get(MEXICO_ZONE_SLUG)
-        if zone is None:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "La zone de Mexico est introuvable pour le moment."
-                )
-            )
-            return
-
-        unlocked = await self.database.has_unlocked_zone(
-            ctx.author.id, MEXICO_ZONE_SLUG
-        )
-        if not unlocked:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    f"Tu dois d'abord débloquer {zone.name} pour utiliser ce distributeur."
-                )
-            )
-            return
-
-        last_claim = await self.database.get_mexico_dispenser_last_claim(ctx.author.id)
-        now = datetime.now(timezone.utc)
-        if last_claim is not None:
-            ready_at = last_claim + MEXICO_DISTRIBUTOR_COOLDOWN
-            if ready_at > now:
-                ready_text = discord.utils.format_dt(ready_at, style="R")
-                await ctx.send(
-                    embed=embeds.warning_embed(
-                        f"Le distributeur se recharge encore. Reviens {ready_text}."
-                    )
-                )
-                return
-
-        potion_definition = random.choice(POTION_DEFINITIONS)
-        await self.database.add_user_potion(ctx.author.id, potion_definition.slug)
-
-        eligible_pets = [pet for pet in self._definitions if not pet.is_huge]
-        if not eligible_pets:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Aucun pet n'est disponible pour le distributeur en ce moment."
-                )
-            )
-            return
-
-        pet_definition = random.choice(eligible_pets)
-        pet_id = self._pet_ids.get(pet_definition.name)
-        if pet_id is None:
-            await self._resync_pets()
-            pet_id = self._pet_ids.get(pet_definition.name)
-        if pet_id is None:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Impossible de récupérer le pet sélectionné. Réessaie dans quelques instants."
-                )
-            )
-            return
-
-        try:
-            await self.database.add_user_pet(
-                ctx.author.id,
-                pet_id,
-                is_gold=True,
-                is_rainbow=False,
-                is_galaxy=False,
-                is_shiny=False,
-            )
-        except DatabaseError:
-            logger.exception(
-                "Impossible d'ajouter un pet doré depuis le distributeur Mexico",
-                extra={"user_id": ctx.author.id, "pet": pet_definition.name},
-            )
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Impossible de livrer le pet doré pour le moment. Réessaie plus tard."
-                )
-            )
-            return
-
-        await self.database.record_mexico_dispenser_claim(ctx.author.id)
-
-        next_ready = now + MEXICO_DISTRIBUTOR_COOLDOWN
-        potion_line = f"🧪 Potion reçue : **{potion_definition.name}**"
-        emoji = pet_emoji(pet_definition.name)
-        pet_line = f"🥇 Pet reçu : {emoji} **{pet_definition.name}** (version or)"
-        cooldown_line = (
-            f"⏳ Prochain distributeur disponible {discord.utils.format_dt(next_ready, style='R')}"
-        )
-
-        description = "\n".join(
-            [
-                potion_line,
-                pet_line,
-                cooldown_line,
-                "Le distributeur se recharge toutes les 10 minutes.",
-            ]
-        )
-
-        await ctx.send(
-            embed=embeds.success_embed(
-                description,
-                title="🎁 Distributeur de Mexico",
-            )
-        )
-
-    @commands.command(name="daycare", aliases=("garderie",))
-    async def daycare(self, ctx: commands.Context, *, action: str | None = None) -> None:
-        await self.database.ensure_user(ctx.author.id)
-
-        # FIX: la Citadelle Céleste a été retirée du jeu (grade requis inatteignable) ;
-        # la garderie est désormais débloquée via la zone Mexico (fin de contenu actuelle).
-        unlocked = await self.database.has_unlocked_zone(ctx.author.id, MEXICO_ZONE_SLUG)
-        if not unlocked:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Tu dois débloquer Mexico pour accéder à la garderie."
-                )
-            )
-            return
-
-        raw_action = (action or "").strip()
-        tokens = [token for token in raw_action.split() if token]
-        if not tokens:
-            await self._send_daycare_status(ctx)
-            return
-
-        command = tokens[0].lower()
-        if command in {"status", "info"}:
-            await self._send_daycare_status(ctx)
-            return
-
-        if command in {"claim", "collect", "recolte", "récolte"}:
-            reward, elapsed_hours, pet_count, before, after = await self.database.claim_daycare_gems(
-                ctx.author.id
-            )
-            if pet_count <= 0:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        f"Tu n'as aucun pet à la garderie pour récolter {Emojis.GEM}."
-                    )
-                )
-                return
-            if reward <= 0:
-                await ctx.send(
-                    embed=embeds.info_embed(
-                        f"Tes pets n'ont pas encore généré assez de {Emojis.GEM}. Reviens un peu plus tard."
-                    )
-                )
-                return
-            lines = [
-                f"{Emojis.GEM} récoltées : {embeds.format_gems(reward)}",
-                f"{Emojis.GEM} avant : {embeds.format_gems(before)}",
-                f"{Emojis.GEM} après : {embeds.format_gems(after)}",
-                f"Temps écoulé : {elapsed_hours:.2f}h",
-            ]
-            await ctx.send(
-                embed=embeds.success_embed("\n".join(lines), title="🍼 Garderie céleste")
-            )
-            return
-
-        if command in {"deposit", "depot", "dépot", "add"}:
-            ids = self._parse_pet_id_tokens(tokens[1:])
-            if not ids:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Indique les IDs des pets à déposer (ex: `e!daycare deposit 12 34`)."
-                    )
-                )
-                return
-            try:
-                pets = await self.database.deposit_daycare_pets(ctx.author.id, ids)
-            except DatabaseError as exc:
-                await ctx.send(embed=embeds.error_embed(str(exc)))
-                return
-            await ctx.send(
-                embed=embeds.success_embed(
-                    f"{len(ids)} pet{'s' if len(ids) > 1 else ''} déposé{'s' if len(ids) > 1 else ''} à la garderie.\n"
-                    f"Slots occupés : **{len(pets)}/{DAYCARE_MAX_PETS}**",
-                    title="🍼 Garderie céleste",
-                )
-            )
-            return
-
-        if command in {"withdraw", "retire", "retrait", "remove", "recuperer", "récupérer"}:
-            if len(tokens) == 1:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Indique les IDs des pets à retirer ou utilise `e!daycare withdraw all`."
-                    )
-                )
-                return
-            if tokens[1].lower() in {"all", "tout"}:
-                ids = []
-            else:
-                ids = self._parse_pet_id_tokens(tokens[1:])
-            if not ids and tokens[1].lower() not in {"all", "tout"}:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Indique les IDs des pets à retirer ou utilise `e!daycare withdraw all`."
-                    )
-                )
-                return
-            removed = await self.database.withdraw_daycare_pets(
-                ctx.author.id, ids if ids else None
-            )
-            if removed <= 0:
-                await ctx.send(
-                    embed=embeds.info_embed(
-                        "Aucun pet n'a été retiré de la garderie."
-                    )
-                )
-                return
-            await ctx.send(
-                embed=embeds.success_embed(
-                    f"{removed} pet{'s' if removed > 1 else ''} retiré{'s' if removed > 1 else ''} de la garderie.",
-                    title="🍼 Garderie céleste",
-                )
-            )
-            return
-
-        await ctx.send(
-            embed=embeds.info_embed(
-                "Actions disponibles :\n"
-                "• `e!daycare` — voir le statut\n"
-                "• `e!daycare deposit <id...>` — déposer des pets\n"
-                "• `e!daycare withdraw <id...|all>` — retirer des pets\n"
-                f"• `e!daycare claim` — récolter {Emojis.GEM}",
-                title="🍼 Garderie céleste",
-            )
-        )
-
-    @commands.command(name="equip")
-    async def equip(self, ctx: commands.Context, *, pet_name: str) -> None:
-        definition, rows, ordinal, variant = await self._resolve_user_pet_candidates(
-            ctx,
-            pet_name,
-            include_active=True,
-            include_inactive=True,
-            include_daycare=False,
-        )
-        if definition is None:
-            await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
-            return
-
-        if not rows:
-            variant_text = ""
-            if variant == "gold":
-                variant_text = " doré"
-            elif variant == "rainbow":
-                variant_text = " rainbow"
-            elif variant == "normal":
-                variant_text = " classique"
-            await ctx.send(
-                embed=embeds.error_embed(
-                    f"Tu ne possèdes aucun {definition.name}{variant_text} correspondant."
-                )
-            )
-            return
-
-        candidates = await self._make_candidates(ctx, rows)
-
-        async def activate_candidate(candidate: Mapping[str, Any]) -> None:
-            record = candidate.get("record", {})
-            if bool(record.get("is_active")):
-                await ctx.send(
-                    embed=embeds.warning_embed(
-                        f"⚠️ {definition.name} est déjà équipé ! Utilise `e!unequip {definition.name}` pour le retirer."
-                    )
-                )
-                return
-
-            user_pet_id = int(record.get("id") or 0)
-            if user_pet_id <= 0:
-                await ctx.send(embed=embeds.error_embed("Pet introuvable."))
-                return
-
-            try:
-                db_record, active_count, max_slots = await self.database.activate_user_pet(
-                    ctx.author.id,
-                    user_pet_id,
-                )
-            except ActivePetLimitError as exc:
-                message = (
-                    "❌ Tous tes slots sont pleins "
-                    f"({exc.active}/{exc.limit}) ! Options :\n"
-                    "• Utilise `e!unequip <nom>` pour libérer un slot\n"
-                    "• Ou utilise `e!swap <ancien> <nouveau>` pour remplacer directement"
-                )
-                await ctx.send(embed=embeds.error_embed(message))
-                return
-            except DatabaseError as exc:
-                await ctx.send(embed=embeds.error_embed(str(exc)))
-                return
-
-            if db_record is None:
-                await ctx.send(embed=embeds.error_embed("Pet introuvable."))
-                return
-
-            embed = await self._build_pet_equip_embed(
-                ctx,
-                db_record,
-                activated=True,
-                active_count=active_count,
-                slot_limit=max_slots,
-            )
-            await ctx.send(embed=embed)
-
-        if ordinal is not None:
-            index = ordinal - 1
-            if index < 0 or index >= len(candidates):
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        f"Tu as seulement {len(candidates)} exemplaires de {definition.name}."
-                    )
-                )
-                return
-            await activate_candidate(candidates[index])
-            return
-
-        if len(candidates) == 1:
-            await activate_candidate(candidates[0])
-            return
-
-        selection = await self._prompt_pet_selection(
-            ctx,
-            title=f"Quel {definition.name} veux-tu équiper ?",
-            description=f"Tu as {len(candidates)} exemplaires disponibles.",
-            candidates=candidates,
-        )
-        if selection is None:
-            return
-        await activate_candidate(selection)
-
-    @commands.command(name="unequip", aliases=("desequip", "remove"))
-    async def unequip(self, ctx: commands.Context, *, pet_name: str) -> None:
-        definition, rows, ordinal, variant = await self._resolve_user_pet_candidates(
-            ctx,
-            pet_name,
-            include_active=True,
-            include_inactive=False,
-        )
-        if definition is None:
-            await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
-            return
-
-        if not rows:
-            await ctx.send(
-                embed=embeds.warning_embed(
-                    f"⚠️ {definition.name} n'est pas équipé actuellement. Utilise `e!pets` pour voir tes pets actifs."
-                )
-            )
-            return
-
-        candidates = await self._make_candidates(ctx, rows)
-
-        async def deactivate_candidate(candidate: Mapping[str, Any]) -> None:
-            record = candidate.get("record", {})
-            if not bool(record.get("is_active")):
-                await ctx.send(
-                    embed=embeds.warning_embed(
-                        f"⚠️ {definition.name} n'est pas équipé actuellement. Utilise `e!pets` pour voir tes pets actifs."
-                    )
-                )
-                return
-
-            user_pet_id = int(record.get("id") or 0)
-            if user_pet_id <= 0:
-                await ctx.send(embed=embeds.error_embed("Pet introuvable."))
-                return
-
-            try:
-                db_record, active_count, max_slots = await self.database.deactivate_user_pet(
-                    ctx.author.id,
-                    user_pet_id,
-                )
-            except DatabaseError as exc:
-                await ctx.send(embed=embeds.error_embed(str(exc)))
-                return
-
-            if db_record is None:
-                await ctx.send(embed=embeds.error_embed("Pet introuvable."))
-                return
-
-            embed = await self._build_pet_equip_embed(
-                ctx,
-                db_record,
-                activated=False,
-                active_count=active_count,
-                slot_limit=max_slots,
-            )
-            await ctx.send(embed=embed)
-
-        if ordinal is not None:
-            index = ordinal - 1
-            if index < 0 or index >= len(candidates):
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        f"Tu as seulement {len(candidates)} exemplaires actifs de {definition.name}."
-                    )
-                )
-                return
-            await deactivate_candidate(candidates[index])
-            return
-
-        if len(candidates) == 1:
-            await deactivate_candidate(candidates[0])
-            return
-
-        selection = await self._prompt_pet_selection(
-            ctx,
-            title=f"Quel {definition.name} veux-tu retirer ?",
-            description=f"Tu as {len(candidates)} exemplaires équipés.",
-            candidates=candidates,
-        )
-        if selection is None:
-            return
-        await deactivate_candidate(selection)
-
-    @commands.command(name="swap")
-    async def swap(self, ctx: commands.Context, pet_out: str, *, pet_in: str) -> None:
-        out_definition, out_rows, out_ordinal, _ = await self._resolve_user_pet_candidates(
-            ctx,
-            pet_out,
-            include_active=True,
-            include_inactive=False,
-        )
-        if out_definition is None:
-            await ctx.send(embed=embeds.error_embed("Le pet à retirer est introuvable."))
-            return
-        if not out_rows:
-            await ctx.send(
-                embed=embeds.warning_embed(
-                    f"⚠️ {out_definition.name} n'est pas équipé actuellement. Utilise `e!pets` pour voir tes pets actifs."
-                )
-            )
-            return
-
-        in_definition, in_rows, in_ordinal, in_variant = await self._resolve_user_pet_candidates(
-            ctx,
-            pet_in,
-            include_active=True,
-            include_inactive=True,
-            include_daycare=False,
-        )
-        if in_definition is None:
-            await ctx.send(embed=embeds.error_embed("Le pet à équiper est introuvable."))
-            return
-        if not in_rows:
-            variant_text = ""
-            if in_variant == "gold":
-                variant_text = " doré"
-            elif in_variant == "rainbow":
-                variant_text = " rainbow"
-            elif in_variant == "normal":
-                variant_text = " classique"
-            await ctx.send(
-                embed=embeds.error_embed(
-                    f"Tu ne possèdes aucun {in_definition.name}{variant_text} correspondant."
-                )
-            )
-            return
-
-        out_candidates = await self._make_candidates(ctx, out_rows)
-        in_candidates = await self._make_candidates(ctx, in_rows)
-
-        async def resolve_candidate(
-            definition: PetDefinition,
-            candidates: List[Mapping[str, Any]],
-            ordinal: Optional[int],
-            *,
-            prompt: str,
-        ) -> Optional[Mapping[str, Any]]:
-            if ordinal is not None:
-                index = ordinal - 1
-                if index < 0 or index >= len(candidates):
-                    await ctx.send(
-                        embed=embeds.error_embed(
-                            f"Tu as seulement {len(candidates)} exemplaires de {definition.name}."
-                        )
-                    )
-                    return None
-                return candidates[index]
-
-            if len(candidates) == 1:
-                return candidates[0]
-
-            return await self._prompt_pet_selection(
-                ctx,
-                title=prompt,
-                description=f"Tu as {len(candidates)} exemplaires disponibles.",
-                candidates=candidates,
-            )
-
-        selected_out = await resolve_candidate(
-            out_definition,
-            out_candidates,
-            out_ordinal,
-            prompt=f"Quel {out_definition.name} veux-tu retirer ?",
-        )
-        if selected_out is None:
-            return
-
-        selected_in = await resolve_candidate(
-            in_definition,
-            in_candidates,
-            in_ordinal,
-            prompt=f"Quel {in_definition.name} veux-tu équiper ?",
-        )
-        if selected_in is None:
-            return
-
-        out_id = int(selected_out["record"].get("id") or 0)
-        in_id = int(selected_in["record"].get("id") or 0)
-        if out_id <= 0 or in_id <= 0:
-            await ctx.send(embed=embeds.error_embed("Impossible de déterminer les pets sélectionnés."))
-            return
-
-        if out_id == in_id:
-            await ctx.send(embed=embeds.error_embed("Tu dois sélectionner deux pets différents pour le swap."))
-            return
-
-        try:
-            removed, added, active_count, max_slots = await self.database.swap_active_pets(
-                ctx.author.id,
-                out_id,
-                in_id,
-            )
-        except DatabaseError as exc:
-            await ctx.send(embed=embeds.error_embed(str(exc)))
-            return
-
-        out_data = selected_out.get("data", {})
-        out_label = str(out_data.get("name", out_definition.name))
-        if out_data.get("is_rainbow"):
-            out_label += " 🌈"
-        elif out_data.get("is_gold"):
-            out_label += " 🥇"
-
-        embed = await self._build_pet_equip_embed(
-            ctx,
-            added,
-            activated=True,
-            active_count=active_count,
-            slot_limit=max_slots,
-        )
-        embed.add_field(
-            name="Swap effectué",
-            value=f"{out_label} se repose désormais.",
-            inline=False,
-        )
-        await ctx.send(embed=embed)
-
-    @commands.command(name="fuse")
-    async def fuse(self, ctx: commands.Context, *user_pet_inputs: str) -> None:
-        await self._ack_heavy_command(ctx)
-        auto_mode = not user_pet_inputs
-        if user_pet_inputs:
-            auto_mode = any(str(value).lower() in {"auto", "random"} for value in user_pet_inputs)
-
-        name_requests: list[tuple[str, int]] = []
-        id_inputs: list[int] = []
-        raw_inputs = [str(value) for value in user_pet_inputs]
-        if user_pet_inputs and not auto_mode:
-            if any(not token.isdigit() for token in raw_inputs):
-                name_buffer: list[str] = []
-                for token in raw_inputs:
-                    lowered = token.lower()
-                    if lowered in {"auto", "random"}:
-                        continue
-                    if token.isdigit():
-                        if name_buffer:
-                            count = int(token)
-                            name = " ".join(name_buffer).strip()
-                            if name and count > 0:
-                                name_requests.append((name, count))
-                            name_buffer = []
-                        else:
-                            parsed = int(token)
-                            if parsed > 0:
-                                id_inputs.append(parsed)
-                    else:
-                        name_buffer.append(token)
-                if name_buffer:
-                    name_requests.append((" ".join(name_buffer).strip(), 1))
-            else:
-                for token in raw_inputs:
-                    parsed = int(token)
-                    if parsed > 0:
-                        id_inputs.append(parsed)
-
-        unique_ids: list[int] = []
-        for value in id_inputs:
-            if value > 0 and value not in unique_ids:
-                unique_ids.append(value)
-
-        auto_selected = False
-        if name_requests:
-            rows = await self.database.get_user_pets(ctx.author.id)
-            available = [
-                row
-                for row in rows
-                if not bool(row.get("is_active"))
-                and not bool(row.get("on_market"))
-                and not bool(row.get("is_huge"))
-            ]
-            available_by_name: Dict[str, List[Dict[str, Any]]] = {}
-            for row in available:
-                data = self._convert_record(row, best_non_huge_income=None)
-                key = str(data.get("name", "")).casefold()
-                available_by_name.setdefault(key, []).append({"record": row, "data": data})
-            for entries in available_by_name.values():
-                entries.sort(
-                    key=lambda entry: (
-                        int(entry["data"].get("base_income_per_hour", 0)),
-                        int(entry["record"].get("id") or 0),
-                    )
-                )
-
-            missing: List[str] = []
-            for raw_name, count in name_requests:
-                if count <= 0:
-                    continue
-                slug, _, variant = self._parse_pet_query(raw_name)
-                definition = self._definition_by_slug.get(slug or "")
-                if definition is None:
-                    missing.append(raw_name)
-                    continue
-                key = definition.name.casefold()
-                candidates = available_by_name.get(key, [])
-                if variant == "gold":
-                    filtered = [
-                        entry for entry in candidates if bool(entry["data"].get("is_gold"))
-                    ]
-                elif variant == "rainbow":
-                    filtered = [
-                        entry for entry in candidates if bool(entry["data"].get("is_rainbow"))
-                    ]
-                elif variant == "normal":
-                    filtered = [
-                        entry
-                        for entry in candidates
-                        if not bool(entry["data"].get("is_gold"))
-                        and not bool(entry["data"].get("is_rainbow"))
-                    ]
-                else:
-                    filtered = list(candidates)
-
-                if len(filtered) < count:
-                    await ctx.send(
-                        embed=embeds.error_embed(
-                            f"Il te faut encore {count} pets **{definition.name}** disponibles pour la fusion."
-                        )
-                    )
-                    return
-
-                chosen = filtered[:count]
-                chosen_ids = {int(entry["record"].get("id") or 0) for entry in chosen}
-                available_by_name[key] = [
-                    entry
-                    for entry in candidates
-                    if int(entry["record"].get("id") or 0) not in chosen_ids
-                ]
-                for entry in chosen:
-                    entry_id = int(entry["record"].get("id") or 0)
-                    if entry_id > 0 and entry_id not in unique_ids:
-                        unique_ids.append(entry_id)
-
-            if missing:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Pets introuvables pour la fusion : "
-                        + ", ".join(f"`{name}`" for name in missing)
-                    )
-                )
-                return
-
-        if auto_mode and not unique_ids:
-            rows = await self.database.get_user_pets(ctx.author.id)
-            available = [
-                row
-                for row in rows
-                if not bool(row.get("is_active"))
-                and not bool(row.get("on_market"))
-                and not bool(row.get("is_huge"))
-            ]
-            if len(available) < 10:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "La machine a besoin de **10 pets** disponibles."
-                        " Pense à retirer les pets actifs ou en vente, puis réessaie.",
-                    )
-                )
-                return
-            def _fuse_sort_key(row: Mapping[str, Any]) -> tuple[int, int, str, int]:
-                data = self._convert_record(row, best_non_huge_income=None)
-                rarity_rank = PET_RARITY_ORDER.get(str(data.get("rarity", "")), 0)
-                income = int(data.get("base_income_per_hour", 0))
-                name = str(data.get("name", "")).casefold()
-                return (rarity_rank, income, name, int(row.get("id") or 0))
-
-            available_sorted = sorted(available, key=_fuse_sort_key)
-            unique_ids = [int(row["id"]) for row in available_sorted[:10]]
-            auto_selected = True
-
-        if not unique_ids:
-            await ctx.send(
-                embed=embeds.info_embed(
-                    "Utilise `e!fuse <id1> <id2> … <id10>` pour sacrifier 10 pets et en obtenir un nouveau."
-                    " Tu peux aussi lancer `e!fuse auto` pour choisir automatiquement,"
-                    " ou `e!fuse shelly 5 angelo 3 lily 2` pour fusionner par nom.",
-                )
-            )
-            return
-
-        if len(unique_ids) > 10:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "La machine ne peut consommer que **10 pets** à la fois."
-                )
-            )
-            return
-
-        if len(unique_ids) < 10:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "La machine a besoin de **10 pets**."
-                    " Utilise `e!pets` puis repère la colonne `ID` pour noter ceux qui sont libres.",
-                )
-            )
-            return
-
-        pet_mastery_progress = await self.database.get_mastery_progress(
-            ctx.author.id, PET_MASTERY.slug
-        )
-        pet_mastery_level = int(pet_mastery_progress.get("level", 1))
-        pet_perks = _compute_pet_mastery_perks(pet_mastery_level)
-        if not pet_perks.fuse_unlocked:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Atteins le niveau 5 de Maîtrise des pets pour débloquer la machine de fusion."
-                    f" (Niveau actuel : {pet_mastery_level}).",
-                )
-            )
-            return
-
-        clan_row = await self.database.get_user_clan(ctx.author.id)
-        clan_shiny_multiplier = 1.0
-        if clan_row is not None:
-            clan_shiny_multiplier = max(
-                1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
-            )
-        _, index_bonus_ratio = await self._fetch_index_shiny_bonus(ctx.author.id)
-
-        non_huge_definitions = [
-            pet for pet in PET_DEFINITIONS if not getattr(pet, "is_huge", False)
-        ]
-        if not non_huge_definitions:
-            await ctx.send(embed=embeds.error_embed("Aucun pet disponible pour la fusion."))
-            return
-
-        zodiaque_pet_names = {
-            pet.name
-            for egg in PET_EGG_DEFINITIONS
-            if egg.zone_slug == ZODIAQUE_ZONE_SLUG
-            for pet in egg.pets
-        }
-        weights = []
-        for pet in non_huge_definitions:
-            base_weight = max(0.0001, float(getattr(pet, "drop_rate", 0.0)) or 0.0001)
-            if pet.name in zodiaque_pet_names:
-                base_weight *= FUSE_ZODIAQUE_WEIGHT_MULTIPLIER
-            weights.append(max(0.0001, base_weight))
-
-        total_outputs = 1
-        bonus_label = None
-        if pet_perks.fuse_triple_chance > 0 and random.random() < pet_perks.fuse_triple_chance:
-            total_outputs = 3
-            bonus_label = "🔥 Chance triple !"
-        elif pet_perks.fuse_double_chance > 0 and random.random() < pet_perks.fuse_double_chance:
-            total_outputs = 2
-            bonus_label = "⚙️ Chance double !"
-
-        selected_defs = random.choices(non_huge_definitions, weights=weights, k=total_outputs)
-
-        def _roll_shiny(base_chance: float) -> bool:
-            chance = self._apply_index_bonus(base_chance, index_bonus_ratio)
-            if chance <= 0:
-                return False
-            chance *= float(pet_perks.egg_shiny_multiplier)
-            chance *= clan_shiny_multiplier
-            return random.random() < min(1.0, chance)
-
-        results: List[Dict[str, Any]] = []
-        consumed_ids = unique_ids[:10]
-
-        primary_definition = selected_defs[0]
-        rarity_label = "Huge" if primary_definition.is_huge else str(primary_definition.rarity)
-        power_value = max(
-            int(getattr(definition, "base_income_per_hour", 0) or 0)
-            for definition in selected_defs
-        )
-        power_value = scale_pet_value(power_value)
-        fusion_cost = self._compute_fusion_cost(
-            rarity=rarity_label,
-            power_value=power_value,
-            consumed_count=len(consumed_ids),
-            output_count=total_outputs,
-        )
-        primary_shiny = _roll_shiny(pet_perks.egg_shiny_chance)
-        try:
-            primary_record = await self.database.fuse_user_pets(
-                ctx.author.id,
-                consumed_ids,
-                self._pet_ids[primary_definition.name],
-                make_shiny=primary_shiny,
-                result_is_huge=primary_definition.is_huge,
-                cost=fusion_cost,
-            )
-        except InsufficientBalanceError:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    f"Tu n'as pas assez de {Emojis.GEM} pour payer la fusion ({embeds.format_gems(fusion_cost)})."
-                )
-            )
-            return
-        except DatabaseError as exc:
-            await ctx.send(embed=embeds.error_embed(str(exc)))
-            return
-
-        results.append(
-            self._convert_record(primary_record, best_non_huge_income=None)
-        )
-
-        for extra_definition in selected_defs[1:]:
-            extra_shiny = _roll_shiny(pet_perks.egg_shiny_chance)
-            extra_record = await self.database.add_user_pet(
-                ctx.author.id,
-                self._pet_ids[extra_definition.name],
-                is_huge=extra_definition.is_huge,
-                is_shiny=extra_shiny,
-            )
-            results.append(
-                self._convert_record(extra_record, best_non_huge_income=None)
-            )
-
-        embed = embeds.success_embed("Résultats de la fusion", title="🛠️ Machine de fusion")
-        lines = []
-        for entry in results:
-            name = str(entry.get("name", "Pet"))
-            income = scale_pet_value(int(entry.get("base_income_per_hour", 0)))
-            tags: List[str] = []
-            if entry.get("is_galaxy"):
-                tags.append("Galaxy")
-            elif entry.get("is_rainbow"):
-                tags.append("Rainbow")
-            elif entry.get("is_gold"):
-                tags.append("Gold")
-            if entry.get("is_shiny"):
-                tags.append("Shiny")
-            suffix = f" ({', '.join(tags)})" if tags else ""
-            emoji = pet_emoji(name)
-            lines.append(f"{embeds.format_currency(income)}/h — {emoji}{suffix}")
-
-        if auto_selected:
-            used_ids = ", ".join(str(pet_id) for pet_id in consumed_ids)
-            lines.append(f"IDs utilisés : {used_ids}")
-        if bonus_label:
-            lines.append(bonus_label)
-        lines.append(f"Coût : {embeds.format_gems(fusion_cost)}")
-
-        embed.description = "\n".join(lines)
-        await ctx.send(embed=embed)
-
-        mastery_update = await self.database.add_mastery_experience(
-            ctx.author.id, PET_MASTERY.slug, len(consumed_ids)
-        )
-        await self._handle_mastery_notifications(
-            ctx, mastery_update, mastery=PET_MASTERY
-        )
-
-    async def _bulk_fuse_variants(
-        self,
-        ctx: commands.Context,
-        *,
-        mode: str,
-    ) -> None:
-        rows = await self.database.get_user_pets(ctx.author.id)
-        plan = self._build_bulk_fusion_plan(rows, mode=mode)
-        if not plan:
-            await ctx.send(embed=embeds.info_embed("Aucune fusion possible pour le moment."))
-            return
-
-        pet_mastery_progress = await self.database.get_mastery_progress(
-            ctx.author.id, PET_MASTERY.slug
-        )
-        pet_mastery_level = int(pet_mastery_progress.get("level", 1))
-        pet_perks = _compute_pet_mastery_perks(pet_mastery_level)
-        clan_row = await self.database.get_user_clan(ctx.author.id)
-        clan_shiny_multiplier = 1.0
-        if clan_row is not None:
-            clan_shiny_multiplier = max(
-                1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
-            )
-        _, index_bonus_ratio = await self._fetch_index_shiny_bonus(ctx.author.id)
-
-        if mode == "gold":
-            combine_required = GOLD_PET_COMBINE_REQUIRED
-            cost = GOLDIFY_GEM_COST
-            shiny_base = float(pet_perks.goldify_shiny_chance)
-            upgrade = self.database.upgrade_pet_to_gold
-            title = "Fusion dorée — tout"
-            variant_label = "or"
-            mastery_points = GOLD_MASTERY_POINTS
-        elif mode == "rainbow":
-            combine_required = RAINBOW_PET_COMBINE_REQUIRED
-            cost = RAINBOWIFY_GEM_COST
-            shiny_base = float(pet_perks.rainbowify_shiny_chance)
-            upgrade = self.database.upgrade_pet_to_rainbow
-            title = "🌈 Fusion Rainbow — tout"
-            variant_label = "rainbow"
-            mastery_points = RAINBOW_MASTERY_POINTS
-        elif mode == "galaxy":
-            combine_required = GALAXY_PET_COMBINE_REQUIRED
-            cost = GALAXY_GEM_COST
-            shiny_base = float(pet_perks.rainbowify_shiny_chance)
-            upgrade = self.database.upgrade_pet_to_galaxy
-            title = "🌌 Fusion Galaxy — tout"
-            variant_label = "galaxy"
-            mastery_points = GALAXY_MASTERY_POINTS
-        else:
-            await ctx.send(embed=embeds.error_embed("Mode de fusion inconnu."))
-            return
-
-        shiny_chance = self._apply_index_bonus(shiny_base, index_bonus_ratio)
-        shiny_chance *= float(pet_perks.egg_shiny_multiplier)
-        shiny_chance *= clan_shiny_multiplier
-        shiny_chance = min(1.0, max(0.0, shiny_chance))
-
-        total_cost = 0
-        total_consumed = 0
-        total_fusions = 0
-        total_shiny = 0
-        lines: list[str] = []
-        errors: list[str] = []
-
-        for definition, pet_id, quantity in plan:
-            make_shiny = [random.random() < shiny_chance for _ in range(quantity)]
-            try:
-                records, consumed = await upgrade(
-                    ctx.author.id,
-                    pet_id,
-                    make_shiny=make_shiny,
-                    quantity=quantity,
-                    cost=cost,
-                )
-            except InsufficientBalanceError:
-                if total_fusions == 0:
-                    await ctx.send(
-                        embed=embeds.error_embed(
-                            f"Tu n'as pas assez de {Emojis.GEM} pour lancer la fusion {variant_label} en masse."
-                        )
-                    )
-                    return
-                errors.append("Solde insuffisant pour terminer toutes les fusions.")
-                break
-            except DatabaseError as exc:
-                errors.append(f"{definition.name} : {exc}")
-                continue
-
-            shiny_count = sum(1 for record in records if bool(record.get("is_shiny")))
-            total_shiny += shiny_count
-            total_fusions += quantity
-            total_consumed += consumed
-            total_cost += cost * quantity
-            shiny_suffix = f" • ✨ {shiny_count}/{quantity}" if shiny_count else ""
-            lines.append(
-                f"• {definition.name} : {quantity} fusion{'' if quantity == 1 else 's'} {variant_label}{shiny_suffix}"
-            )
-
-        if total_fusions <= 0:
-            await ctx.send(embed=embeds.info_embed("Aucune fusion effectuée."))
-            return
-
-        summary_lines = [
-            f"Fusions réalisées : {total_fusions}",
-            f"Pets consommés : {total_consumed} ({combine_required} par fusion)",
-            f"Coût total : {embeds.format_gems(total_cost)}",
-        ]
-        if total_shiny:
-            summary_lines.append(f"✨ Shiny obtenus : {total_shiny}/{total_fusions}")
-        lines.extend(summary_lines)
-        if errors:
-            lines.append("")
-            lines.append("⚠️ " + " | ".join(errors))
-
-        await ctx.send(embed=embeds.success_embed("\n".join(lines), title=title))
-
-        total_mastery_points = max(1, total_fusions * mastery_points)
-        mastery_update = await self.database.add_mastery_experience(
-            ctx.author.id, PET_MASTERY.slug, total_mastery_points
-        )
-        await self._handle_mastery_notifications(
-            ctx, mastery_update, mastery=PET_MASTERY
-        )
-
-    @commands.command(name="goldify", aliases=("gold", "fusion"))
-    async def goldify(self, ctx: commands.Context, *, pet_name: str | None = None) -> None:
-        if not pet_name:
-            await ctx.send(
-                embed=embeds.info_embed(
-                    "Utilise `e!goldify <nom du pet> [quantité]` pour fusionner **"
-                    f"{GOLD_PET_COMBINE_REQUIRED}** exemplaires identiques en une version or."
-                    f"\nCoût : {embeds.format_gems(GOLDIFY_GEM_COST)} par fusion."
-                    "\nAstuce : utilise `e!gold all` pour tout fusionner d'un coup."
-                )
-            )
-            return
-
-        if self._is_all_token(pet_name):
-            await self._bulk_fuse_variants(ctx, mode="gold")
-            return
-
-        raw_name, quantity = self._split_pet_quantity(pet_name)
-        if quantity <= 0:
-            await ctx.send(embed=embeds.error_embed("La quantité doit être positive."))
-            return
-        if not raw_name:
-            await ctx.send(embed=embeds.error_embed("Merci d'indiquer le nom du pet."))
-            return
-
-        lookup = raw_name.strip().lower()
-        definition = self._definition_by_slug.get(lookup)
-        if definition is None:
-            await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
-            return
-
-        pet_id = self._pet_ids.get(definition.name)
-        if pet_id is None:
-            await ctx.send(embed=embeds.error_embed("Pet non synchronisé. Réessaie plus tard."))
-            return
-
-        pet_mastery_progress = await self.database.get_mastery_progress(
-            ctx.author.id, PET_MASTERY.slug
-        )
-        pet_mastery_level = int(pet_mastery_progress.get("level", 1))
-        pet_perks = _compute_pet_mastery_perks(pet_mastery_level)
-        clan_row = await self.database.get_user_clan(ctx.author.id)
-        clan_shiny_multiplier = 1.0
-        if clan_row is not None:
-            clan_shiny_multiplier = max(
-                1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
-            )
-        _, index_bonus_ratio = await self._fetch_index_shiny_bonus(ctx.author.id)
-
-        shiny_chance = self._apply_index_bonus(
-            float(pet_perks.goldify_shiny_chance), index_bonus_ratio
-        )
-        shiny_chance *= float(pet_perks.egg_shiny_multiplier)
-        shiny_chance *= clan_shiny_multiplier
-        shiny_chance = min(1.0, max(0.0, shiny_chance))
-        make_shiny = [random.random() < shiny_chance for _ in range(quantity)]
-
-        try:
-            records, consumed = await self.database.upgrade_pet_to_gold(
-                ctx.author.id,
-                pet_id,
-                make_shiny=make_shiny,
-                quantity=quantity,
-                cost=GOLDIFY_GEM_COST,
-            )
-        except InsufficientBalanceError:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    f"Tu n'as pas assez de {Emojis.GEM} pour goldify ({embeds.format_gems(GOLDIFY_GEM_COST * quantity)})."
-                )
-            )
-            return
-        except DatabaseError as exc:
-            await ctx.send(embed=embeds.error_embed(str(exc)))
-            return
-
-        total_cost = GOLDIFY_GEM_COST * quantity
-        if quantity == 1:
-            record = records[0]
-            best_non_huge_income = await self.database.get_best_non_huge_income(
-                ctx.author.id
-            )
-            pet_data = self._convert_record(
-                record, best_non_huge_income=best_non_huge_income
-            )
-            market_values = await self.database.get_pet_market_values()
-            pet_identifier = int(pet_data.get("pet_id", 0))
-            pet_data["market_value"] = self._resolve_market_value(
-                market_values,
-                pet_id=pet_identifier,
-                is_gold=bool(pet_data.get("is_gold")),
-                is_rainbow=bool(pet_data.get("is_rainbow")),
-                is_galaxy=bool(pet_data.get("is_galaxy")),
-                is_shiny=bool(pet_data.get("is_shiny")),
-            )
-            reveal_embed = embeds.pet_reveal_embed(
-                name=str(pet_data.get("name", definition.name)),
-                rarity=str(pet_data.get("rarity", definition.rarity)),
-                image_url=str(pet_data.get("image_url", definition.image_url)),
-                income_per_hour=int(
-                    pet_data.get("base_income_per_hour", definition.base_income_per_hour)
-                ),
-                is_huge=bool(pet_data.get("is_huge", False)),
-                is_gold=True,
-                is_rainbow=bool(pet_data.get("is_rainbow", False)),
-                is_galaxy=bool(pet_data.get("is_galaxy", False)),
-                is_shiny=bool(pet_data.get("is_shiny", False)),
-                market_value=int(pet_data.get("market_value", 0)),
-            )
-            reveal_embed.add_field(
-                name="Fusion dorée",
-                value=(
-                    f"{consumed} exemplaires combinés pour obtenir cette version or !\n"
-                    "Les pets utilisés ont été retirés de ton inventaire.\n"
-                    f"Coût : {embeds.format_gems(total_cost)}"
-                ),
-                inline=False,
-            )
-            user_pet_id = int(pet_data.get("id", 0))
-            if user_pet_id:
-                reveal_embed.set_footer(
-                    text=f"Utilise e!equip {definition.name} pour l'équiper !"
-                )
-            await ctx.send(embed=reveal_embed)
-        else:
-            shiny_count = sum(1 for record in records if bool(record.get("is_shiny")))
-            lines = [
-                f"🎉 {quantity} versions or créées pour **{definition.name}**.",
-                f"Pets consommés : {consumed} ({GOLD_PET_COMBINE_REQUIRED} par fusion).",
-                f"Coût total : {embeds.format_gems(total_cost)}",
-            ]
-            if shiny_count:
-                lines.append(f"✨ Shiny obtenus : {shiny_count}/{quantity}")
-            await ctx.send(
-                embed=embeds.success_embed("\n".join(lines), title="Fusion dorée")
-            )
-
-        mastery_update = await self.database.add_mastery_experience(
-            ctx.author.id, PET_MASTERY.slug, max(1, int(quantity * GOLD_MASTERY_POINTS))
-        )
-        await self._handle_mastery_notifications(
-            ctx, mastery_update, mastery=PET_MASTERY
-        )
-
-    @commands.command(name="rainbow", aliases=("rainbowify", "rb"))
-    async def rainbow(self, ctx: commands.Context, *, pet_name: str) -> None:
-        if self._is_all_token(pet_name):
-            await self._bulk_fuse_variants(ctx, mode="rainbow")
-            return
-
-        raw_name, quantity = self._split_pet_quantity(pet_name)
-        if quantity <= 0:
-            await ctx.send(embed=embeds.error_embed("La quantité doit être positive."))
-            return
-
-        slug, _, _ = self._parse_pet_query(raw_name)
-        if not slug:
-            await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
-            return
-
-        definition = self._definition_by_slug.get(slug)
-        if definition is None:
-            await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
-            return
-
-        pet_id = self._pet_ids.get(definition.name)
-        if pet_id is None:
-            await ctx.send(embed=embeds.error_embed("Pet non synchronisé."))
-            return
-
-        pet_mastery_progress = await self.database.get_mastery_progress(
-            ctx.author.id, PET_MASTERY.slug
-        )
-        pet_mastery_level = int(pet_mastery_progress.get("level", 1))
-        pet_perks = _compute_pet_mastery_perks(pet_mastery_level)
-        clan_row = await self.database.get_user_clan(ctx.author.id)
-        clan_shiny_multiplier = 1.0
-        if clan_row is not None:
-            clan_shiny_multiplier = max(
-                1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
-            )
-        _, index_bonus_ratio = await self._fetch_index_shiny_bonus(ctx.author.id)
-
-        shiny_chance = self._apply_index_bonus(
-            float(pet_perks.rainbowify_shiny_chance), index_bonus_ratio
-        )
-        shiny_chance *= float(pet_perks.egg_shiny_multiplier)
-        shiny_chance *= clan_shiny_multiplier
-        shiny_chance = min(1.0, max(0.0, shiny_chance))
-        make_shiny = [random.random() < shiny_chance for _ in range(quantity)]
-
-        try:
-            records, consumed = await self.database.upgrade_pet_to_rainbow(
-                ctx.author.id,
-                pet_id,
-                make_shiny=make_shiny,
-                quantity=quantity,
-                cost=RAINBOWIFY_GEM_COST,
-            )
-        except InsufficientBalanceError:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    f"Tu n'as pas assez de {Emojis.GEM} pour rainbowify ({embeds.format_gems(RAINBOWIFY_GEM_COST * quantity)})."
-                )
-            )
-            return
-        except DatabaseError as exc:
-            await ctx.send(embed=embeds.error_embed(str(exc)))
-            return
-
-        total_cost = RAINBOWIFY_GEM_COST * quantity
-        best_non_huge_income = None
-        if definition.is_huge:
-            best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
-        pet_data = self._convert_record(records[0], best_non_huge_income=best_non_huge_income)
-        rainbow_income = int(pet_data.get("base_income_per_hour", 0))
-        display_rainbow_income = scale_pet_value(rainbow_income)
-        if quantity == 1:
-            embed = embeds.pet_reveal_embed(
-                name=definition.name,
-                rarity=definition.rarity,
-                image_url=definition.image_url,
-                income_per_hour=rainbow_income,
-                is_huge=bool(pet_data.get("is_huge", False)),
-                is_gold=False,
-                is_galaxy=False,
-                is_rainbow=True,
-                is_shiny=bool(pet_data.get("is_shiny", False)),
-                market_value=0,
-            )
-            embed.add_field(
-                name="🌈 Fusion Rainbow",
-                value=(
-                    f"🎉 {consumed} pets GOLD fusionnés en 1 RAINBOW !\n"
-                    f"Puissance : **{display_rainbow_income:,} {Emojis.COIN}/h** ({RAINBOW_PET_MULTIPLIER}x le pet de base)\n"
-                    "Les pets utilisés ont été retirés de ton inventaire.\n"
-                    f"Coût : {embeds.format_gems(total_cost)}"
-                ).replace(",", " "),
-                inline=False,
-            )
-            await ctx.send(embed=embed)
-        else:
-            shiny_count = sum(1 for record in records if bool(record.get("is_shiny")))
-            lines = [
-                f"🎉 {quantity} versions rainbow créées pour **{definition.name}**.",
-                f"Pets consommés : {consumed} ({RAINBOW_PET_COMBINE_REQUIRED} par fusion).",
-                f"Puissance : **{display_rainbow_income:,} {Emojis.COIN}/h** ({RAINBOW_PET_MULTIPLIER}x)",
-                f"Coût total : {embeds.format_gems(total_cost)}",
-            ]
-            if shiny_count:
-                lines.append(f"✨ Shiny obtenus : {shiny_count}/{quantity}")
-            await ctx.send(
-                embed=embeds.success_embed(
-                    "\n".join(lines).replace(",", " "), title="🌈 Fusion Rainbow"
-                )
-            )
-
-        mastery_update = await self.database.add_mastery_experience(
-            ctx.author.id, PET_MASTERY.slug, max(1, int(quantity * RAINBOW_MASTERY_POINTS))
-        )
-        await self._handle_mastery_notifications(
-            ctx, mastery_update, mastery=PET_MASTERY
-        )
-
-    @commands.command(name="galaxy")
-    async def galaxy(self, ctx: commands.Context, *, pet_name: str) -> None:
-        if self._is_all_token(pet_name):
-            await self._bulk_fuse_variants(ctx, mode="galaxy")
-            return
-
-        slug, _, _ = self._parse_pet_query(pet_name)
-        if not slug:
-            await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
-            return
-
-        definition = self._definition_by_slug.get(slug)
-        if definition is None:
-            await ctx.send(embed=embeds.error_embed("Ce pet n'existe pas."))
-            return
-
-        pet_id = self._pet_ids.get(definition.name)
-        if pet_id is None:
-            await ctx.send(embed=embeds.error_embed("Pet non synchronisé."))
-            return
-
-        pet_mastery_progress = await self.database.get_mastery_progress(
-            ctx.author.id, PET_MASTERY.slug
-        )
-        pet_mastery_level = int(pet_mastery_progress.get("level", 1))
-        pet_perks = _compute_pet_mastery_perks(pet_mastery_level)
-        clan_row = await self.database.get_user_clan(ctx.author.id)
-        clan_shiny_multiplier = 1.0
-        if clan_row is not None:
-            clan_shiny_multiplier = max(
-                1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
-            )
-        _, index_bonus_ratio = await self._fetch_index_shiny_bonus(ctx.author.id)
-
-        shiny_chance = self._apply_index_bonus(
-            float(pet_perks.rainbowify_shiny_chance), index_bonus_ratio
-        )
-        shiny_chance *= float(pet_perks.egg_shiny_multiplier)
-        shiny_chance *= clan_shiny_multiplier
-        shiny_chance = min(1.0, max(0.0, shiny_chance))
-        make_shiny = random.random() < shiny_chance
-
-        try:
-            records, consumed = await self.database.upgrade_pet_to_galaxy(
-                ctx.author.id,
-                pet_id,
-                make_shiny=make_shiny,
-                cost=GALAXY_GEM_COST,
-            )
-        except InsufficientBalanceError:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    f"Tu n'as pas assez de {Emojis.GEM} pour galaxy ({embeds.format_gems(GALAXY_GEM_COST)})."
-                )
-            )
-            return
-        except DatabaseError as exc:
-            await ctx.send(embed=embeds.error_embed(str(exc)))
-            return
-
-        best_non_huge_income = None
-        if definition.is_huge:
-            best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
-        pet_data = self._convert_record(records[0], best_non_huge_income=best_non_huge_income)
-        galaxy_income = int(pet_data.get("base_income_per_hour", 0))
-        display_galaxy_income = scale_pet_value(galaxy_income)
-        total_cost = GALAXY_GEM_COST
-
-        embed = embeds.pet_reveal_embed(
-            name=definition.name,
-            rarity=definition.rarity,
-            image_url=definition.image_url,
-            income_per_hour=galaxy_income,
-            is_huge=bool(pet_data.get("is_huge", False)),
-            is_gold=False,
-            is_galaxy=True,
-            is_rainbow=False,
-            is_shiny=bool(pet_data.get("is_shiny", False)),
-            market_value=0,
-        )
-        embed.add_field(
-            name="🌌 Fusion Galaxy",
-            value=(
-                f"🎉 {consumed} pets RAINBOW fusionnés en 1 GALAXY !\n"
-                f"Puissance : **{display_galaxy_income:,} {Emojis.COIN}/h** ({GALAXY_PET_MULTIPLIER}x le pet de base)\n"
-                "Les pets utilisés ont été retirés de ton inventaire.\n"
-                f"Coût : {embeds.format_gems(total_cost)}"
-            ).replace(",", " "),
-            inline=False,
-        )
-
-        await ctx.send(embed=embed)
-
-        mastery_update = await self.database.add_mastery_experience(
-            ctx.author.id, PET_MASTERY.slug, max(1, int(GALAXY_MASTERY_POINTS))
-        )
-        await self._handle_mastery_notifications(
-            ctx, mastery_update, mastery=PET_MASTERY
-        )
-
-    @commands.command(name="trade", aliases=("tradepet",))
-    async def trade(
-        self, ctx: commands.Context, member: discord.Member
-    ) -> None:
-        if member.id == ctx.author.id:
-            await ctx.send(embed=embeds.error_embed("Tu ne peux pas lancer un trade avec toi-même."))
-            return
-        if member.bot:
-            await ctx.send(embed=embeds.error_embed("Les bots ne peuvent pas participer aux trades."))
-            return
-
-        channel = ctx.channel
-        parent: discord.TextChannel | None = None
-        if isinstance(channel, discord.TextChannel):
-            parent = channel
-        elif isinstance(channel, discord.Thread) and isinstance(channel.parent, discord.TextChannel):
-            parent = channel.parent
-        if parent is None:
-            await ctx.send(
-                embed=embeds.error_embed("Les trades ne peuvent être lancés que depuis un salon textuel du serveur.")
-            )
-            return
-
-        thread_name = f"trade-{ctx.author.display_name}-{member.display_name}"
-        thread_name = thread_name.replace("/", "-")[:95]
-        thread: discord.Thread | None = None
-        try:
-            thread = await parent.create_thread(
-                name=thread_name,
-                type=discord.ChannelType.private_thread,
-                invitable=False,
-                reason="Trade interactif",
-            )
-        except discord.HTTPException:
-            try:
-                thread = await parent.create_thread(
-                    name=thread_name,
-                    type=discord.ChannelType.public_thread,
-                    reason="Trade interactif",
-                )
-            except discord.HTTPException:
-                await ctx.send(
-                    embed=embeds.error_embed("Impossible de créer un fil pour ce trade.")
-                )
-                return
-
-        with contextlib.suppress(discord.HTTPException, discord.Forbidden):
-            await thread.add_user(ctx.author)
-            await thread.add_user(member)
-
-        session = TradeSession(self, thread, ctx.author, member)
-        view = TradeView(session)
-        embed = session.build_embed()
-        message = await thread.send(
-            content=f"{ctx.author.mention} {member.mention}",
-            embed=embed,
-            view=view,
-        )
-        session.message = message
-        await ctx.send(
-            embed=embeds.success_embed(
-                f"Un fil de trade a été ouvert : {thread.mention}"
-            )
-        )
-
-    @commands.command(name="multi")
-    async def huge_multipliers(self, ctx: commands.Context) -> None:
-        """Affiche le multiplicateur maximal de chaque Huge et Titanic."""
-
-        multiplier_entries: list[tuple[float, str]] = []
-        for name in HUGE_PET_NAMES:
-            multiplier = float(
-                get_huge_level_multiplier(name, HUGE_PET_LEVEL_CAP)
-            )
-            multiplier_entries.append((multiplier, name))
-
-        if not multiplier_entries:
-            await ctx.send(
-                embed=embeds.info_embed(
-                    "Aucun pet Huge ou Titanic n'est configuré pour le moment.",
-                    title="📈 Multiplicateurs Huge & Titanic",
-                )
-            )
-            return
-
-        multiplier_entries.sort(key=lambda entry: (-entry[0], entry[1]))
-
-        lines: list[str] = []
-        for multiplier, name in multiplier_entries:
-            emoji = PET_EMOJIS.get(name, PET_EMOJIS.get("default", "🐾"))
-            label = f"x{multiplier:.2f}".rstrip("0").rstrip(".")
-            lines.append(f"{emoji} **{name}** — {label}")
-
-        header = (
-            "Les multiplicateurs ci-dessous correspondent au niveau"
-            f" {HUGE_PET_LEVEL_CAP} (maximum)."
-        )
-        embed = embeds.info_embed(
-            header,
-            title="📈 Multiplicateurs Huge & Titanic",
-        )
-
-        field_buffer: list[str] = []
-        field_length = 0
-        for line in lines:
-            line_length = len(line)
-            if field_buffer and field_length + 1 + line_length > 1024:
-                embed.add_field(
-                    name="\u200b",
-                    value="\n".join(field_buffer),
-                    inline=False,
-                )
-                field_buffer = [line]
-                field_length = line_length
-                continue
-
-            if field_buffer:
-                field_length += 1 + line_length
-            else:
-                field_length = line_length
-            field_buffer.append(line)
-
-        if field_buffer:
-            embed.add_field(
-                name="\u200b",
-                value="\n".join(field_buffer),
-                inline=False,
-            )
-
-        await ctx.send(embed=embed)
-
-    @commands.command(name="luck")
-    async def luck(self, ctx: commands.Context) -> None:
-        """Affiche les chances d'obtention de chaque Huge et Titanic."""
-
-        def _format_emoji(name: str) -> str:
-            return PET_EMOJIS.get(name, PET_EMOJIS.get("default", "🐾"))
-
-        egg_entries: list[tuple[float, str]] = []
-        for egg in PET_EGG_DEFINITIONS:
-            for definition in egg.pets:
-                if not definition.is_huge:
-                    continue
-                if definition.drop_rate <= 0:
-                    continue
-                chance_pct = max(0.0, float(definition.drop_rate) * 100)
-                emoji = _format_emoji(definition.name)
-                line = f"{emoji} **{definition.name}** — {chance_pct:.4f}% dans {egg.name}"
-                egg_entries.append((chance_pct, line))
-
-        egg_entries.sort(key=lambda entry: entry[0], reverse=True)
-
-        special_lines: list[str] = []
-        frenzy_start, frenzy_end = get_egg_frenzy_window()
-        frenzy_active = is_egg_frenzy_active()
-        frenzy_start_utc = frenzy_start.astimezone(timezone.utc)
-        frenzy_end_utc = frenzy_end.astimezone(timezone.utc)
-        if frenzy_active:
-            special_lines.append(
-                "🍀 **Egg Frenzy** — bonus de +50% de chance actif jusqu'à "
-                f"{discord.utils.format_dt(frenzy_end_utc, style='t')} "
-                f"({discord.utils.format_dt(frenzy_end_utc, style='R')})."
-            )
-        else:
-            special_lines.append(
-                "🍀 Egg Frenzy quotidien : +50% de chance entre "
-                f"{discord.utils.format_dt(frenzy_start_utc, style='t')} et "
-                f"{discord.utils.format_dt(frenzy_end_utc, style='t')} "
-                f"({discord.utils.format_dt(frenzy_start_utc, style='R')})."
-            )
-
-        min_kenji = MASTERMIND_HUGE_MIN_CHANCE * 100
-        max_kenji = MASTERMIND_HUGE_MAX_CHANCE * 100
-        special_lines.append(
-            f"{_format_emoji(HUGE_KENJI_ONI_NAME)} **{HUGE_KENJI_ONI_NAME}** — récompense bonus du Mastermind"
-            f" (de {min_kenji:.2f}% à {max_kenji:.2f}% selon tes tentatives et bonus)."
-        )
-        special_lines.append(
-            f"{_format_emoji(HUGE_GALE_NAME)} **{HUGE_GALE_NAME}** — garanti après la 20ᵉ étape de la Millionaire Race."
-        )
-        special_lines.append(
-            f"{_format_emoji(HUGE_MORTIS_NAME)} **{HUGE_MORTIS_NAME}** — réservé aux membres VIP (obtention garantie)."
-        )
-        special_lines.append(
-            f"{_format_emoji(HUGE_GRIFF_NAME)} **{HUGE_GRIFF_NAME}** — distribué lors d'événements spéciaux du staff."
-        )
-        special_lines.append(
-            f"{_format_emoji(HUGE_WISHED_NAME)} **{HUGE_WISHED_NAME}** — "
-            f"{HUGE_WISHED_STEAL_CHANCE * 100:.3f}% de chance lors d'un vol réussi."
-        )
-
-        # Titanic Griff odds via casino (bets ≤ 1 000 PB).
-        max_bet_for_titanic = 1_000
-        base_chance = min(
-            CASINO_HUGE_MAX_CHANCE, max_bet_for_titanic * CASINO_HUGE_CHANCE_PER_PB
-        )
-        titanic_factor = min(
-            CASINO_TITANIC_MAX_CHANCE,
-            max_bet_for_titanic * CASINO_TITANIC_CHANCE_PER_PB,
-        )
-        titanic_chance = min(base_chance, titanic_factor) / 10
-        special_lines.append(
-            f"{_format_emoji(TITANIC_GRIFF_NAME)} **{TITANIC_GRIFF_NAME}** — jackpot du casino"
-            f" ({titanic_chance * 100:.7f}% avec une mise de {embeds.format_currency(max_bet_for_titanic)})."
-        )
-
-        embed = embeds.info_embed(
-            "Voici un récapitulatif à jour des chances pour chaque Huge et Titanic.",
-            title="🍀 Chances des Huge & Titanic",
-        )
-        if egg_entries:
-            embed.add_field(
-                name="🎲 Chances dans les œufs",
-                value="\n".join(line for _, line in egg_entries),
-                inline=False,
-            )
-        embed.add_field(
-            name="🎯 Récompenses spéciales",
-            value="\n".join(special_lines),
-            inline=False,
-        )
-
-        await ctx.send(embed=embed)
-
-    # FIX: cooldown anti-spam ; le revenu passif continue de s'accumuler entre
-    # deux claims donc ceci ne pénalise pas les gains, ça protège juste l'API Discord.
-    @commands.cooldown(1, 5, commands.BucketType.user)
-    @commands.command(name="claim")
-    async def claim(self, ctx: commands.Context) -> None:
-        lock = self._claim_locks.get(ctx.author.id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._claim_locks[ctx.author.id] = lock
-        async with lock:
-            (
-                amount,
-                rows,
-                elapsed,
-                booster_info,
-                clan_info,
-                progress_updates,
-                potion_info,
-                _enchantment_info,
-                farm_rewards,
-                _rebirth_info,
-            ) = await self.database.claim_active_pet_income(ctx.author.id)
-            if not rows:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Tu dois équiper un pet avant de pouvoir collecter ses revenus."
-                    )
-                )
-                return
-
-            original_levels: Dict[int, int] = {
-                int(row["id"]): int(row.get("huge_level") or 1)
-                for row in rows
-                if bool(row.get("is_huge"))
-            }
-            pets_data = await self._prepare_pet_data(ctx.author.id, rows)
-
-            if progress_updates:
-                for pet in pets_data:
-                    user_pet_id = int(pet.get("id", 0))
-                    update = progress_updates.get(user_pet_id)
-                    if not update:
-                        continue
-                    new_level, new_xp = update
-                    self._apply_huge_progress_fields(pet, new_level, new_xp)
-                    if pet.get("is_huge"):
-                        reference = int(pet.get("_reference_income", 0))
-                        income_value = self._compute_huge_income(
-                            reference,
-                            pet_name=str(pet.get("name", "")),
-                            level=new_level,
-                        )
-                        pet["base_income_per_hour"] = income_value
-                        if "income" in pet:
-                            pet["income"] = income_value
-
-            for pet in pets_data:
-                pet.pop("_reference_income", None)
-
-            level_up_count = 0
-            if original_levels and pets_data:
-                for pet in pets_data:
-                    if not pet.get("is_huge"):
-                        continue
-                    user_pet_id = int(pet.get("id", 0))
-                    old_level = original_levels.get(user_pet_id)
-                    new_level = int(pet.get("huge_level", old_level or 1))
-                    if old_level is not None and new_level > old_level:
-                        level_up_count += 1
-
-            if clan_info:
-                clan_id = int(clan_info.get("id", 0))
-                if clan_id:
-                    top_rows = await self.database.get_clan_contribution_leaderboard(clan_id, limit=3)
-                    top_entries: List[Dict[str, object]] = []
-                    for row in top_rows:
-                        contributor_id = int(row["user_id"])
-                        contribution = int(row["contribution"])
-                        member_obj = None
-                        if ctx.guild is not None:
-                            member_obj = ctx.guild.get_member(contributor_id)
-                        display = member_obj.display_name if member_obj else f"<@{contributor_id}>"
-                        top_entries.append(
-                            {
-                                "display": display,
-                                "mention": f"<@{contributor_id}>",
-                                "contribution": contribution,
-                            }
-                        )
-                    if top_entries:
-                        clan_info["top_contributors"] = top_entries
-
-            embed = embeds.pet_claim_embed(
-                member=ctx.author,
-                pets=pets_data,
-                amount=amount,
-                elapsed_seconds=elapsed,
-                booster=booster_info,
-                clan=clan_info if clan_info else None,
-                potion=potion_info if potion_info else None,
-                farm_rewards=farm_rewards if farm_rewards else None,
-            )
-            level_up_summary: str | None = None
-            if level_up_count:
-                level_up_summary = (
-                    f"🎉 **{level_up_count}** nouveaux level ups de tes pets !"
-                )
-                embed.add_field(
-                    name="🎉 Nouveaux niveaux",
-                    value=level_up_summary,
-                    inline=False,
-                )
-
-            try:
-                await ctx.send(embed=embed)
-            except discord.HTTPException:
-                logger.exception(
-                    "Impossible d'envoyer l'embed de claim des pets",
-                    extra={
-                        "user_id": ctx.author.id,
-                        "pet_count": len(pets_data),
-                        "amount": amount,
-                    },
-                )
-                fallback_parts = [embed.title or "Gains des pets"]
-                if embed.description:
-                    fallback_parts.append(embed.description)
-                if level_up_summary:
-                    fallback_parts.append(level_up_summary)
-                fallback_message = "\n".join(part for part in fallback_parts if part)
-                if not fallback_message:
-                    fallback_message = (
-                        f"Tu récupères des {Emojis.COIN} avec tes pets, mais un problème est survenu "
-                        "lors de l'affichage de l'embed."
-                    )
-                await ctx.send(fallback_message)
-
-
-
-
-@dataclass
-class TradeOffer:
-    pb: int = 0
-    pets: list[dict[str, Any]] = field(default_factory=list)
-
-class TradeSession:
-    """Orchestre un échange interactif entre deux joueurs."""
-
-    def __init__(
-        self,
-        cog: "Pets",
-        thread: discord.Thread,
-        initiator: discord.Member,
-        partner: discord.Member,
-    ) -> None:
-        self.cog = cog
-        self.thread = thread
-        self.initiator = initiator
-        self.partner = partner
-        self.offers: dict[int, TradeOffer] = {
-            initiator.id: TradeOffer(),
-            partner.id: TradeOffer(),
-        }
-        self.ready: set[int] = set()
-        self.lock = asyncio.Lock()
-        self.message: discord.Message | None = None
-        self.view: TradeView | None = None
-        self.completed = False
-        self._refresh_lock = asyncio.Lock()
-        self._last_refresh: float = 0.0
-        self._refresh_interval = 0.8
-
-    @property
-    def participants(self) -> tuple[discord.Member, discord.Member]:
-        return self.initiator, self.partner
-
-    def other_user(self, user_id: int) -> discord.Member:
-        return self.partner if user_id == self.initiator.id else self.initiator
-
-    def toggle_ready(self, user_id: int) -> bool:
-        if user_id in self.ready:
-            self.ready.discard(user_id)
-            return False
-        self.ready.add(user_id)
-        return True
-
-    def both_ready(self) -> bool:
-        return len(self.ready) == 2
-
-    def has_trade_value(self) -> bool:
-        for offer in self.offers.values():
-            if offer.pb > 0 or offer.pets:
-                return True
-        return False
-
-    async def add_pet(
-        self, user: discord.abc.User, user_pet_id: int, price: int
-    ) -> None:
-        async with self.lock:
-            offer = self.offers.setdefault(user.id, TradeOffer())
-            if any(pet["user_pet_id"] == user_pet_id for pet in offer.pets):
-                raise DatabaseError("Ce pet est déjà dans ton offre.")
-            record = await self.cog.database.get_user_pet(user.id, user_pet_id)
-            if record is None:
-                raise DatabaseError("Impossible de trouver ce pet dans ton inventaire.")
-            if bool(record.get("is_active")):
-                raise DatabaseError("Ce pet est actuellement équipé.")
-            if bool(record.get("on_market")):
-                raise DatabaseError("Ce pet est listé sur un stand.")
-            if await self.cog.database.is_pet_in_daycare(user.id, user_pet_id):
-                raise DatabaseError("Ce pet est actuellement à la garderie.")
-
-            pet_data = self.cog._convert_record(record, best_non_huge_income=None)
-            offer.pets.append(
-                {
-                    "user_pet_id": user_pet_id,
-                    "pet_id": int(pet_data.get("pet_id", 0)),
-                    "name": str(pet_data.get("name", "Pet")),
-                    "is_gold": bool(pet_data.get("is_gold")),
-                    "is_rainbow": bool(pet_data.get("is_rainbow")),
-                    "is_shiny": bool(pet_data.get("is_shiny")),
-                    "price": max(0, price),
-                }
-            )
-            self.ready.discard(user.id)
-
-    async def set_pb(self, user_id: int, amount: int) -> None:
-        if amount < 0:
-            raise DatabaseError(f"Le montant en {Emojis.COIN} doit être positif.")
-        async with self.lock:
-            self.offers.setdefault(user_id, TradeOffer()).pb = amount
-            self.ready.discard(user_id)
-
-    async def clear_offer(self, user_id: int) -> None:
-        async with self.lock:
-            self.offers[user_id] = TradeOffer()
-            self.ready.discard(user_id)
-
-    def _format_pet_line(self, data: Mapping[str, Any], price: int) -> str:
-        markers: list[str] = []
-        if bool(data.get("is_rainbow")):
-            markers.append("🌈")
-        elif bool(data.get("is_gold")):
-            markers.append("🥇")
-        if bool(data.get("is_shiny")):
-            markers.append("✨")
-        suffix = f" {' '.join(markers)}" if markers else ""
-        emoji = pet_emoji(str(data.get("name", "Pet")))
-        return (
-            f"{emoji} {data.get('name', 'Pet')}{suffix} — {embeds.format_currency(price)}"
-        )
-
-    def build_embed(self) -> discord.Embed:
-        embed = embeds.info_embed(
-            f"Ajoute des pets ou des {Emojis.COIN} à ton offre, puis valide avec Prêt lorsque tout te convient.",
-            title="💱 Trade interactif",
-        )
-        for member in self.participants:
-            offer = self.offers.get(member.id) or TradeOffer()
-            lines: list[str] = []
-            if offer.pb:
-                lines.append(f"{Emojis.COIN} : {embeds.format_currency(offer.pb)}")
-            for pet in offer.pets:
-                lines.append(self._format_pet_line(pet, int(pet.get("price", 0))))
-            if not lines:
-                lines.append("Aucune offre")
-            status = "✅" if member.id in self.ready else "⏳"
-            embed.add_field(
-                name=f"{status} {member.display_name}",
-                value="\n".join(lines),
-                inline=False,
-            )
-        embed.set_footer(
-            text="Le trade se finalise automatiquement lorsque vous êtes deux à être prêts."
-        )
-        return embed
-
-    def _serialize_offer(self, user_id: int) -> dict[str, object]:
-        offer = self.offers.get(user_id) or TradeOffer()
-        return {
-            "pb": int(offer.pb),
-            "pets": [
-                {"id": int(pet["user_pet_id"]), "price": int(pet.get("price", 0))}
-                for pet in offer.pets
-            ],
-        }
-
-    async def refresh(self) -> None:
-        if self.message is None or self.view is None:
-            return
-        async with self._refresh_lock:
-            loop = asyncio.get_running_loop()
-            now = loop.time()
-            delay = self._refresh_interval - (now - self._last_refresh)
-            if delay > 0:
-                await asyncio.sleep(delay)
-                now = loop.time()
-
-            try:
-                await self.message.edit(embed=self.build_embed(), view=self.view)
-            except discord.HTTPException as exc:
-                logger.warning("Impossible de rafraîchir le trade", exc_info=exc)
-            finally:
-                self._last_refresh = loop.time()
-
-    async def complete_trade(
-        self, interaction: discord.Interaction, view: "TradeView"
-    ) -> None:
-        async with self.lock:
-            if self.completed:
-                return
-            initiator_offer = self._serialize_offer(self.initiator.id)
-            partner_offer = self._serialize_offer(self.partner.id)
-
-        if not self.has_trade_value():
-            self.ready.clear()
-            await interaction.followup.send(
-                embed=embeds.error_embed(
-                    f"Ajoute au moins un pet ou des {Emojis.COIN} avant de finaliser le trade."
-                ),
-                ephemeral=True,
-            )
-            await self.refresh()
-            return
-
-        try:
-            result = await self.cog.database.execute_trade(
-                self.initiator.id,
-                self.partner.id,
-                initiator_offer,
-                partner_offer,
-            )
-        except InsufficientBalanceError as exc:
-            self.ready.clear()
-            await interaction.followup.send(
-                embed=embeds.error_embed(str(exc)), ephemeral=True
-            )
-            await self.refresh()
-            return
-        except DatabaseError as exc:
-            self.ready.clear()
-            await interaction.followup.send(
-                embed=embeds.error_embed(str(exc)), ephemeral=True
-            )
-            await self.refresh()
-            return
-
-        self.completed = True
-        view.disable_all_items()
-        if self.message is not None:
-            await interaction.followup.edit_message(
-                self.message.id,
-                embed=self._build_result_embed(result),
-                view=view,
-            )
-        await interaction.followup.send(
-            embed=embeds.success_embed(
-                "Le trade est terminé ! Ce fil sera supprimé dans 60 secondes."
-            ),
-            ephemeral=True,
-        )
-        view.stop()
-        await self._schedule_thread_close()
-
-    def _build_result_embed(self, result: Mapping[str, Any]) -> discord.Embed:
-        embed = embeds.success_embed(
-            "Les échanges ont été effectués avec succès.", title="✅ Trade finalisé"
-        )
-        initiator_lines = self._result_lines(
-            outgoing=self.offers[self.initiator.id],
-            incoming=result.get("partner_pets", []),
-            received_pb=int(result.get("partner_pb_out", 0)),
-            given_pb=int(result.get("initiator_pb_out", 0)),
-        )
-        partner_lines = self._result_lines(
-            outgoing=self.offers[self.partner.id],
-            incoming=result.get("initiator_pets", []),
-            received_pb=int(result.get("initiator_pb_out", 0)),
-            given_pb=int(result.get("partner_pb_out", 0)),
-        )
-        embed.add_field(
-            name=self.initiator.display_name,
-            value="\n".join(initiator_lines),
-            inline=False,
-        )
-        embed.add_field(
-            name=self.partner.display_name,
-            value="\n".join(partner_lines),
-            inline=False,
-        )
-        return embed
-
-    def _result_lines(
-        self,
-        *,
-        outgoing: TradeOffer,
-        incoming: Sequence[Mapping[str, Any]],
-        received_pb: int,
-        given_pb: int,
-    ) -> list[str]:
-        lines: list[str] = []
-        if given_pb:
-            lines.append(f"{Emojis.COIN} donnés : {embeds.format_currency(given_pb)}")
-        if outgoing.pets:
-            lines.append(
-                "Pets donnés : "
-                + ", ".join(pet["name"] for pet in outgoing.pets)
-            )
-        if received_pb:
-            lines.append(f"{Emojis.COIN} reçus : {embeds.format_currency(received_pb)}")
-        if incoming:
-            received_names: list[str] = []
-            for pet in incoming:
-                definition = self.cog._definition_by_id.get(int(pet.get("pet_id", 0)))
-                name = definition.name if definition else "Pet"
-                markers: list[str] = []
-                if bool(pet.get("is_rainbow")):
-                    markers.append("🌈")
-                elif bool(pet.get("is_gold")):
-                    markers.append("🥇")
-                if bool(pet.get("is_shiny")):
-                    markers.append("✨")
-                label = " ".join(markers)
-                if label:
-                    name = f"{name} {label}"
-                received_names.append(name)
-            lines.append("Pets reçus : " + ", ".join(received_names))
-        if not lines:
-            lines.append("Aucun changement")
-        return lines
-
-    async def _schedule_thread_close(self) -> None:
-        async def _closer() -> None:
-            await asyncio.sleep(60)
-            with contextlib.suppress(discord.Forbidden, discord.HTTPException):
-                await self.thread.delete(reason="Trade finalisé")
-
-        asyncio.create_task(_closer())
-
-    async def cancel(self, reason: str) -> None:
-        if self.completed:
-            return
-        self.completed = True
-        if self.view is not None:
-            self.view.disable_all_items()
-        if self.message is not None:
-            await self.message.edit(
-                embed=embeds.warning_embed(reason, title="Trade annulé"),
-                view=self.view,
-            )
-        await self._schedule_thread_close()
-        if self.view is not None:
-            self.view.stop()
-
-
-class TradePetPriceModal(discord.ui.Modal):
-    def __init__(self, view: "TradeView", user_pet_id: int) -> None:
-        super().__init__(title="Ajouter un pet au trade")
-        self.view = view
-        self.user_pet_id = user_pet_id
-        self.price_input = discord.ui.TextInput(
-            label="Valeur estimée en PB",
-            placeholder="Ex: 150000",
-            min_length=1,
-            max_length=18,
-        )
-        self.add_item(self.price_input)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        try:
-            price = max(0, int(self.price_input.value))
-        except ValueError:
-            await interaction.response.send_message(
-                embed=embeds.error_embed("Merci d'indiquer un prix valide."),
-                ephemeral=True,
-            )
-            return
-        try:
-            await self.view.session.add_pet(interaction.user, self.user_pet_id, price)
-        except DatabaseError as exc:
-            await interaction.response.send_message(
-                embed=embeds.error_embed(str(exc)), ephemeral=True
-            )
-            return
-        await interaction.response.send_message(
-            embed=embeds.success_embed("Pet ajouté à ton offre."), ephemeral=True
-        )
-        await self.view.session.refresh()
-
-
-class TradePetSelect(discord.ui.Select):
-    def __init__(self, view: "TradePetSelectView") -> None:
-        self.trade_view = view
-        options = view.current_options()
-        super().__init__(
-            placeholder="Choisis un pet à ajouter",
-            min_values=1,
-            max_values=1,
-            options=options,
-        )
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        if interaction.user.id != self.trade_view.user.id:
-            await interaction.response.send_message(
-                "Seul l'auteur peut utiliser cette liste.",
-                ephemeral=True,
-            )
-            return
-        selected = int(self.values[0])
-        if selected <= 0:
-            await interaction.response.send_message(
-                "Aucun pet disponible à sélectionner.",
-                ephemeral=True,
-            )
-            return
-        modal = TradePetPriceModal(self.trade_view.parent_view, selected)
-        await interaction.response.send_modal(modal)
-
-
-class TradePetSelectView(discord.ui.View):
-    def __init__(
-        self,
-        *,
-        parent_view: "TradeView",
-        user: discord.abc.User,
-        pets: Sequence[Mapping[str, Any]],
-    ) -> None:
-        super().__init__(timeout=120)
-        self.parent_view = parent_view
-        self.user = user
-        self.pets = list(pets)
-        self.page = 0
-        self.per_page = 25
-        self.pet_select = TradePetSelect(self)
-        if not self.pets:
-            self.pet_select.disabled = True
-        self.add_item(self.pet_select)
-        self._sync_buttons()
-
-    def _current_slice(self) -> list[Mapping[str, Any]]:
-        start = self.page * self.per_page
-        end = start + self.per_page
-        return self.pets[start:end]
-
-    def current_options(self) -> list[discord.SelectOption]:
-        options: list[discord.SelectOption] = []
-        for pet in self._current_slice():
-            label = str(pet.get("label", "Pet"))
-            description = pet.get("description")
-            if isinstance(description, str) and len(description) > 100:
-                description = description[:97] + "…"
-            options.append(
-                discord.SelectOption(
-                    label=label[:100],
-                    value=str(pet.get("id", 0)),
-                    description=description if isinstance(description, str) else None,
-                )
-            )
-        if not options:
-            options.append(
-                discord.SelectOption(
-                    label="Aucun pet disponible",
-                    value="0",
-                    description="",
-                )
-            )
-        return options
-
-    def build_embed(self) -> discord.Embed:
-        total_pages = max(1, math.ceil(len(self.pets) / self.per_page))
-        embed = embeds.info_embed(
-            "Sélectionne un pet puis indique sa valeur estimée.",
-            title="🐾 Sélection de pet",
-        )
-        embed.set_footer(text=f"Page {self.page + 1}/{total_pages}")
-        return embed
-
-    def _sync_buttons(self) -> None:
-        total_pages = max(1, math.ceil(len(self.pets) / self.per_page))
-        has_multiple = total_pages > 1
-        if hasattr(self, "previous_page"):
-            self.previous_page.disabled = not has_multiple or self.page <= 0
-        if hasattr(self, "next_page"):
-            self.next_page.disabled = not has_multiple or self.page >= total_pages - 1
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user.id:
-            await interaction.response.send_message(
-                "Seul l'auteur peut utiliser cette liste.",
-                ephemeral=True,
-            )
-            return False
-        return True
-
-    @discord.ui.button(label="Précédent", style=discord.ButtonStyle.secondary)
-    async def previous_page(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        if self.page > 0:
-            self.page -= 1
-        self.pet_select.options = self.current_options()
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    @discord.ui.button(label="Suivant", style=discord.ButtonStyle.secondary)
-    async def next_page(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        total_pages = max(1, math.ceil(len(self.pets) / self.per_page))
-        if self.page < total_pages - 1:
-            self.page += 1
-        self.pet_select.options = self.current_options()
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def on_timeout(self) -> None:
-        for item in self.children:
-            item.disabled = True
-
-
-class TradePBModal(discord.ui.Modal):
-    def __init__(self, view: "TradeView", user_id: int) -> None:
-        super().__init__(title="Définir les PB offerts")
-        self.view = view
-        self.user_id = user_id
-        self.amount_input = discord.ui.TextInput(
-            label="Montant en PB",
-            placeholder="Ex: 250000",
-            min_length=1,
-            max_length=18,
-        )
-        self.add_item(self.amount_input)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        try:
-            amount = max(0, int(self.amount_input.value))
-        except ValueError:
-            await interaction.response.send_message(
-                embed=embeds.error_embed("Montant invalide."), ephemeral=True
-            )
-            return
-        try:
-            await self.view.session.set_pb(interaction.user.id, amount)
-        except DatabaseError as exc:
-            await interaction.response.send_message(
-                embed=embeds.error_embed(str(exc)), ephemeral=True
-            )
-            return
-        await interaction.response.send_message(
-            embed=embeds.success_embed("Montant mis à jour."), ephemeral=True
-        )
-        await self.view.session.refresh()
-
-
-class TradeView(discord.ui.View):
-    def __init__(self, session: TradeSession) -> None:
-        super().__init__(timeout=900)
-        self.session = session
-        session.view = self
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id not in (self.session.initiator.id, self.session.partner.id):
-            await interaction.response.send_message(
-                "Seuls les participants au trade peuvent utiliser ces boutons.",
-                ephemeral=True,
-            )
-            return False
-        return True
-
-    def disable_all_items(self) -> None:
-        for item in self.children:
-            item.disabled = True
-
-    async def on_timeout(self) -> None:
-        await self.session.cancel("Le trade a expiré par inactivité.")
-
-    @discord.ui.button(label="Ajouter un pet", style=discord.ButtonStyle.primary)
-    async def add_pet_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        rows = await self.session.cog.database.get_user_pets(interaction.user.id)
-        if not rows:
-            await interaction.response.send_message(
-                embed=embeds.error_embed("Tu n'as aucun pet disponible."),
-                ephemeral=True,
-            )
-            return
-        pets_data = self.session.cog._sort_pets_for_display(rows, market_values=None)
-        options: list[dict[str, Any]] = []
-        for pet in pets_data:
-            name = str(pet.get("name", "Pet"))
-            emoji = pet_emoji(name)
-            markers: list[str] = []
-            if pet.get("is_huge"):
-                markers.append("Huge")
-            if pet.get("is_galaxy"):
-                markers.append("🌌")
-            elif pet.get("is_rainbow"):
-                markers.append("🌈")
-            elif pet.get("is_gold"):
-                markers.append("🥇")
-            if pet.get("is_shiny"):
-                markers.append("✨")
-            suffix = f" {' '.join(markers)}" if markers else ""
-            label = f"{emoji} {name}{suffix}".strip()
-            rarity = str(pet.get("rarity", "?"))
-            income = int(pet.get("base_income_per_hour", 0))
-            status = "Disponible"
-            if pet.get("is_active"):
-                status = "Équipé"
-            elif pet.get("on_market"):
-                status = "En vente"
-            description = f"{rarity} • {embeds.format_currency(income)}/h • {status}"
-            options.append(
-                {
-                    "id": int(pet.get("id", 0)),
-                    "label": label,
-                    "description": description,
-                }
-            )
-        view = TradePetSelectView(parent_view=self, user=interaction.user, pets=options)
-        await interaction.response.send_message(
-            embed=view.build_embed(),
-            view=view,
-            ephemeral=True,
-        )
-
-    @discord.ui.button(label="Ajouter des PB", emoji=Emojis.COIN, style=discord.ButtonStyle.secondary)
-    async def add_pb_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        modal = TradePBModal(self, interaction.user.id)
-        await interaction.response.send_modal(modal)
-
-    @discord.ui.button(label="Réinitialiser", style=discord.ButtonStyle.secondary)
-    async def reset_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self.session.clear_offer(interaction.user.id)
-        await interaction.response.send_message(
-            embed=embeds.warning_embed("Ton offre a été réinitialisée."),
-            ephemeral=True,
-        )
-        await self.session.refresh()
-
-    @discord.ui.button(label="Prêt", style=discord.ButtonStyle.success)
-    async def ready_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        is_ready = self.session.toggle_ready(interaction.user.id)
-        if self.session.both_ready():
-            await interaction.response.defer()
-            await self.session.complete_trade(interaction, self)
-            return
-
-        await interaction.response.edit_message(
-            embed=self.session.build_embed(), view=self
-        )
-        message = "Tu es prêt pour le trade." if is_ready else "Tu n'es plus prêt."
-        await interaction.followup.send(message, ephemeral=True)
-
-    @discord.ui.button(label="Annuler", style=discord.ButtonStyle.danger)
-    async def cancel_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await self.session.cancel(
-            f"Trade annulé par {interaction.user.display_name}."
-        )
-        await interaction.response.send_message(
-            embed=embeds.warning_embed("Trade annulé."), ephemeral=True
-        )
-
-
-async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(Pets(bot))
+    return max(0, int(required))
+
+
+def get_huge_level_progress(level: int, xp: int) -> float:
+    """Retourne la progression (0-1) du niveau actuel d'un énorme pet."""
+
+    if level >= HUGE_PET_LEVEL_CAP:
+        return 1.0
+    required = huge_level_required_xp(level)
+    if required <= 0:
+        return 0.0
+    return max(0.0, min(1.0, xp / required))
+
+
+def get_huge_level_multiplier(name: str, level: int) -> float:
+    """Calcule le multiplicateur effectif d'un énorme pet à un niveau donné."""
+
+    normalized = name.strip().lower() if name else ""
+    min_multiplier = 1.0
+    for pet_name, multiplier in HUGE_PET_MIN_LEVEL_MULTIPLIERS.items():
+        if pet_name.lower() == normalized:
+            min_multiplier = max(1.0, float(multiplier))
+            break
+
+    # FIX: Avoid aberrant progression for Titanic Griff by constraining the minimum multiplier.
+    if normalized == TITANIC_GRIFF_NAME.lower():
+        min_multiplier = min(min_multiplier, float(TITANIC_GRIFF_MULTIPLIER) - 1.0)
+
+    final_multiplier = max(min_multiplier, float(max(1, get_huge_multiplier(name))))
+    if final_multiplier <= min_multiplier:
+        # FIX: Guarantee growth over levels even if custom multipliers are misconfigured.
+        final_multiplier = min_multiplier + 1.0
+    if level <= 1:
+        return min_multiplier
+
+    clamped_level = max(1, min(level, HUGE_PET_LEVEL_CAP))
+    span = max(1, HUGE_PET_LEVEL_CAP - 1)
+    progress = (clamped_level - 1) / span
+    return min_multiplier + (final_multiplier - min_multiplier) * progress
+
+
+def clamp_income_value(raw_value: float, *, minimum: int = 0) -> int:
+    """Clamp un montant de revenu à la plage signée 64 bits."""
+
+    floor = max(0, int(minimum))
+    try:
+        numeric = float(raw_value)
+    except (TypeError, ValueError):
+        return floor
+    if numeric <= 0 or math.isnan(numeric):
+        return floor
+    if not math.isfinite(numeric):
+        return MAX_PET_INCOME
+    try:
+        clamped = int(numeric)
+    except (OverflowError, ValueError):
+        return MAX_PET_INCOME
+    if clamped >= MAX_PET_INCOME:
+        return MAX_PET_INCOME
+    if clamped <= floor:
+        return floor
+    return clamped
+
+
+def safe_multiply_income(value: int, multiplier: float) -> int:
+    """Multiplie ``value`` par ``multiplier`` sans dépasser les limites."""
+
+    base = max(0, int(value))
+    if base == 0 or multiplier <= 0:
+        return 0
+    try:
+        product = float(multiplier) * base
+    except (OverflowError, ValueError):
+        return MAX_PET_INCOME
+    return clamp_income_value(product)
+
+
+def compute_huge_income(reference_income: int, multiplier: float) -> int:
+    """Calcule le revenu effectif d'un Huge en tenant compte des bornes."""
+
+    scaled = safe_multiply_income(reference_income, multiplier)
+    return max(HUGE_PET_MIN_INCOME, scaled)
+
+
+HUGE_PET_SOURCES: Final[Dict[str, str]] = {
+    HUGE_PET_NAME: "Extrêmement rare dans l'œuf basique.",
+    "Huge Trunk": "Peut apparaître dans l'œuf bio avec un taux minuscule.",
+    HUGE_GRIFF_NAME: "Récompense spéciale lors d'événements ou de giveaways du staff.",
+    TITANIC_GRIFF_NAME: "Jackpot quasi impossible du casino, 4 000× plus rare que Huge Griff.",
+    TITANIC_COLT_NAME: "Récompense mythique octroyée uniquement par l'équipe via le panneau admin.",
+    HUGE_GALE_NAME: "Récompense finale du mode Millionaire Race (étape 20).",
+    HUGE_KENJI_ONI_NAME: "Récompense rarissime du Mastermind pour les esprits les plus vifs.",
+    HUGE_BULL_NAME: "Huge légendaire distribué autrefois via un événement spécial du staff.",
+    HUGE_SHADE_NAME: "Rare dans l'Œuf Spectral (0.2%) et l'Œuf Maudit (0.5%) - Zone Manoir Hanté.",
+    TITANIC_ZOMBIBI_NAME: "Jackpot quasi impossible de l'Œuf Maudit - Zone Manoir Hanté.",
+    HUGE_MORTIS_NAME: "Récompense exclusive pour les membres VIP du serveur.",
+    HUGE_SURGE_NAME: "Apparaît dans l'Œuf métallique pour les stratèges les plus assidus.",
+    HUGE_BO_NAME: "Récompense rare : reste attentif aux occasions de tenter ta chance !",
+    TITANIC_MEEPLE_NAME: "Récompense quasi mythique de l'Œuf métallique, au-delà du légendaire.",
+    HUGE_ASTRALIS_NAME: "Pet stellaire de la Citadelle Céleste.",
+    TITANIC_ZENITH_NAME: "Joyau cosmique ultime de la Citadelle Céleste.",
+    HUGE_VIRGO_COLLETTE_NAME: "Gardienne céleste de la zone Zodiaque.",
+    TITANIC_CAPRICORN_STU_NAME: "Titan zodiacal réservé aux plus persévérants.",
+    HUGE_CLANCY_NAME: "Se trouve dans l'Œuf vivant de l'Animalerie après ton premier rebirth.",
+    HUGE_ROSA_NAME: "Ultra rare dans l'Œuf Huevo de Mexico — seuls les plus courageux la rencontrent.",
+    TITANIC_POCO_NAME: "Récompense mythique de l'Œuf Huevo de Mexico, l'égale du Titanic Meeple.",
+    TITANIC_SMOOTH_LOU_NAME: "Jackpot ultra rare de l'Œuf festif.",
+    HUGE_WISHED_NAME: "0,1% de chance d'apparaître lorsqu'un vol réussit.",
+    HUGE_RED_KING_FRANK_NAME: "Récompense d'événement liée à la Millionaire Race pour les coureurs acharnés.",
+}
+
+def get_egg_frenzy_window(
+    reference: datetime | None = None,
+) -> tuple[datetime, datetime]:
+    """Retourne la prochaine fenêtre Egg Frenzy en heure locale."""
+
+    if reference is None:
+        reference = datetime.now(timezone.utc)
+    elif reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+
+    local_now = reference.astimezone(EGG_FRENZY_TIMEZONE)
+    midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def _apply_offset(base: datetime, target: time) -> datetime:
+        delta = timedelta(
+            hours=target.hour,
+            minutes=target.minute,
+            seconds=target.second,
+            microseconds=target.microsecond,
+        )
+        return base + delta
+
+    start_local = _apply_offset(midnight, EGG_FRENZY_START_TIME)
+    end_local = _apply_offset(midnight, EGG_FRENZY_END_TIME)
+
+    if EGG_FRENZY_END_TIME <= EGG_FRENZY_START_TIME:
+        if end_local <= start_local:
+            end_local += timedelta(days=1)
+        if local_now < start_local and local_now >= end_local - timedelta(days=1):
+            start_local -= timedelta(days=1)
+            end_local -= timedelta(days=1)
+        if local_now >= end_local:
+            start_local += timedelta(days=1)
+            end_local += timedelta(days=1)
+    else:
+        if local_now >= end_local:
+            start_local += timedelta(days=1)
+            end_local += timedelta(days=1)
+
+    return start_local, end_local
+
+
+def is_egg_frenzy_active(reference: datetime | None = None) -> bool:
+    """Indique si l'Egg Frenzy est actif pour l'instant donné."""
+
+    if reference is None:
+        reference = datetime.now(timezone.utc)
+    elif reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+
+    start_local, end_local = get_egg_frenzy_window(reference)
+    local_now = reference.astimezone(EGG_FRENZY_TIMEZONE)
+    return start_local <= local_now < end_local
+
+
+_BASIC_EGG_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="Shelly",
+        rarity="Commun",
+        image_url="https://cdn.discordapp.com/emojis/1430584949215596654.png",
+        base_income_per_hour=10,
+        drop_rate=0.50,
+    ),
+    PetDefinition(
+        name="Colt",
+        rarity="Atypique",
+        image_url="https://cdn.discordapp.com/emojis/1430585480394838196.png",
+        base_income_per_hour=15,
+        drop_rate=0.25,
+    ),
+    PetDefinition(
+        name="Barley",
+        rarity="Rare",
+        image_url="https://cdn.discordapp.com/emojis/1430586754041381036.png",
+        base_income_per_hour=30,
+        drop_rate=0.15,
+    ),
+    PetDefinition(
+        name="Poco",
+        rarity="Rare",
+        image_url="https://cdn.discordapp.com/emojis/1430586108336672878.png",
+        base_income_per_hour=60,
+        drop_rate=0.08,
+    ),
+    PetDefinition(
+        name="Rosa",
+        rarity="Épique",
+        image_url="https://cdn.discordapp.com/emojis/1430584871406928075.png",
+        base_income_per_hour=150,
+        drop_rate=0.019,
+    ),
+    PetDefinition(
+        name=HUGE_PET_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1430587331819212831.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.00003,
+        is_huge=True,
+    ),
+)
+
+_FOREST_EGG_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="Angelo",
+        rarity="Commun",
+        image_url="https://cdn.discordapp.com/emojis/1546593231888720052.png",
+        base_income_per_hour=35,
+        drop_rate=0.34,
+    ),
+    PetDefinition(
+        name="Doug",
+        rarity="Atypique",
+        image_url="https://cdn.discordapp.com/emojis/1546593224385101864.png",
+        base_income_per_hour=75,
+        drop_rate=0.26,
+    ),
+    PetDefinition(
+        name="Lily",
+        rarity="Rare",
+        image_url="https://cdn.discordapp.com/emojis/1546593219297673326.png",
+        base_income_per_hour=160,
+        drop_rate=0.17,
+    ),
+    PetDefinition(
+        name="Trunk",
+        rarity="Rare",
+        image_url="https://cdn.discordapp.com/emojis/1546593223173214258.png",
+        base_income_per_hour=220,
+        drop_rate=0.13,
+    ),
+    PetDefinition(
+        name="Cordelius",
+        rarity="Rare",
+        image_url="https://cdn.discordapp.com/emojis/1546593226868129853.png",
+        base_income_per_hour=280,
+        drop_rate=0.0995,
+    ),
+    PetDefinition(
+        name="Huge Trunk",
+        rarity="Secret",
+        image_url="https://example.com/document53.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0001,
+        is_huge=True,
+    ),
+)
+
+_SPECTRAL_EGG_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="Gus",
+        rarity="Commun",
+        image_url="https://cdn.discordapp.com/emojis/1546649442394972240.png",
+        base_income_per_hour=500,
+        drop_rate=0.55,
+    ),
+    PetDefinition(
+        name="Ghost Squeak",
+        rarity="Atypique",
+        image_url="https://cdn.discordapp.com/emojis/1546649813414846544.png",
+        base_income_per_hour=1_200,
+        drop_rate=0.30,
+    ),
+    PetDefinition(
+        name="Ghost Leon",
+        rarity="Rare",
+        image_url="https://cdn.discordapp.com/emojis/1546650056629948476.png",
+        base_income_per_hour=2_500,
+        drop_rate=0.13,
+    ),
+    PetDefinition(
+        name=HUGE_SHADE_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1546805401297887302.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.00002,
+        is_huge=True,
+    ),
+)
+
+# FIX: Clone spectral pets to avoid shared references when reusing definitions.
+def _clone_pet_definition(source: PetDefinition, **overrides: object) -> PetDefinition:
+    return replace(source, **overrides)
+
+
+_CURSED_EGG_PETS: Tuple[PetDefinition, ...] = (
+    _clone_pet_definition(_SPECTRAL_EGG_PETS[0], drop_rate=0.35),
+    _clone_pet_definition(_SPECTRAL_EGG_PETS[1], drop_rate=0.27),
+    _clone_pet_definition(_SPECTRAL_EGG_PETS[2], drop_rate=0.18),
+    PetDefinition(
+        name="Chuck",
+        rarity="Épique",
+        image_url="https://cdn.discordapp.com/emojis/1546650953111834674.png",
+        base_income_per_hour=5_500,
+        drop_rate=0.12,
+    ),
+    PetDefinition(
+        name="Inspectrice Colette",
+        rarity="Légendaire",
+        image_url="https://cdn.discordapp.com/emojis/1431422778170408960.png",
+        base_income_per_hour=9_000,
+        drop_rate=0.065,
+    ),
+    _clone_pet_definition(_SPECTRAL_EGG_PETS[3], drop_rate=0.00005),
+    PetDefinition(
+        name=TITANIC_ZOMBIBI_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1546805402782404618.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0000005,
+        is_huge=True,
+    ),
+)
+
+_EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name=HUGE_GALE_NAME,
+        rarity="Secret",
+        image_url="https://example.com/document54.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=HUGE_GRIFF_NAME,
+        rarity="Secret",
+        image_url="https://example.com/document55.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=TITANIC_GRIFF_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1432161869342183525.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=TITANIC_COLT_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1442530708810760326.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=HUGE_KENJI_ONI_NAME,
+        rarity="Secret",
+        image_url="https://example.com/document56.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=HUGE_BO_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1435335892712685628.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=HUGE_MORTIS_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1431435110590189638.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=HUGE_BULL_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1433617222357487748.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=HUGE_WISHED_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1459842344592609414.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=HUGE_RED_KING_FRANK_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1442532497979084890.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+)
+
+_ROBOT_EGG_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="Darryl",
+        rarity="Commun",
+        image_url="https://cdn.discordapp.com/emojis/1433376220980187177.png",
+        base_income_per_hour=10_000,
+        drop_rate=0.85,
+    ),
+    PetDefinition(
+        name="Rico",
+        rarity="Rare",
+        image_url="https://cdn.discordapp.com/emojis/1433376959127228436.png",
+        base_income_per_hour=22_500,
+        drop_rate=0.10,
+    ),
+    PetDefinition(
+        name="Nani",
+        rarity="Épique",
+        image_url="https://cdn.discordapp.com/emojis/1433377774122303582.png",
+        base_income_per_hour=40_000,
+        drop_rate=0.04,
+    ),
+    PetDefinition(
+        name="RT",
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1433378374650429522.png",
+        base_income_per_hour=65_000,
+        drop_rate=0.0098999,
+    ),
+    PetDefinition(
+        name=HUGE_SURGE_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1433379423133892608.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.00002,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=TITANIC_MEEPLE_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1433380006557646878.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0000005,
+        is_huge=True,
+    ),
+)
+
+_ANIMALERIE_EGG_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="Kit",
+        rarity="Commun",
+        image_url="https://cdn.discordapp.com/emojis/1542048336549257307.png",
+        base_income_per_hour=120_000,
+        drop_rate=0.55,
+    ),
+    PetDefinition(
+        name="Crow",
+        rarity="Rare",
+        image_url="https://cdn.discordapp.com/emojis/1546851622947389551.png",
+        base_income_per_hour=240_000,
+        drop_rate=0.33,
+    ),
+    PetDefinition(
+        name="Ruffs",
+        rarity="Épique",
+        image_url="https://cdn.discordapp.com/emojis/1546851621911142400.png",
+        base_income_per_hour=520_000,
+        drop_rate=0.11,
+    ),
+    PetDefinition(
+        name="Spike",
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1546851620367630437.png",
+        base_income_per_hour=1_200_000,
+        drop_rate=0.00999,
+    ),
+    PetDefinition(
+        name=HUGE_CLANCY_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1546851618580988016.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.00005,
+        is_huge=True,
+    ),
+)
+
+_MEXICO_EGG_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="El Primo",
+        rarity="Épique",
+        image_url="https://cdn.discordapp.com/emojis/1437826192794321097.png",
+        base_income_per_hour=2_800_000,
+        drop_rate=0.60,
+    ),
+    PetDefinition(
+        name="Amber",
+        rarity="Légendaire",
+        image_url="https://cdn.discordapp.com/emojis/1437826234095636490.png",
+        base_income_per_hour=5_000_000,
+        drop_rate=0.30,
+    ),
+    PetDefinition(
+        name="Mina",
+        rarity="Mythique",
+        image_url="https://cdn.discordapp.com/emojis/1437826273673089238.png",
+        base_income_per_hour=9_000_000,
+        drop_rate=0.099999,
+    ),
+    PetDefinition(
+        name=HUGE_ROSA_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1437826071503311010.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.000002,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=TITANIC_POCO_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1437826145486770176.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0000005,
+        is_huge=True,
+    ),
+)
+
+PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
+    PetEggDefinition(
+        name="Œuf basique",
+        slug=DEFAULT_PET_EGG_SLUG,
+        price=PET_EGG_PRICE,
+        pets=_BASIC_EGG_PETS,
+        zone_slug=STARTER_ZONE_SLUG,
+        aliases=("oeuf basique", "basique", "basic", "egg"),
+    ),
+    PetEggDefinition(
+        name="Flower Egg",
+        slug="bio",
+        price=1_300,
+        pets=_FOREST_EGG_PETS,
+        zone_slug=FORET_ZONE_SLUG,
+        aliases=("oeuf bio", "bio", "flower egg", "flower", "oeuf fleur"),
+    ),
+    PetEggDefinition(
+        name="Œuf Spectral",
+        slug="spectral",
+        price=120_000,
+        pets=_SPECTRAL_EGG_PETS,
+        zone_slug=MANOIR_ZONE_SLUG,
+        aliases=("oeuf spectral", "spectral", "ghost", "fantome"),
+    ),
+    PetEggDefinition(
+        name="Œuf Maudit",
+        slug="maudit",
+        price=600_000,
+        pets=_CURSED_EGG_PETS,
+        zone_slug=MANOIR_ZONE_SLUG,
+        aliases=("oeuf maudit", "maudit", "cursed"),
+    ),
+    PetEggDefinition(
+        name="Œuf métallique",
+        slug="metallique",
+        price=5_000_000,
+        pets=_ROBOT_EGG_PETS,
+        zone_slug=ROBOT_ZONE_SLUG,
+        aliases=(
+            "oeuf metallique",
+            "metallique",
+            "metal",
+            "metallic",
+            "robot",
+        ),
+    ),
+    PetEggDefinition(
+        name="Œuf vivant",
+        slug="vivant",
+        price=90_000_000,
+        pets=_ANIMALERIE_EGG_PETS,
+        zone_slug=ANIMALERIE_ZONE_SLUG,
+        aliases=("oeuf vivant", "vivant", "living", "animalerie"),
+    ),
+    PetEggDefinition(
+        name="Œuf Huevo",
+        slug="huevo",
+        price=500_000_000_000,
+        pets=_MEXICO_EGG_PETS,
+        zone_slug=MEXICO_ZONE_SLUG,
+        aliases=("oeuf huevo", "huevo", "oeuf mexico", "mexico"),
+    ),
+)
+
+
+def _eggs_for_zone(slug: str) -> Tuple[PetEggDefinition, ...]:
+    return tuple(egg for egg in PET_EGG_DEFINITIONS if egg.zone_slug == slug)
+
+
+PET_ZONES: Tuple[PetZoneDefinition, ...] = (
+    PetZoneDefinition(
+        name="Zone de départ",
+        slug=STARTER_ZONE_SLUG,
+        grade_required=0,
+        entry_cost=0,
+        eggs=_eggs_for_zone(STARTER_ZONE_SLUG),
+    ),
+    PetZoneDefinition(
+        name="Forêt enchantée",
+        slug=FORET_ZONE_SLUG,
+        grade_required=3,
+        entry_cost=50_000,
+        eggs=_eggs_for_zone(FORET_ZONE_SLUG),
+        egg_mastery_required=3,
+    ),
+    PetZoneDefinition(
+        name="Manoir Hanté",
+        slug=MANOIR_ZONE_SLUG,
+        grade_required=7,
+        entry_cost=500_000,
+        eggs=_eggs_for_zone(MANOIR_ZONE_SLUG),
+        egg_mastery_required=5,
+        pet_mastery_required=5,
+    ),
+    PetZoneDefinition(
+        name="Zone Robotique",
+        slug="robotique",
+        grade_required=12,
+        entry_cost=8_000_000,  # FIX: nerf 20M -> 8M, lisse le mur de progression post-Manoir Hanté
+        eggs=_eggs_for_zone(ROBOT_ZONE_SLUG),
+        egg_mastery_required=10,
+        pet_mastery_required=10,
+    ),
+    PetZoneDefinition(
+        name="Animalerie",
+        slug=ANIMALERIE_ZONE_SLUG,
+        grade_required=12,
+        entry_cost=2_500_000_000,
+        eggs=_eggs_for_zone(ANIMALERIE_ZONE_SLUG),
+        rebirth_required=1,
+    ),
+    PetZoneDefinition(
+        name="Mexico",
+        slug=MEXICO_ZONE_SLUG,
+        grade_required=15,
+        entry_cost=5_000_000_000_000,
+        eggs=_eggs_for_zone(MEXICO_ZONE_SLUG),
+        rebirth_required=2,
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# Event Anniversaire — pets festifs (obtenus via l'œuf festif, hors PB normal)
+# ---------------------------------------------------------------------------
+
+FESTIVE_EGG_PRICE: Final[int] = 100
+FESTIVE_COIN_INCOME_PER_SECOND: Final[Dict[str, int]] = {
+    "Festive Mandy": 1,
+    "Festive Piper": 3,
+    "Ollie": 7,
+}
+FESTIVE_PET_DROP_RATES: Final[Dict[str, float]] = {
+    "Festive Mandy": 0.70,
+    "Festive Piper": 0.25,
+    "Ollie": 0.05,
+    TITANIC_SMOOTH_LOU_NAME: 1 / 175_000_000,
+}
+FESTIVE_EVENT_PET_NAMES: Final[Tuple[str, ...]] = tuple(FESTIVE_COIN_INCOME_PER_SECOND)
+
+# NOTE : base_income_per_hour = 0 volontairement — ces pets ne rapportent pas de PB
+# via e!claim, uniquement des Festive Coins via le système d'event dédié.
+_FESTIVE_EVENT_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="Festive Mandy",
+        rarity="Festif",
+        image_url="https://cdn.discordapp.com/emojis/1545748676012544070.png",
+        base_income_per_hour=0,
+        drop_rate=0.0,
+    ),
+    PetDefinition(
+        name="Festive Piper",
+        rarity="Festif",
+        image_url="https://cdn.discordapp.com/emojis/1546430132842008686.png",
+        base_income_per_hour=0,
+        drop_rate=0.0,
+    ),
+    PetDefinition(
+        name="Ollie",
+        rarity="Festif",
+        image_url="https://cdn.discordapp.com/emojis/1545752797482459237.png",
+        base_income_per_hour=0,
+        drop_rate=0.0,
+    ),
+    PetDefinition(
+        name=TITANIC_SMOOTH_LOU_NAME,
+        rarity="Titanic",
+        image_url="",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+)
+
+# Ces définitions utilisent les taux festifs tout en pouvant passer par le
+# pipeline standard (maîtrises, potions, Egg Frenzy et variantes). La monnaie
+# est débitée par le cog de l'événement, pas par le cog des pets.
+FESTIVE_EGG_DEFINITION: Final[PetEggDefinition] = PetEggDefinition(
+    name="Œuf festif",
+    slug="festif",
+    price=FESTIVE_EGG_PRICE,
+    pets=tuple(
+        replace(pet, drop_rate=FESTIVE_PET_DROP_RATES[pet.name])
+        for pet in _FESTIVE_EVENT_PETS
+    ),
+    zone_slug="event_anniversaire",
+    aliases=("oeuf festif", "festivegg"),
+)
+
+
+PET_DEFINITIONS: Tuple[PetDefinition, ...] = tuple(
+    pet for egg in PET_EGG_DEFINITIONS for pet in egg.pets
+) + _EXCLUSIVE_PETS + _FESTIVE_EVENT_PETS
+
+# Ensemble utilitaire pour identifier rapidement les pets considérés comme "Huge".
+HUGE_PET_NAMES: Final[frozenset[str]] = frozenset(
+    pet.name for pet in PET_DEFINITIONS if getattr(pet, "is_huge", False)
+)
+
+_ROSA_EMOJI: Final[str] = os.getenv("PET_EMOJI_ROSA", "<:Rosa:1542051436030984192>")
+
+
+PET_EMOJIS: Final[dict[str, str]] = {
+    "Shelly": os.getenv("PET_EMOJI_SHELLY", "<:Shelly:1542049349511413800>"),
+    "Colt": os.getenv("PET_EMOJI_COLT", "<:Colt:1542051440783138936>"),
+    "Barley": os.getenv("PET_EMOJI_BARLEY", "<:Barley:1542051439591825508>"),
+    "Poco": os.getenv("PET_EMOJI_POCO", "<:Poco:1542051438421737563>"),
+    "Rosa": _ROSA_EMOJI,
+    "Mina": os.getenv("PET_EMOJI_MINA", "<:Mina:1437826273673089238>"),
+    HUGE_PET_NAME: os.getenv("PET_EMOJI_HUGE_SHELLY", "<:HugeShelly:1542051433367732305>"),
+    "Angelo": os.getenv("PET_EMOJI_ANGELO", "<:Angelo:1546593231888720052>"),
+    "Lily": os.getenv("PET_EMOJI_LILY", "<:Lily:1546593219297673326>"),
+    "Cordelius": os.getenv("PET_EMOJI_CORDELIUS", "<:Cordelius:1546593226868129853>"),
+    "Doug": os.getenv("PET_EMOJI_DOUG", "<:Doug:1546593224385101864>"),
+    "Trunk": os.getenv("PET_EMOJI_TRUNK", "<:Trunk:1546593223173214258>"),
+    "Huge Trunk": os.getenv("PET_EMOJI_HUGE_TRUNK", "<:HugeTrunk:1430876043400446013>"),
+    HUGE_GALE_NAME: os.getenv("PET_EMOJI_HUGE_GALE", "<:HugeGale:1430981225375600641>"),
+    HUGE_GRIFF_NAME: os.getenv("PET_EMOJI_HUGE_GRIFF", "<:HugeGriff:1431005620227670036>"),
+    TITANIC_GRIFF_NAME: os.getenv(
+        "PET_EMOJI_TITANIC_GRIFF", "<:TITANICGRIFF:1432161869342183525>"
+    ),
+    HUGE_KENJI_ONI_NAME: os.getenv("PET_EMOJI_HUGE_KENJI_ONI", "<:HugeKenjiOni:1431057254337089576>"),
+    "Gus": os.getenv("PET_EMOJI_GUS", "<:Gus:1546649442394972240>"),
+    "Ghost Squeak": os.getenv("PET_EMOJI_GHOST_SQUEAK", "<:GhostSqueak:1546649813414846544>"),
+    "Ghost Leon": os.getenv("PET_EMOJI_GHOST_LEON", "<:GhostLeon:1546650056629948476>"),
+    "Inspectrice Colette": os.getenv("PET_EMOJI_INSPECTRICE_COLETTE", "<:InspectorColette:1546803035043528774>"),
+    HUGE_SHADE_NAME: os.getenv("PET_EMOJI_HUGE_SHADE", "<:HugeShade:1546805401297887302>"),
+    "Chuck": os.getenv("PET_EMOJI_CHUCK", "<:Chuck:1546650953111834674>"),
+    TITANIC_ZOMBIBI_NAME: os.getenv("PET_EMOJI_TITANIC_ZOMBIBI", "<:TitanicZombibi:1546805402782404618>"),
+    HUGE_MORTIS_NAME: os.getenv("PET_EMOJI_HUGE_MORTIS", "<:HugeMortis:1431435110590189638>"),
+    HUGE_SURGE_NAME: os.getenv("PET_EMOJI_HUGE_SURGE", "<:HugeSurge:1546845903535603713>"),
+    TITANIC_MEEPLE_NAME: os.getenv("PET_EMOJI_TITANIC_MEEPLE", "<:TITANICMEEPLE:1546845901228736592>"),
+    TITANIC_COLT_NAME: os.getenv("PET_EMOJI_TITANIC_COLT", "<:TitanicColt:1442530708810760326>"),
+    HUGE_BULL_NAME: os.getenv("PET_EMOJI_HUGE_BULL", "<:HugeBull:1433617222357487748>"),
+    HUGE_WISHED_NAME: (
+        os.getenv("PET_EMOJI_TITANIC_WISHED")
+        or os.getenv("PET_EMOJI_HUGE_WISHED")
+        or "<:HugeWished:1459842344592609414>"
+    ),
+    HUGE_BO_NAME: os.getenv("PET_EMOJI_HUGE_BO", "<:HugeBo:1435335892712685628>"),
+    HUGE_RED_KING_FRANK_NAME: os.getenv(
+        "PET_EMOJI_HUGE_RED_KING_FRANK", "<:HugeRedKingFrank:1442532497979084890>"
+    ),
+    "Darryl": os.getenv("PET_EMOJI_DARRYL", "<:Darryl:1546845910112149504>"),
+    "Rico": os.getenv("PET_EMOJI_RICO", "<:Rico:1546845908711243856>"),
+    "Nani": os.getenv("PET_EMOJI_NANI", "<:Nani:1546845907415208098>"),
+    "RT": os.getenv("PET_EMOJI_RT", "<:RT:1546845905456599080>"),
+    "Kit": os.getenv("PET_EMOJI_KIT", "<:Kit:1542048336549257307>"),
+    "Crow": os.getenv("PET_EMOJI_CROW", "<:Crow:1546851622947389551>"),
+    "Ruffs": os.getenv("PET_EMOJI_RUFFS", "<:Ruffs:1546851621911142400>"),
+    "Spike": os.getenv("PET_EMOJI_SPIKE", "<:Spike:1546851620367630437>"),
+    HUGE_CLANCY_NAME: os.getenv("PET_EMOJI_HUGE_CLANCY", "<:HugeClancy:1546851618580988016>"),
+    "El Primo": os.getenv("PET_EMOJI_EL_PRIMO", "<:ElPrimo:1437826192794321097>"),
+    "Amber": os.getenv("PET_EMOJI_AMBER", "<:Amber:1437826234095636490>"),
+    "Stella": os.getenv("PET_EMOJI_STELLA", "<:Stella:1462049982919213169>"),
+    "Nova": os.getenv("PET_EMOJI_NOVA") or "🌟",
+    "Pisces Piper": os.getenv("PET_EMOJI_PISCES_PIPER") or "♓",
+    "Scorpion Bibi": os.getenv("PET_EMOJI_SCORPION_BIBI") or "♏",
+    "Aquarius Emz": os.getenv("PET_EMOJI_AQUARIUS_EMZ") or "♒",
+    "Sagittarius Bo": os.getenv("PET_EMOJI_SAGITTARIUS_BO") or "♐",
+    "Lyra": os.getenv("PET_EMOJI_LYRA", "<:Lyra:1462050431198036172>"),
+    "Orion": os.getenv("PET_EMOJI_ORION", "<:Orion:1462047760479031378>"),
+    HUGE_ASTRALIS_NAME: os.getenv(
+        "PET_EMOJI_HUGE_ASTRALIS", "<:TitanicAstralis:1462058164223606926>"
+    ),
+    TITANIC_ZENITH_NAME: os.getenv(
+        "PET_EMOJI_TITANIC_ZENITH", "<:HugeZenith:1462057986695499850>"
+    ),
+    HUGE_ROSA_NAME: os.getenv("PET_EMOJI_HUGE_ROSA", "<:HugeRosa:1437826071503311010>"),
+    TITANIC_POCO_NAME: os.getenv("PET_EMOJI_TITANIC_POCO", "<:TITANICPOCO:1437826145486770176>"),
+    TITANIC_SMOOTH_LOU_NAME: os.getenv("PET_EMOJI_TITANIC_SMOOTH_LOU", "<:TitanicSmoothLou:1546431390638415973>"),
+    # Pets festifs (event anniversaire)
+    "Festive Mandy": os.getenv("PET_EMOJI_FESTIVE_MANDY", "<:FestiveMandy:1545748676012544070>"),
+    "Festive Piper": os.getenv("PET_EMOJI_FESTIVE_PIPER", "<:FestivePiper:1546430132842008686>"),
+    "Ollie": os.getenv("PET_EMOJI_OLLIE", "<:Ollie:1545752797482459237>"),
+    # FIX: Ensure default emoji falls back when the environment variable is empty.
+    "default": os.getenv("PET_EMOJI_DEFAULT") or "🐾",
+}
+
+HUGE_MORTIS_ROLE_ID: Final[int] = 1431428621959954623
+EGG_LUCK_ROLE_ID: Final[int] = 1388837886924685343
+VOICE_XP_ROLE_ID: Final[int] = 1441707209955348542
+XP_BOOST_ROLE_ID: Final[int] = 1406356891000639660
+STEAL_PROTECTED_ROLE_ID: Final[int] = 1440026901568557056
+SELLABLE_ROLE_IDS: Final[Tuple[int, ...]] = (
+    HUGE_MORTIS_ROLE_ID,
+    EGG_LUCK_ROLE_ID,
+    VOICE_XP_ROLE_ID,
+    XP_BOOST_ROLE_ID,
+    STEAL_PROTECTED_ROLE_ID,
+)
+
+PET_RARITY_COLORS: Final[dict[str, int]] = {
+    "Commun": 0x95A5A6,
+    "Atypique": 0x2ECC71,
+    "Rare": 0x3498DB,
+    "Épique": 0x9B59B6,
+    "Secret": 0xF1C40F,
+}
+
+PET_RARITY_ORDER: Final[dict[str, int]] = {
+    "Commun": 0,
+    "Atypique": 1,
+    "Rare": 2,
+    "Épique": 3,
+    "Légendaire": 4,
+    "Mythique": 5,
+    "Secret": 6,
+}
