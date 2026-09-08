@@ -3765,6 +3765,16 @@ class Pets(commands.Cog):
     async def flower(self, ctx: commands.Context) -> None:
         await self._openbox_impl(ctx, "flower")
 
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    @commands.command(name="spectral")
+    async def spectral(self, ctx: commands.Context) -> None:
+        await self._openbox_impl(ctx, "spectral")
+
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    @commands.command(name="maudit")
+    async def maudit(self, ctx: commands.Context) -> None:
+        await self._openbox_impl(ctx, "maudit")
+
     def _build_egg_preview_embed(
         self,
         egg: PetEggDefinition,
