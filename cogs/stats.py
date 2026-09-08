@@ -542,7 +542,7 @@ class Admin(commands.Cog):
         """Admin: Réinitialise TOUTE la progression de TOUS les utilisateurs.
 
         Supprime soldes, gemmes, pets, grades, clans, potions,
-        tombola, historique de transactions, etc. Action IRRÉVERSIBLE.
+        historique de transactions, etc. Action IRRÉVERSIBLE.
         """
 
         warning_text = (
@@ -555,7 +555,6 @@ class Admin(commands.Cog):
             "• Clans et adhésions\n"
             "• Potions\n"
             "• Listings marché/plaza, enchères en cours\n"
-            "• Tickets et entrées de tombola\n"
             "• Historique complet des transactions\n"
             "• L'état du King of the Hill\n\n"
             "**Il n'existe aucune sauvegarde automatique. Cette opération est "
