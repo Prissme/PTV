@@ -918,6 +918,8 @@ TITANIC_MEEPLE_NAME: Final[str] = "Titanic Meeple"
 TITANIC_MEEPLE_MULTIPLIER: Final[float] = 100
 TITANIC_POCO_NAME: Final[str] = "Titanic Poco"
 TITANIC_POCO_MULTIPLIER: Final[float] = TITANIC_MEEPLE_MULTIPLIER
+TITANIC_ZOMBIBI_NAME: Final[str] = "Titanic Zombibi"
+TITANIC_ZOMBIBI_MULTIPLIER: Final[float] = 75
 TITANIC_SMOOTH_LOU_NAME: Final[str] = "Titanic Smooth Lou"
 TITANIC_SMOOTH_LOU_MULTIPLIER: Final[float] = 150
 HUGE_ROSA_NAME: Final[str] = "Huge Rosa"
@@ -948,6 +950,7 @@ TITANIC_MEEPLE_NAME: TITANIC_MEEPLE_MULTIPLIER,
     HUGE_ROSA_NAME: HUGE_ROSA_MULTIPLIER,
     HUGE_WISHED_NAME: HUGE_WISHED_MULTIPLIER,
     TITANIC_POCO_NAME: TITANIC_POCO_MULTIPLIER,
+    TITANIC_ZOMBIBI_NAME: TITANIC_ZOMBIBI_MULTIPLIER,
     TITANIC_SMOOTH_LOU_NAME: TITANIC_SMOOTH_LOU_MULTIPLIER,
     HUGE_RED_KING_FRANK_NAME: HUGE_RED_KING_FRANK_MULTIPLIER,
 }
@@ -1072,7 +1075,8 @@ HUGE_PET_SOURCES: Final[Dict[str, str]] = {
     HUGE_GALE_NAME: "Récompense finale du mode Millionaire Race (étape 20).",
     HUGE_KENJI_ONI_NAME: "Récompense rarissime du Mastermind pour les esprits les plus vifs.",
     HUGE_BULL_NAME: "Huge légendaire distribué autrefois via un événement spécial du staff.",
-    HUGE_SHADE_NAME: "Extrêmement rare dans l'Œuf Maudit (0.5%) - Zone Manoir Hanté.",
+    HUGE_SHADE_NAME: "Rare dans l'Œuf Spectral (0.2%) et l'Œuf Maudit (0.5%) - Zone Manoir Hanté.",
+    TITANIC_ZOMBIBI_NAME: "Jackpot quasi impossible de l'Œuf Maudit - Zone Manoir Hanté.",
     HUGE_MORTIS_NAME: "Récompense exclusive pour les membres VIP du serveur.",
     HUGE_SURGE_NAME: "Apparaît dans l'Œuf métallique pour les stratèges les plus assidus.",
     HUGE_BO_NAME: "Récompense du mode King of the Hill : défends ton trône pour tenter ta chance !",
@@ -1240,30 +1244,31 @@ _SPECTRAL_EGG_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name="Gus",
         rarity="Commun",
-        image_url="https://cdn.discordapp.com/emojis/1431422788266364999.png",
-        base_income_per_hour=450,
-        drop_rate=0.50,
+        image_url="https://cdn.discordapp.com/emojis/1546649442394972240.png",
+        base_income_per_hour=500,
+        drop_rate=0.55,
     ),
     PetDefinition(
         name="Ghost Squeak",
         rarity="Atypique",
-        image_url="https://cdn.discordapp.com/emojis/1431422784537628722.png",
-        base_income_per_hour=950,
+        image_url="https://cdn.discordapp.com/emojis/1546649813414846544.png",
+        base_income_per_hour=1_200,
         drop_rate=0.30,
     ),
     PetDefinition(
         name="Ghost Leon",
         rarity="Rare",
-        image_url="https://cdn.discordapp.com/emojis/1431422781110882495.png",
-        base_income_per_hour=1_800,
-        drop_rate=0.18,
+        image_url="https://cdn.discordapp.com/emojis/1546650056629948476.png",
+        base_income_per_hour=2_500,
+        drop_rate=0.13,
     ),
     PetDefinition(
-        name="Inspectrice Colette",
-        rarity="Épique",
-        image_url="https://cdn.discordapp.com/emojis/1431422778170408960.png",
-        base_income_per_hour=4_500,
-        drop_rate=0.02,
+        name=HUGE_SHADE_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1546805401297887302.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.00002,
+        is_huge=True,
     ),
 )
 
@@ -1273,16 +1278,30 @@ def _clone_pet_definition(source: PetDefinition, **overrides: object) -> PetDefi
 
 
 _CURSED_EGG_PETS: Tuple[PetDefinition, ...] = (
-    _clone_pet_definition(_SPECTRAL_EGG_PETS[0], drop_rate=0.40),
-    _clone_pet_definition(_SPECTRAL_EGG_PETS[1], drop_rate=0.35),
-    _clone_pet_definition(_SPECTRAL_EGG_PETS[2], drop_rate=0.20),
-    _clone_pet_definition(_SPECTRAL_EGG_PETS[3], drop_rate=0.045),
+    _clone_pet_definition(_SPECTRAL_EGG_PETS[0], drop_rate=0.35),
+    _clone_pet_definition(_SPECTRAL_EGG_PETS[1], drop_rate=0.27),
+    _clone_pet_definition(_SPECTRAL_EGG_PETS[2], drop_rate=0.18),
     PetDefinition(
-        name=HUGE_SHADE_NAME,
+        name="Chuck",
+        rarity="Épique",
+        image_url="https://cdn.discordapp.com/emojis/1546650953111834674.png",
+        base_income_per_hour=5_500,
+        drop_rate=0.12,
+    ),
+    PetDefinition(
+        name="Inspectrice Colette",
+        rarity="Légendaire",
+        image_url="https://cdn.discordapp.com/emojis/1431422778170408960.png",
+        base_income_per_hour=9_000,
+        drop_rate=0.065,
+    ),
+    _clone_pet_definition(_SPECTRAL_EGG_PETS[3], drop_rate=0.00005),
+    PetDefinition(
+        name=TITANIC_ZOMBIBI_NAME,
         rarity="Secret",
-        image_url="https://cdn.discordapp.com/emojis/1431422771094753310.png",
+        image_url="https://cdn.discordapp.com/emojis/1546805402782404618.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
-        drop_rate=0.001,
+        drop_rate=0.0000005,
         is_huge=True,
     ),
 )
@@ -1516,7 +1535,7 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
     PetEggDefinition(
         name="Œuf Spectral",
         slug="spectral",
-        price=80_000,
+        price=120_000,
         pets=_SPECTRAL_EGG_PETS,
         zone_slug=MANOIR_ZONE_SLUG,
         aliases=("oeuf spectral", "spectral", "ghost", "fantome"),
@@ -1524,7 +1543,7 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
     PetEggDefinition(
         name="Œuf Maudit",
         slug="maudit",
-        price=250_000,
+        price=600_000,
         pets=_CURSED_EGG_PETS,
         zone_slug=MANOIR_ZONE_SLUG,
         aliases=("oeuf maudit", "maudit", "cursed"),
@@ -1719,11 +1738,13 @@ PET_EMOJIS: Final[dict[str, str]] = {
         "PET_EMOJI_TITANIC_GRIFF", "<:TITANICGRIFF:1432161869342183525>"
     ),
     HUGE_KENJI_ONI_NAME: os.getenv("PET_EMOJI_HUGE_KENJI_ONI", "<:HugeKenjiOni:1431057254337089576>"),
-    "Gus": os.getenv("PET_EMOJI_GUS", "<:Gus:1431422788266364999>"),
-    "Ghost Squeak": os.getenv("PET_EMOJI_GHOST_SQUEAK", "<:GhostSqueak:1431422784537628722>"),
-    "Ghost Leon": os.getenv("PET_EMOJI_GHOST_LEON", "<:GhostLeon:1431422781110882495>"),
+    "Gus": os.getenv("PET_EMOJI_GUS", "<:Gus:1546649442394972240>"),
+    "Ghost Squeak": os.getenv("PET_EMOJI_GHOST_SQUEAK", "<:GhostSqueak:1546649813414846544>"),
+    "Ghost Leon": os.getenv("PET_EMOJI_GHOST_LEON", "<:GhostLeon:1546650056629948476>"),
     "Inspectrice Colette": os.getenv("PET_EMOJI_INSPECTRICE_COLETTE", "<:InspectriceColette:1431422778170408960>"),
-    HUGE_SHADE_NAME: os.getenv("PET_EMOJI_HUGE_SHADE", "<:HugeShade:1431422771094753310>"),
+    HUGE_SHADE_NAME: os.getenv("PET_EMOJI_HUGE_SHADE", "<:HugeShade:1546805401297887302>"),
+    "Chuck": os.getenv("PET_EMOJI_CHUCK", "<:Chuck:1546650953111834674>"),
+    TITANIC_ZOMBIBI_NAME: os.getenv("PET_EMOJI_TITANIC_ZOMBIBI", "<:TitanicZombibi:1546805402782404618>"),
     HUGE_MORTIS_NAME: os.getenv("PET_EMOJI_HUGE_MORTIS", "<:HugeMortis:1431435110590189638>"),
     HUGE_SURGE_NAME: os.getenv("PET_EMOJI_HUGE_SURGE", "<:HugeSurge:1433379423133892608>"),
     TITANIC_MEEPLE_NAME: os.getenv("PET_EMOJI_TITANIC_MEEPLE", "<:TITANICMEEPLE:1433380006557646878>"),
@@ -1765,7 +1786,7 @@ PET_EMOJIS: Final[dict[str, str]] = {
     ),
     HUGE_ROSA_NAME: os.getenv("PET_EMOJI_HUGE_ROSA", "<:HugeRosa:1437826071503311010>"),
     TITANIC_POCO_NAME: os.getenv("PET_EMOJI_TITANIC_POCO", "<:TITANICPOCO:1437826145486770176>"),
-    TITANIC_SMOOTH_LOU_NAME: os.getenv("PET_EMOJI_TITANIC_SMOOTH_LOU") or "🐋",
+    TITANIC_SMOOTH_LOU_NAME: os.getenv("PET_EMOJI_TITANIC_SMOOTH_LOU", "<:TitanicSmoothLou:1546431390638415973>"),
     # Pets festifs (event anniversaire)
     "Festive Mandy": os.getenv("PET_EMOJI_FESTIVE_MANDY", "<:FestiveMandy:1545748676012544070>"),
     "Festive Piper": os.getenv("PET_EMOJI_FESTIVE_PIPER", "<:FestivePiper:1546430132842008686>"),
