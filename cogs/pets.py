@@ -3787,6 +3787,11 @@ class Pets(commands.Cog):
     async def animal(self, ctx: commands.Context) -> None:
         await self._openbox_impl(ctx, "vivant")
 
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    @commands.command(name="huevo", aliases=("mexico",))
+    async def huevo(self, ctx: commands.Context) -> None:
+        await self._openbox_impl(ctx, "huevo")
+
     def _build_egg_preview_embed(
         self,
         egg: PetEggDefinition,
