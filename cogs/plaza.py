@@ -411,71 +411,6 @@ class PetAuctionModal(_BaseAuctionModal):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-class TicketAuctionModal(_BaseAuctionModal):
-    def __init__(self, plaza: "Plaza", author: discord.abc.User) -> None:
-        super().__init__(plaza, author, "Créer une enchère - Tickets")
-        self.quantity_input = discord.ui.TextInput(
-            label="Quantité", placeholder="Ex: 5", min_length=1, max_length=10
-        )
-        self.starting_bid_input = discord.ui.TextInput(
-            label="Mise de départ", placeholder="Ex: 20000", min_length=1, max_length=18
-        )
-        self.duration_input = discord.ui.TextInput(
-            label="Durée (minutes)", placeholder="Ex: 180", min_length=1, max_length=4
-        )
-        self.buyout_input = discord.ui.TextInput(
-            label="Achat direct (optionnel)",
-            placeholder="Laisse vide si pas d'achat direct",
-            required=False,
-            max_length=18,
-        )
-        self.add_item(self.quantity_input)
-        self.add_item(self.starting_bid_input)
-        self.add_item(self.duration_input)
-        self.add_item(self.buyout_input)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        quantity = self._parse_int(self.quantity_input.value)
-        starting_bid = self._parse_int(self.starting_bid_input.value)
-        duration_minutes = self._parse_int(self.duration_input.value)
-        if quantity is None or starting_bid is None or duration_minutes is None:
-            await interaction.response.send_message(
-                embed=embeds.error_embed("Merci de saisir des valeurs numériques positives."),
-                ephemeral=True,
-            )
-            return
-        try:
-            buyout = self._parse_optional_int(self.buyout_input.value)
-        except ValueError:
-            await interaction.response.send_message(
-                embed=embeds.error_embed("Le prix d'achat direct doit être numérique."),
-                ephemeral=True,
-            )
-            return
-        if quantity <= 0:
-            await interaction.response.send_message(
-                embed=embeds.error_embed("La quantité doit être positive."), ephemeral=True
-            )
-            return
-        try:
-            listing = await self.plaza.database.create_item_auction(
-                self.author.id,
-                item_type="ticket",
-                item_slug="raffle_ticket",
-                quantity=quantity,
-                starting_bid=starting_bid,
-                duration_minutes=duration_minutes,
-                buyout_price=buyout,
-            )
-        except DatabaseError as exc:
-            await interaction.response.send_message(
-                embed=embeds.error_embed(str(exc)), ephemeral=True
-            )
-            return
-        embed = await self.plaza._build_auction_creation_embed(int(listing["id"]))
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
 class PotionAuctionModal(_BaseAuctionModal):
     def __init__(self, plaza: "Plaza", author: discord.abc.User) -> None:
         super().__init__(plaza, author, "Créer une enchère - Potion")
@@ -581,9 +516,6 @@ class AuctionCreationView(discord.ui.View):
                 label="Pet", value="pet", description="Mettre un pet aux enchères"
             ),
             discord.SelectOption(
-                label="Tickets", value="ticket", description="Vendre des tickets de loterie"
-            ),
-            discord.SelectOption(
                 label="Potion", value="potion", description="Vendre une potion"
             ),
         ],
@@ -594,11 +526,6 @@ class AuctionCreationView(discord.ui.View):
         value = select.values[0]
         if value == "pet":
             await interaction.response.send_modal(PetAuctionModal(self.plaza, self.author))
-            return
-        if value == "ticket":
-            await interaction.response.send_modal(
-                TicketAuctionModal(self.plaza, self.author)
-            )
             return
         await interaction.response.send_modal(
             PotionAuctionModal(self.plaza, self.author)
@@ -619,45 +546,6 @@ class AuctionCreationView(discord.ui.View):
             await interaction.response.edit_message(view=self)
 
 
-class StandTicketListingModal(discord.ui.Modal):
-    def __init__(self, view: "StandManagementView") -> None:
-        super().__init__(title="Lister des tickets")
-        self.view = view
-        self.quantity_input = discord.ui.TextInput(
-            label="Quantité de tickets",
-            placeholder="Ex: 5",
-            min_length=1,
-            max_length=5,
-        )
-        self.price_input = discord.ui.TextInput(
-            label=f"Prix total ({Emojis.GEM})",
-            placeholder="Ex: 5000",
-            min_length=1,
-            max_length=18,
-        )
-        self.add_item(self.quantity_input)
-        self.add_item(self.price_input)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        try:
-            quantity = int(self.quantity_input.value)
-            price = int(self.price_input.value.replace(" ", ""))
-        except ValueError:
-            await interaction.response.send_message(
-                embed=embeds.error_embed("Indique une quantité et un prix valides."),
-                ephemeral=True,
-            )
-            return
-
-        success, embed = await self.view.plaza._create_ticket_listing_embed(
-            interaction.user, quantity, price
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        if success:
-            await self.view.mark_dirty()
-            await self.view.refresh_if_needed()
-
-
 class StandPotionListingModal(discord.ui.Modal):
     def __init__(self, view: "StandManagementView") -> None:
         super().__init__(title="Lister une potion")
@@ -675,7 +563,7 @@ class StandPotionListingModal(discord.ui.Modal):
             max_length=5,
         )
         self.price_input = discord.ui.TextInput(
-            label=f"Prix total ({Emojis.GEM})",
+            label="Prix total (gemmes)",
             placeholder="Ex: 25000",
             min_length=1,
             max_length=18,
@@ -744,7 +632,7 @@ class StandRoleListingModal(discord.ui.Modal):
         self.view = view
         self.role = role
         self.price_input = discord.ui.TextInput(
-            label=f"Prix total ({Emojis.GEM})",
+            label="Prix total (gemmes)",
             placeholder="Ex: 50000",
             min_length=1,
             max_length=18,
@@ -818,12 +706,6 @@ class StandManagementView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         await interaction.response.send_modal(StandPetListingModal(self))
-
-    @discord.ui.button(label="Lister des tickets", style=discord.ButtonStyle.secondary)
-    async def list_tickets(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await interaction.response.send_modal(StandTicketListingModal(self))
 
     @discord.ui.button(label="Lister une potion", style=discord.ButtonStyle.secondary)
     async def list_potion(
@@ -1068,11 +950,6 @@ class ConsumableListingsView(discord.ui.View):
                 value="all",
                 description="Voir chaque annonce active.",
             ),
-            discord.SelectOption(
-                label="🎟️ Tickets",
-                value="ticket",
-                description="Afficher uniquement les tickets.",
-            ),
         ]
 
         has_role_listing = any(
@@ -1108,9 +985,7 @@ class ConsumableListingsView(discord.ui.View):
             timestamp = f" • {discord.utils.format_dt(created_at, style='R')}"
 
         item_type = str(record.get("item_type", ""))
-        if item_type == "ticket":
-            label = f"🎟️ Tickets ×{quantity}"
-        elif item_type == "role":
+        if item_type == "role":
             slug = str(record.get("item_slug") or "")
             label = f"🛡️ {self.plaza._role_label(slug, getattr(self.author, 'guild', None))}"
         else:
@@ -1121,14 +996,7 @@ class ConsumableListingsView(discord.ui.View):
         return f"#{listing_id} • {label} — {price}{timestamp} • Vendeur : {seller_name}"
 
     def get_embed(self, key: str) -> discord.Embed:
-        if key == "ticket":
-            filtered = [
-                record
-                for record in self.listings
-                if str(record.get("item_type")) == "ticket"
-            ]
-            title = "🎟️ Tickets en vente"
-        elif key == "role":
+        if key == "role":
             filtered = [
                 record for record in self.listings if str(record.get("item_type")) == "role"
             ]
@@ -1165,7 +1033,7 @@ class ConsumableListingsView(discord.ui.View):
 
     def update_filters(self) -> None:
         self.potion_filters = self._collect_potion_filters()
-        valid_filters = {"all", "ticket", "role"}
+        valid_filters = {"all", "role"}
         valid_filters.update(f"potion:{slug}" for slug, _ in self.potion_filters)
         if self.current_filter not in valid_filters:
             self.current_filter = "all"
@@ -1407,9 +1275,7 @@ class Plaza(commands.Cog):
         item_type = str(record.get("item_type") or "")
         if item_type:
             quantity = int(record.get("quantity", 0))
-            if item_type == "ticket":
-                name = f"🎟️ Tickets ×{quantity}"
-            elif item_type == "role":
+            if item_type == "role":
                 slug = str(record.get("item_slug") or "")
                 name = f"🛡️ {self._role_label(slug, guild)}"
             else:
@@ -1427,8 +1293,6 @@ class Plaza(commands.Cog):
         quantity = int(record.get("quantity", 1))
         if item_type == "pet":
             return self._format_pet_record(record)
-        if item_type == "ticket":
-            return f"🎟️ Tickets x{quantity}"
         if item_type == "potion":
             slug = str(record.get("item_slug") or "")
             definition = POTION_DEFINITION_MAP.get(slug)
@@ -1701,34 +1565,6 @@ class Plaza(commands.Cog):
         )
         return True, embed
 
-    async def _create_ticket_listing_embed(
-        self,
-        user: discord.abc.User,
-        quantity: int,
-        price: int,
-    ) -> tuple[bool, discord.Embed]:
-        if quantity <= 0:
-            return False, embeds.error_embed("Indique une quantité positive de tickets.")
-        if price <= 0:
-            return False, embeds.error_embed("Le prix doit être supérieur à zéro.")
-
-        try:
-            listing = await self.database.create_consumable_listing(
-                user.id,
-                item_type="ticket",
-                quantity=quantity,
-                price=price,
-            )
-        except DatabaseError as exc:
-            return False, embeds.error_embed(str(exc))
-
-        listing_id = int(listing["id"])
-        embed = embeds.success_embed(
-            f"🎟️ {quantity} ticket(s) mis en vente pour {embeds.format_gems(price)} (annonce #{listing_id}).",
-            title="Annonce créée",
-        )
-        return True, embed
-
     async def _create_potion_listing_embed(
         self,
         user: discord.abc.User,
@@ -1844,9 +1680,7 @@ class Plaza(commands.Cog):
         quantity = int(listing_record.get("quantity", 0))
         item_type = str(listing_record.get("item_type", ""))
         slug = str(listing_record.get("item_slug", ""))
-        if item_type == "ticket":
-            item_label = f"🎟️ Tickets ×{quantity}"
-        elif item_type == "role":
+        if item_type == "role":
             item_label = f"🛡️ {self._role_label(slug, guild)}"
         else:
             definition = POTION_DEFINITION_MAP.get(slug)
@@ -1917,9 +1751,7 @@ class Plaza(commands.Cog):
 
             item_type = str(consumable.get("item_type", ""))
             quantity = int(consumable.get("quantity", 0))
-            if item_type == "ticket":
-                label = f"{quantity} ticket(s)"
-            elif item_type == "role":
+            if item_type == "role":
                 slug = str(consumable.get("item_slug", ""))
                 if isinstance(user, discord.Member) and user.guild is not None and slug.isdigit():
                     role = user.guild.get_role(int(slug))
@@ -2102,33 +1934,6 @@ class Plaza(commands.Cog):
             listing = await self.database.create_pet_auction(
                 ctx.author.id,
                 user_pet_id,
-                starting_bid=starting_bid,
-                duration_minutes=duration_minutes,
-                buyout_price=buyout,
-            )
-        except DatabaseError as exc:
-            await ctx.send(embed=embeds.error_embed(str(exc)))
-            return
-        await self._send_auction_creation_embed(ctx, int(listing["id"]))
-
-    @auction_group.command(name="ticket")
-    async def auction_ticket(
-        self,
-        ctx: commands.Context,
-        quantity: int,
-        starting_bid: int,
-        duration_minutes: int,
-        buyout: int | None = None,
-    ) -> None:
-        if quantity <= 0:
-            await ctx.send(embed=embeds.error_embed("La quantité doit être positive."))
-            return
-        try:
-            listing = await self.database.create_item_auction(
-                ctx.author.id,
-                item_type="ticket",
-                item_slug="raffle_ticket",
-                quantity=quantity,
                 starting_bid=starting_bid,
                 duration_minutes=duration_minutes,
                 buyout_price=buyout,
