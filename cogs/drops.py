@@ -1,6 +1,8 @@
 """Gestion des drops aléatoires dans un salon dédié."""
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import random
 from dataclasses import dataclass
@@ -9,17 +11,15 @@ from typing import Sequence
 import discord
 from discord.ext import commands, tasks
 
-from config import Emojis, POTION_DEFINITIONS, PET_DEFINITIONS
+from config import Emojis, POTION_DEFINITIONS
 from database.db import Database, DatabaseError
 from utils import embeds
 from utils.formatting import format_compact, format_currency
-from utils.pet_formatting import pet_emoji
 
 logger = logging.getLogger(__name__)
 
-DROP_CHANNEL_ID = 1464700985506271365
+DROP_CHANNEL_ID = 1510006264602693804
 DROP_CHANCE = 1 / 3600
-GOOD_PET_RARITIES = {"Légendaire", "Mythique", "Secret"}
 
 
 @dataclass(frozen=True)
@@ -27,19 +27,6 @@ class DropReward:
     kind: str
     label: str
     data: dict[str, object]
-
-
-def _pick_good_pet() -> DropReward:
-    candidates = [
-        pet
-        for pet in PET_DEFINITIONS
-        if not pet.is_huge and pet.rarity in GOOD_PET_RARITIES
-    ]
-    if not candidates:
-        candidates = list(PET_DEFINITIONS)
-    pet = random.choice(candidates)
-    label = f"{pet_emoji(pet.name)} **{pet.name}** ({pet.rarity})"
-    return DropReward(kind="pet", label=label, data={"pet": pet})
 
 
 def _pick_good_potion() -> DropReward:
@@ -89,26 +76,22 @@ class DropClaimView(discord.ui.View):
             if isinstance(child, discord.ui.Button):
                 child.disabled = True
 
+    async def _delete_after_delay(self, delay: float = 15.0) -> None:
+        await asyncio.sleep(delay)
+        if self.message is None:
+            return
+        with contextlib.suppress(discord.HTTPException):
+            await self.message.delete()
+
     async def on_timeout(self) -> None:
         if self.message is None:
             return
         self._disable_buttons()
         await self.message.edit(view=self)
+        asyncio.ensure_future(self._delete_after_delay())
 
     async def _apply_reward(self, user: discord.abc.User) -> None:
         await self.database.ensure_user(user.id)
-
-        if self.reward.kind == "pet":
-            pet = self.reward.data["pet"]
-            pet_id = await self.database.get_pet_id_by_name(pet.name)
-            if pet_id is None:
-                raise DatabaseError("Pet introuvable pour le drop")
-            await self.database.add_user_pet(
-                user.id,
-                pet_id,
-                is_huge=bool(getattr(pet, "is_huge", False)),
-            )
-            return
 
         if self.reward.kind == "potion":
             potion = self.reward.data["potion"]
@@ -164,19 +147,17 @@ class DropClaimView(discord.ui.View):
         embed = self._build_embed(claimer=interaction.user)
         await interaction.response.edit_message(embed=embed, view=self)
         self.stop()
+        asyncio.ensure_future(self._delete_after_delay())
 
 
 def _roll_drop() -> DropReward:
     choices: Sequence[tuple[str, int]] = (
-        ("pet", 4),
         ("potion", 3),
         ("pb", 2),
         ("gems", 2),
     )
     pool = [entry for entry, weight in choices for _ in range(weight)]
     selected = random.choice(pool)
-    if selected == "pet":
-        return _pick_good_pet()
     if selected == "potion":
         return _pick_good_potion()
     if selected == "gems":
