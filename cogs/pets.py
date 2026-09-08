@@ -3678,9 +3678,9 @@ class Pets(commands.Cog):
             else:
                 lines.append(f"⬛ **???** — ??")
 
-        description = f"Prix : **{price_text}**\n\n" + "\n".join(lines) if lines else f"Prix : **{price_text}**"
+        description = f"## {price_text}\n\n" + "\n".join(lines) if lines else f"## {price_text}"
         embed = discord.Embed(
-            title=f"🥚 {egg.name}",
+            title=f"# 🥚 {egg.name}",
             description=description,
             color=embeds.Colors.INFO,
         )
