@@ -57,7 +57,7 @@ def _pick_good_potion() -> DropReward:
 
 def _pick_pb_reward() -> DropReward:
     amount = random.randint(5_000, 50_000)
-    label = f"💰 **{format_currency(amount)}**"
+    label = f"{Emojis.COIN} **{format_currency(amount)}**"
     return DropReward(kind="pb", label=label, data={"amount": amount})
 
 
