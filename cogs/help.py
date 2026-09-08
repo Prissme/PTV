@@ -199,16 +199,12 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "aliases": ("winstreaklb", "mmwslb"),
                 },
                 {
-                    "command": f"{PREFIX}raffle",
-                    "description": "Gère tes tickets de tombola, mise-les et suis le prochain tirage.",
-                },
-                {
                     "command": f"{PREFIX}millionairerace",
                     "description": "Prends part à la course millionnaire et fais exploser ta fortune.",
                 },
                 {
                     "command": f"{PREFIX}inventory",
-                    "description": "Affiche ton inventaire complet (tickets, potions, pets).",
+                    "description": "Affiche ton inventaire complet (potions, pets).",
                     "aliases": ("inv",),
                 },
                 {
@@ -354,10 +350,6 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "description": "Crée une enchère pour des potions.",
                 },
                 {
-                    "command": f"{PREFIX}auction ticket <quantité> <mise> <durée_min> [achat_immédiat]",
-                    "description": "Crée une enchère pour des tickets.",
-                },
-                {
                     "command": f"{PREFIX}auction bid <id> <montant>",
                     "description": "Fais une offre sur une enchère.",
                     "aliases": ("mise", "parier"),
@@ -471,16 +463,12 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                     "aliases": ("winstreaklb", "mmwslb"),
                 },
                 {
-                    "command": f"{PREFIX}raffle",
-                    "description": "Stake your raffle tickets, choose the amount, and follow the next draw.",
-                },
-                {
                     "command": f"{PREFIX}millionairerace",
                     "description": "Join the Millionaire Race and skyrocket your fortune.",
                 },
                 {
                     "command": f"{PREFIX}inventory",
-                    "description": "Open an interactive view of all your items (tickets, potions, pets).",
+                    "description": "Open an interactive view of all your items (potions, pets).",
                     "aliases": ("inv",),
                 },
                 {
@@ -615,10 +603,6 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 {
                     "command": f"{PREFIX}auction potion <slug> <qty> <bid> <minutes> [buyout]",
                     "description": "Create an auction for potions.",
-                },
-                {
-                    "command": f"{PREFIX}auction ticket <qty> <bid> <minutes> [buyout]",
-                    "description": "Create an auction for raffle tickets.",
                 },
                 {
                     "command": f"{PREFIX}auction bid <id> <amount>",
