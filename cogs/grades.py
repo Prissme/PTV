@@ -660,7 +660,7 @@ class GradeSystem(commands.Cog):
         description_lines = [
             f"• Tu es sur le point de lancer ton rebirth #{rebirth_count + 1}",
             "• Retour à la zone 1 et au grade 1",
-            f"• Tes {Emojis.COIN}, potions actives et tickets de tombola seront perdus",
+            f"• Tes {Emojis.COIN} et potions actives seront perdus",
             "• Tes pets seront tous supprimés, sauf tes Huge et Titanic",
             f"• Bonus permanent : +50% de {Emojis.COIN} gagnés",
             "• Accès au gold garanti en payant 100× le prix d'un œuf",
