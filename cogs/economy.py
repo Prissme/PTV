@@ -71,7 +71,6 @@ from database.db import (
     Database,
     DatabaseError,
     InsufficientBalanceError,
-    InsufficientRaffleTicketsError,
 )
 from utils.mastery import MASTERMIND_MASTERY, MasteryDefinition
 from utils.pet_formatting import PetDisplay
@@ -128,34 +127,6 @@ POTION_DROP_RATES: dict[str, float] = {
 
 POTION_SLUGS: tuple[str, ...] = tuple(potion.slug for potion in POTION_DEFINITIONS)
 HUGE_WISHED_STEAL_CHANCE = 0.001
-
-
-TOMBOLA_TICKET_EMOJI = "🎟️"
-TOMBOLA_PRIZE_FALLBACK = "<:HugeBull:1433617222357487748>"
-TOMBOLA_PRIZE_MIN_MULTIPLIER = 2
-TOMBOLA_PRIZE_MAX_MULTIPLIER = 10
-TOMBOLA_PRIZE_POOL_LABEL = "un Huge aléatoire (x2 à x10)"
-TOMBOLA_DRAW_INTERVAL = timedelta(hours=3)
-TOMBOLA_ANNOUNCE_CHANNEL_ID = 1464700985506271365
-TOMBOLA_BLOCKED_CHANNEL_ID = 1263357865003843604
-TOMBOLA_PRIZE_POOL: tuple[str, ...] = tuple(
-    name
-    for name in sorted(HUGE_PET_NAMES)
-    if "titanic" not in name.lower()
-    and TOMBOLA_PRIZE_MIN_MULTIPLIER
-    <= get_huge_multiplier(name)
-    <= TOMBOLA_PRIZE_MAX_MULTIPLIER
-)
-if not TOMBOLA_PRIZE_POOL:
-    TOMBOLA_PRIZE_POOL = (HUGE_BULL_NAME,)
-
-
-def _tombola_prize_emoji(pet_name: str) -> str:
-    return PET_EMOJIS.get(pet_name, TOMBOLA_PRIZE_FALLBACK)
-
-
-def _tombola_prize_label(pet_name: str) -> str:
-    return f"{_tombola_prize_emoji(pet_name)} {pet_name}"
 
 KOTH_ROLL_INTERVAL = 10
 KOTH_HUGE_CHANCE_DENOMINATOR = 6_000
@@ -592,20 +563,6 @@ class MastermindSession:
         if streak_bonus_pct > 0:
             self.status_lines.append(
                 f"Winstreak Mastermind : **{streak}** (bonus +{streak_bonus_pct}%)"
-            )
-        try:
-            new_total = await self.database.add_raffle_tickets(self.ctx.author.id)
-        except Exception:
-            self._logger.exception(
-                "Impossible d'attribuer un ticket de tombola",
-                extra={"user_id": self.ctx.author.id},
-            )
-        else:
-            self.status_lines.append(
-                f"{TOMBOLA_TICKET_EMOJI} Ticket ajouté à ton inventaire ! Total : **{new_total}**"
-            )
-            self.status_lines.append(
-                f"Mise-les sur `{PREFIX}raffle` pour tenter {TOMBOLA_PRIZE_POOL_LABEL}."
             )
         self._logger.debug(
             "Mastermind win",
@@ -1295,270 +1252,11 @@ class MillionaireRaceView(discord.ui.View):
         self._release()
         self.stop()
 
-class RaffleAmountModal(discord.ui.Modal):
-    amount: discord.ui.TextInput = discord.ui.TextInput(
-        label="Nombre de tickets",
-        placeholder="Exemple : 10",
-        min_length=1,
-        max_length=6,
-    )
-
-    def __init__(self, view: "RaffleView", *, action: str) -> None:
-        self.view = view
-        self.action = action
-        title = "Miser des tickets" if action == "stake" else "Retirer des tickets"
-        super().__init__(title=title)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        raw_value = (self.amount.value or "").replace(" ", "")
-        try:
-            parsed = int(raw_value)
-        except ValueError:
-            await interaction.response.send_message(
-                "Indique un nombre valide de tickets.",
-                ephemeral=True,
-            )
-            return
-        if parsed <= 0:
-            await interaction.response.send_message(
-                "La quantité doit être positive.",
-                ephemeral=True,
-            )
-            return
-        if self.action == "stake":
-            await self.view.stake_tickets(interaction, parsed)
-        else:
-            await self.view.withdraw_tickets(interaction, parsed)
-
-
-class RaffleView(discord.ui.View):
-    def __init__(self, ctx: commands.Context, economy: "Economy") -> None:
-        super().__init__(timeout=180)
-        self.ctx = ctx
-        self.economy = economy
-        self.database = economy.database
-        self.inventory = 0
-        self.committed = 0
-        self.pool_total = 0
-        self.message: discord.Message | None = None
-        self._lock = asyncio.Lock()
-        self._logger = logger.getChild("RaffleView")
-
-    async def start(self) -> discord.Message:
-        await self._refresh_totals()
-        embed = self.build_embed()
-        self._sync_buttons()
-        self.message = await self.ctx.send(embed=embed, view=self)
-        return self.message
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message(
-                "Tu ne peux pas gérer la tombola d'un autre joueur.",
-                ephemeral=True,
-            )
-            return False
-        return True
-
-    async def on_timeout(self) -> None:
-        for item in self.children:
-            item.disabled = True
-        if self.message:
-            with contextlib.suppress(discord.HTTPException):
-                await self.message.edit(view=self)
-
-    def build_embed(self) -> discord.Embed:
-        next_draw = None
-        getter = getattr(self.economy, "get_next_raffle_datetime", None)
-        if callable(getter):
-            with contextlib.suppress(Exception):
-                next_draw = getter()
-        return embeds.raffle_overview_embed(
-            member=self.ctx.author,
-            inventory_tickets=self.inventory,
-            committed_tickets=self.committed,
-            total_committed=self.pool_total,
-            next_draw=next_draw,
-            prize_label=TOMBOLA_PRIZE_POOL_LABEL,
-            ticket_emoji=TOMBOLA_TICKET_EMOJI,
-        )
-
-    async def stake_tickets(self, interaction: discord.Interaction, amount: int) -> None:
-        if amount <= 0:
-            await self._send_error(interaction, "Indique un nombre positif de tickets.")
-            return
-        async with self._lock:
-            try:
-                inventory, committed = await self.database.stake_raffle_tickets(
-                    self.ctx.author.id, amount=amount
-                )
-            except InsufficientRaffleTicketsError:
-                await self._send_error(
-                    interaction, "Tu n'as pas assez de tickets en inventaire pour cette mise."
-                )
-                return
-            except DatabaseError:
-                await self._send_error(
-                    interaction, "Impossible de mettre à jour tes tickets pour le moment."
-                )
-                return
-            else:
-                self.inventory = inventory
-                self.committed = committed
-                await self._refresh_pool_total()
-        await self._push_update(interaction)
-
-    async def withdraw_tickets(
-        self, interaction: discord.Interaction, amount: int | None = None
-    ) -> None:
-        if amount is not None and amount <= 0:
-            await self._send_error(interaction, "Indique un nombre positif de tickets.")
-            return
-        async with self._lock:
-            try:
-                inventory, committed = await self.database.withdraw_raffle_entries(
-                    self.ctx.author.id, amount=amount
-                )
-            except DatabaseError:
-                await self._send_error(
-                    interaction, "Impossible de récupérer tes tickets pour le moment."
-                )
-                return
-            else:
-                self.inventory = inventory
-                self.committed = committed
-                await self._refresh_pool_total()
-        await self._push_update(interaction)
-
-    async def _refresh_totals(self) -> None:
-        try:
-            self.inventory = await self.database.get_user_raffle_tickets(self.ctx.author.id)
-        except Exception:
-            self._logger.exception("Impossible de récupérer les tickets en inventaire")
-            self.inventory = 0
-        try:
-            self.committed = await self.database.get_user_raffle_entries(self.ctx.author.id)
-        except Exception:
-            self._logger.exception("Impossible de récupérer les tickets misés")
-            self.committed = 0
-        await self._refresh_pool_total()
-
-    async def _refresh_pool_total(self) -> None:
-        try:
-            self.pool_total = await self.database.get_total_raffle_tickets()
-        except Exception:
-            self._logger.exception("Impossible de récupérer le total de la tombola")
-            self.pool_total = 0
-
-    async def _push_update(self, interaction: discord.Interaction) -> None:
-        if self.message is None:
-            return
-        self._sync_buttons()
-        embed = self.build_embed()
-        if not interaction.response.is_done():
-            await interaction.response.defer()
-        await interaction.followup.edit_message(
-            message_id=self.message.id,
-            embed=embed,
-            view=self,
-        )
-
-    async def _send_error(self, interaction: discord.Interaction, message: str) -> None:
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
-
-    def _sync_buttons(self) -> None:
-        can_stake = self.inventory > 0
-        can_withdraw = self.committed > 0
-        for button in (
-            getattr(self, "add_one_button", None),
-            getattr(self, "add_five_button", None),
-            getattr(self, "add_ten_button", None),
-            getattr(self, "add_fifty_button", None),
-            getattr(self, "add_hundred_button", None),
-            getattr(self, "bet_all_button", None),
-            getattr(self, "custom_stake_button", None),
-        ):
-            if button is not None:
-                button.disabled = not can_stake
-        for button in (
-            getattr(self, "withdraw_all_button", None),
-            getattr(self, "custom_withdraw_button", None),
-        ):
-            if button is not None:
-                button.disabled = not can_withdraw
-
-    @discord.ui.button(label="+1", style=discord.ButtonStyle.primary, row=0)
-    async def add_one_button(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
-        await self.stake_tickets(interaction, 1)
-
-    @discord.ui.button(label="+5", style=discord.ButtonStyle.primary, row=0)
-    async def add_five_button(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
-        await self.stake_tickets(interaction, 5)
-
-    @discord.ui.button(label="+10", style=discord.ButtonStyle.primary, row=0)
-    async def add_ten_button(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
-        await self.stake_tickets(interaction, 10)
-
-    @discord.ui.button(label="+50", style=discord.ButtonStyle.primary, row=0)
-    async def add_fifty_button(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
-        await self.stake_tickets(interaction, 50)
-
-    @discord.ui.button(label="+100", style=discord.ButtonStyle.primary, row=0)
-    async def add_hundred_button(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
-        await self.stake_tickets(interaction, 100)
-
-    @discord.ui.button(label="Tout miser", style=discord.ButtonStyle.success, row=1)
-    async def bet_all_button(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
-        if self.inventory <= 0:
-            await self._send_error(interaction, "Tu n'as aucun ticket à miser.")
-            return
-        await self.stake_tickets(interaction, self.inventory)
-
-    @discord.ui.button(label="Choisir une quantité", style=discord.ButtonStyle.secondary, row=1)
-    async def custom_stake_button(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
-        await interaction.response.send_modal(RaffleAmountModal(self, action="stake"))
-
-    @discord.ui.button(label="Retirer tout", style=discord.ButtonStyle.danger, row=2)
-    async def withdraw_all_button(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
-        if self.committed <= 0:
-            await self._send_error(
-                interaction, "Aucun ticket n'est actuellement misé pour ce tirage."
-            )
-            return
-        await self.withdraw_tickets(interaction, self.committed)
-
-    @discord.ui.button(label="Retirer une quantité", style=discord.ButtonStyle.secondary, row=2)
-    async def custom_withdraw_button(
-        self, interaction: discord.Interaction, _: discord.ui.Button
-    ) -> None:
-        await interaction.response.send_modal(RaffleAmountModal(self, action="withdraw"))
-
 
 @dataclass
 class InventorySnapshot:
     balance: int
     gems: int
-    tickets_inventory: int
-    tickets_committed: int
     potions: tuple[Mapping[str, object], ...]
     pets: tuple[PetDisplay, ...]
 
@@ -1570,15 +1268,11 @@ class InventorySnapshot:
             gems,
             potions,
             pets,
-            tickets_inventory,
-            tickets_committed,
         ) = await asyncio.gather(
             database.fetch_balance(user_id),
             database.fetch_gems(user_id),
             database.get_user_potions(user_id),
             database.get_user_pets(user_id),
-            database.get_user_raffle_tickets(user_id),
-            database.get_user_raffle_entries(user_id),
         )
         potion_rows = tuple(
             sorted(potions, key=lambda row: str(row.get("potion_slug") or ""))
@@ -1587,8 +1281,6 @@ class InventorySnapshot:
         return cls(
             balance=int(balance or 0),
             gems=int(gems or 0),
-            tickets_inventory=int(tickets_inventory or 0),
-            tickets_committed=int(tickets_committed or 0),
             potions=potion_rows,
             pets=pet_displays,
         )
@@ -1643,9 +1335,6 @@ class InventoryView(discord.ui.View):
         lines = [
             f"{Emojis.COIN} : **{embeds.format_currency(self.snapshot.balance)}**",
             f"{Emojis.GEM} : **{embeds.format_gems(self.snapshot.gems)}**",
-            f"{TOMBOLA_TICKET_EMOJI} Tickets en inventaire : **{max(0, self.snapshot.tickets_inventory)}**",
-            f"🎯 Tickets misés : **{max(0, self.snapshot.tickets_committed)}**",
-            "Utilise `e!raffle` pour miser tes tickets sur le prochain tirage.",
         ]
         embed = embeds.info_embed("\n".join(lines), title="Inventaire — Aperçu")
         embed.set_footer(text="Parcours les catégories avec le menu déroulant ci-dessous.")
@@ -1793,28 +1482,9 @@ class Economy(commands.Cog):
         # progressive par grade (au lieu d'un bypass binaire au grade 10).
         self._mastermind_cooldown_expiry: dict[int, float] = {}
         self._mastermind_cooldown_lock = asyncio.Lock()
-        self._raffle_task: asyncio.Task[None] | None = None
-        self._raffle_interval = TOMBOLA_DRAW_INTERVAL
-        self._next_raffle_draw: datetime | None = None
-        self._last_raffle_draw: datetime | None = None
 
     async def cog_load(self) -> None:
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
-        now = datetime.now(timezone.utc)
-        try:
-            last_draw = await self.database.get_last_raffle_draw()
-        except Exception:
-            logger.exception("Impossible de récupérer la dernière tombola enregistrée")
-            last_draw = None
-        self._last_raffle_draw = last_draw
-        if last_draw is None:
-            self._next_raffle_draw = now + self._raffle_interval
-        else:
-            candidate = last_draw + self._raffle_interval
-            if candidate <= now:
-                candidate = now + self._raffle_interval
-            self._next_raffle_draw = candidate
-        self._raffle_task = asyncio.create_task(self._raffle_loop())
         if not self.koth_reward_loop.is_running():
             self.koth_reward_loop.start()
         logger.info("Cog Economy chargé")
@@ -1824,10 +1494,6 @@ class Economy(commands.Cog):
             self._cleanup_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._cleanup_task
-        if self._raffle_task:
-            self._raffle_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._raffle_task
         if self.koth_reward_loop.is_running():
             self.koth_reward_loop.cancel()
 
@@ -1856,130 +1522,6 @@ class Economy(commands.Cog):
                 ]
                 for user_id in expired:
                     self._mastermind_cooldown_expiry.pop(user_id, None)
-
-    def get_next_raffle_datetime(self) -> datetime | None:
-        return self._next_raffle_draw
-
-    async def _raffle_loop(self) -> None:
-        await self.bot.wait_until_ready()
-        while True:
-            if self.bot.is_closed():
-                return
-            next_draw = self._next_raffle_draw or (
-                datetime.now(timezone.utc) + self._raffle_interval
-            )
-            delay = (next_draw - datetime.now(timezone.utc)).total_seconds()
-            if delay > 0:
-                await asyncio.sleep(delay)
-            else:
-                await asyncio.sleep(5)
-            if self.bot.is_closed():
-                return
-            await self._run_raffle_draw()
-
-    async def _run_raffle_draw(self) -> None:
-        now = datetime.now(timezone.utc)
-        self._last_raffle_draw = now
-        self._next_raffle_draw = now + self._raffle_interval
-        try:
-            result = await self.database.draw_raffle_winner()
-        except Exception:
-            logger.exception("Échec du tirage de la tombola Mastermind")
-            return
-        if result is None:
-            logger.debug("Tombola Mastermind : aucun ticket en jeu pour ce tirage.")
-            return
-        winner_id, total_tickets, winning_ticket = result
-        prize_name = random.choice(TOMBOLA_PRIZE_POOL)
-        prize_label = _tombola_prize_label(prize_name)
-        pet_id = await self.database.get_pet_id_by_name(prize_name)
-        if pet_id is None:
-            logger.warning("Pet %s introuvable pour la tombola", prize_name)
-        else:
-            try:
-                await self.database.add_user_pet(winner_id, pet_id, is_huge=True)
-            except DatabaseError:
-                logger.exception(
-                    "Impossible d'ajouter %s au gagnant de la tombola", prize_name
-                )
-        try:
-            best_non_huge = await self.database.get_best_non_huge_income(winner_id)
-        except DatabaseError:
-            logger.exception(
-                "Impossible de récupérer le meilleur revenu non-huge pour %s",
-                winner_id,
-            )
-            best_non_huge = 0
-        multiplier = get_huge_level_multiplier(prize_name, 1)
-        huge_income = compute_huge_income(best_non_huge, multiplier)
-        try:
-            remaining = await self.database.get_user_raffle_tickets(winner_id)
-        except Exception:
-            logger.exception(
-                "Impossible de récupérer le stock de tickets après le tirage",
-                extra={"user_id": winner_id},
-            )
-            remaining = 0
-        user = self.bot.get_user(winner_id)
-        if user is None:
-            with contextlib.suppress(discord.HTTPException):
-                user = await self.bot.fetch_user(winner_id)
-        winner_display = user.mention if user else f"Utilisateur {winner_id}"
-        next_draw = self._next_raffle_draw
-        relative_draw = (
-            discord.utils.format_dt(next_draw, style="R")
-            if isinstance(next_draw, datetime)
-            else None
-        )
-        absolute_draw = (
-            discord.utils.format_dt(next_draw, style="f")
-            if isinstance(next_draw, datetime)
-            else None
-        )
-        lines = [
-            f"{TOMBOLA_TICKET_EMOJI} Un nouveau ticket gagnant a été tiré !",
-            f"🥳 Félicitations à {winner_display} !",
-            f"Ils remportent {prize_label} (jusqu'à {embeds.format_currency(huge_income)} /h).",
-            f"Tickets en lice : **{total_tickets}** — Ticket gagnant #{winning_ticket}",
-            f"Tickets restants pour le gagnant : **{remaining}**",
-            "Plus tu cumules de tickets Mastermind, plus tes chances explosent !",
-        ]
-        if relative_draw and absolute_draw:
-            lines.append(f"Prochain tirage : {relative_draw} ({absolute_draw})")
-        embed = embeds.success_embed("\n".join(lines), title="🎟️ Tombola Mastermind")
-        await self._broadcast_raffle_result(embed)
-        if user is not None:
-            personal_lines = [
-                "🎉 Tu viens de remporter la tombola Mastermind !",
-                f"Le lot **{prize_label}** a été ajouté à ton inventaire.",
-                f"Reviens jouer au Mastermind pour cumuler encore plus de tickets !",
-            ]
-            with contextlib.suppress(discord.HTTPException, discord.Forbidden):
-                await user.send(
-                    embed=embeds.success_embed(
-                        "\n".join(personal_lines), title="🎟️ Tombola Mastermind"
-                    )
-                )
-        logger.info(
-            "tombola_winner",
-            extra={
-                "user_id": winner_id,
-                "prize_name": prize_name,
-                "total_tickets": total_tickets,
-                "winning_ticket": winning_ticket,
-            },
-        )
-
-    async def _broadcast_raffle_result(self, embed: discord.Embed) -> None:
-        channel = self.bot.get_channel(TOMBOLA_ANNOUNCE_CHANNEL_ID)
-        if channel is None:
-            with contextlib.suppress(discord.HTTPException, discord.Forbidden):
-                channel = await self.bot.fetch_channel(TOMBOLA_ANNOUNCE_CHANNEL_ID)
-        if isinstance(channel, discord.TextChannel):
-            if channel.id == TOMBOLA_BLOCKED_CHANNEL_ID:
-                return
-            with contextlib.suppress(discord.HTTPException, discord.Forbidden):
-                await channel.send(embed=embed)
 
     def _build_mastermind_helper(
         self, perks: MastermindMasteryPerks
@@ -2351,11 +1893,6 @@ class Economy(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    @commands.command(name="raffle", aliases=("tombola",))
-    async def raffle(self, ctx: commands.Context) -> None:
-        view = RaffleView(ctx, self)
-        await view.start()
-
     @commands.command(name="inventory", aliases=("inv", "sac"))
     async def inventory(self, ctx: commands.Context) -> None:
         await self._ack_heavy_command(ctx)
@@ -2495,20 +2032,6 @@ class Economy(commands.Cog):
             streak_bonus=streak_bonus,
         )
         await ctx.send(embed=embed)
-
-    @commands.command(
-        name="selltickets",
-        aliases=("sellticket", "vendretickets", "vendreticket"),
-    )
-    async def sell_raffle_tickets(self, ctx: commands.Context, amount: int = 1) -> None:
-        """Invite les joueurs à utiliser la plaza pour céder leurs tickets."""
-
-        await ctx.send(
-            embed=embeds.warning_embed(
-                "La vente directe de tickets est désormais fermée. Utilise `e!raffle` pour miser tes tickets et `e!stand` pour les proposer sur la plaza !",
-                title="🎟️ Vente de tickets",
-            )
-        )
 
     @staticmethod
     def _validate_give_request(author: discord.Member, target: discord.Member, amount: int) -> str | None:
