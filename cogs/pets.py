@@ -530,7 +530,7 @@ class GoldifySelect(discord.ui.Select):
         pets_cog: "Pets",
         plan: List[tuple],
     ) -> None:
-        price_text = embeds.format_gems(GOLDIFY_GEM_COST)
+        price_text = f"{GOLDIFY_GEM_COST} Gemmes"
         options = [
             discord.SelectOption(
                 label=f"{definition.name} ({price_text})",
