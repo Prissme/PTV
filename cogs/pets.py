@@ -520,7 +520,7 @@ class PetHatchResult:
     was_forced_gold: bool = False
 
 
-class PetInventoryView(discord.ui.View):
+class PetInventoryView(GoldifyButtonMixin, discord.ui.View):
     """Interface paginée pour afficher la collection de pets par lots de huit."""
 
     def __init__(
@@ -598,6 +598,122 @@ class PetInventoryView(discord.ui.View):
             self.page += 1
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=self)
+
+
+class GoldifySelect(discord.ui.Select):
+    """Menu déroulant permettant de choisir quel pet fusionner en version or."""
+
+    def __init__(
+        self,
+        *,
+        ctx: commands.Context,
+        pets_cog: "Pets",
+        plan: List[tuple],
+    ) -> None:
+        price_text = embeds.format_gems(GOLDIFY_GEM_COST)
+        options = [
+            discord.SelectOption(
+                label=f"{definition.name} ({price_text})",
+                description=f"{quantity} fusion{'s' if quantity != 1 else ''} possible{'s' if quantity != 1 else ''}",
+                value=definition.name,
+            )
+            for definition, _pet_id, quantity in plan[:25]
+        ]
+        super().__init__(
+            placeholder="Choisis un pet à goldify…",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+        self.ctx = ctx
+        self.pets_cog = pets_cog
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul le propriétaire de cet inventaire peut lancer un goldify.",
+                ephemeral=True,
+            )
+            return
+        pet_name = self.values[0]
+        await interaction.response.defer(ephemeral=True)
+        await self.ctx.invoke(self.pets_cog.goldify, pet_name=pet_name)
+        await interaction.followup.send(
+            f"✅ Fusion dorée lancée pour **{pet_name}** — regarde le message ci-dessus !",
+            ephemeral=True,
+        )
+
+
+class GoldifyPromptView(discord.ui.View):
+    """Vue éphémère contenant le menu de sélection Goldify."""
+
+    def __init__(
+        self,
+        *,
+        ctx: commands.Context,
+        pets_cog: "Pets",
+        plan: List[tuple],
+    ) -> None:
+        super().__init__(timeout=60)
+        self.add_item(GoldifySelect(ctx=ctx, pets_cog=pets_cog, plan=plan))
+
+
+class GoldifyButtonMixin:
+    """Mixin ajoutant un bouton Goldify ouvrant un menu de sélection éphémère."""
+
+    ctx: commands.Context
+
+    @discord.ui.button(label="🥇 Goldify", style=discord.ButtonStyle.success)
+    async def open_goldify_menu(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul le propriétaire de cet inventaire peut lancer un goldify.",
+                ephemeral=True,
+            )
+            return
+        pets_cog = self.ctx.cog
+        rows = await pets_cog.database.get_user_pets(self.ctx.author.id)
+        plan = pets_cog._build_bulk_fusion_plan(rows, mode="gold")
+        if not plan:
+            await interaction.response.send_message(
+                "Aucun pet n'est éligible au goldify pour le moment "
+                f"(il faut au moins {GOLD_PET_COMBINE_REQUIRED} exemplaires identiques).",
+                ephemeral=True,
+            )
+            return
+        view = GoldifyPromptView(ctx=self.ctx, pets_cog=pets_cog, plan=plan)
+        await interaction.response.send_message(
+            "Choisis le pet à fusionner en version or :",
+            view=view,
+            ephemeral=True,
+        )
+
+
+class PetsSinglePageView(GoldifyButtonMixin, discord.ui.View):
+    """Vue minimaliste (bouton Goldify uniquement) pour l'inventaire tenant sur une page."""
+
+    def __init__(self, *, ctx: commands.Context) -> None:
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.message: discord.Message | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul le propriétaire de l'inventaire peut utiliser ces boutons.",
+                ephemeral=True,
+            )
+            return False
+        return True
 
     async def on_timeout(self) -> None:
         for item in self.children:
@@ -4337,10 +4453,13 @@ class Pets(commands.Cog):
                 huge_descriptions=HUGE_PET_SOURCES,
                 group_duplicates=False,
             )
+            single_view = PetsSinglePageView(ctx=ctx)
             if loading_message is not None:
-                await loading_message.edit(content=None, embed=embed)
+                await loading_message.edit(content=None, embed=embed, view=single_view)
+                single_view.message = loading_message
             else:
-                await ctx.send(embed=embed)
+                message = await ctx.send(embed=embed, view=single_view)
+                single_view.message = message
         else:
             view = PetInventoryView(
                 ctx=ctx,
@@ -4702,11 +4821,11 @@ class Pets(commands.Cog):
         if added_names or removed_names:
             if added_names:
                 summary_lines.append(
-                    "✅ Activés : " + ", ".join(f"**{name}**" for name in added_names)
+                    "✅ Activés : " + ", ".join(pet_emoji(name) or f"**{name}**" for name in added_names)
                 )
             if removed_names:
                 summary_lines.append(
-                    "♻️ Retirés : " + ", ".join(f"**{name}**" for name in removed_names)
+                    "♻️ Retirés : " + ", ".join(pet_emoji(name) or f"**{name}**" for name in removed_names)
                 )
         else:
             summary_lines.append("🔄 Tes meilleurs pets étaient déjà équipés.")
@@ -4733,8 +4852,10 @@ class Pets(commands.Cog):
                     markers.append("✨")
                 marker_text = " ".join(markers)
                 rarity = str(data.get("rarity", ""))
+                emoji = pet_emoji(name)
+                emoji_prefix = f"{emoji} " if emoji else ""
                 line = (
-                    f"{index}. {marker_text} **{name}** ({rarity}) — {income:,} {Emojis.COIN}/h"
+                    f"{index}. {emoji_prefix}{marker_text} **{name}** ({rarity}) — {income:,} {Emojis.COIN}/h"
                 ).replace(",", " ")
                 detail_lines.append(line.strip())
             summary_lines.append("")
