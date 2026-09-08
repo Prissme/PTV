@@ -662,6 +662,30 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
 }
 
 HELP_SECTIONS_PER_PAGE = 3
+DISCORD_FIELD_VALUE_LIMIT = 1024
+
+
+def _chunk_field_lines(lines: Sequence[str], *, separator: str = "\n\n") -> list[str]:
+    """Regroupe des lignes en blocs qui respectent la limite de 1024 caractères d'un champ d'embed."""
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_length = 0
+
+    for line in lines:
+        added_length = len(line) + (len(separator) if current else 0)
+        if current and current_length + added_length > DISCORD_FIELD_VALUE_LIMIT:
+            chunks.append(separator.join(current))
+            current = [line]
+            current_length = len(line)
+        else:
+            current.append(line)
+            current_length += added_length
+
+    if current:
+        chunks.append(separator.join(current))
+
+    return chunks or [""]
 
 
 _HELP_STRINGS: Dict[str, HelpLocaleStrings] = {
@@ -1007,10 +1031,10 @@ class Help(commands.Cog):
             embed.set_thumbnail(url=avatar_url)
 
         for section in sections:
-            formatted_commands = "\n\n".join(
-                command.format_line() for command in section.commands
-            )
-            embed.add_field(name=section.label, value=formatted_commands, inline=False)
+            lines = [command.format_line() for command in section.commands]
+            for index, chunk in enumerate(_chunk_field_lines(lines)):
+                field_name = section.label if index == 0 else f"{section.label} (suite)"
+                embed.add_field(name=field_name, value=chunk, inline=False)
 
         footer_text = strings.footer_text
         if total_pages > 1:
