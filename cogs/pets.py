@@ -3782,6 +3782,11 @@ class Pets(commands.Cog):
     async def robot(self, ctx: commands.Context) -> None:
         await self._openbox_impl(ctx, "metallique")
 
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    @commands.command(name="animal", aliases=("animalerie",))
+    async def animal(self, ctx: commands.Context) -> None:
+        await self._openbox_impl(ctx, "vivant")
+
     def _build_egg_preview_embed(
         self,
         egg: PetEggDefinition,
