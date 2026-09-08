@@ -193,7 +193,7 @@ def balance_embed(
     if festive_coins is not None:
         lines.append(f"## {FESTIVE_COIN_EMOJI} {format_compact(festive_coins)}")
     description = "\n".join(lines)
-    embed = _base_embed("Solde", description, color=Colors.SUCCESS if balance else Colors.NEUTRAL)
+    embed = _base_embed("# Solde", description, color=Colors.SUCCESS if balance else Colors.NEUTRAL)
     _set_member_thumbnail(embed, member)
     embed.set_footer(text=f"Utilise {PREFIX}daily pour collecter ta récompense")
     return _finalize_embed(embed)
@@ -207,13 +207,13 @@ def daily_embed(
     streak: int = 0,
     streak_bonus: float = 0.0,
 ) -> discord.Embed:
-    lines = [f"Tu as reçu {format_currency(amount)} aujourd'hui."]
+    lines = [f"## {format_currency(amount)}"]
     if gems:
-        lines.append(f"Bonus {Emojis.GEM} : {format_gems(gems)}")
+        lines.append(f"## {format_gems(gems)}")
     if streak > 0:
         lines.append(f"Streak actuel : **{streak}** (+{streak_bonus * 100:.0f}%)")
     description = "\n".join(lines)
-    embed = _base_embed(f"{Emojis.DAILY} Récompense quotidienne", description, color=Colors.SUCCESS)
+    embed = _base_embed(f"# {Emojis.DAILY} Récompense quotidienne", description, color=Colors.SUCCESS)
     _set_member_thumbnail(embed, member)
     embed.set_footer(text="Reviens demain pour récupérer ta prochaine récompense !")
     return _finalize_embed(embed)
@@ -776,13 +776,13 @@ def pet_collection_embed(
             line = display.collection_line(quantity=quantity, identifiers=identifiers)
             description_lines.append(line)
 
-    embed_description = " • ".join(header)
+    embed_description = "## " + " • ".join(header)
     if description_lines:
         embed_description += "\n\n" + "\n".join(f"• {line}" for line in description_lines)
     else:
         embed_description += "\n\nAucun pet pour le moment. Ouvre un œuf avec e!openbox."
 
-    embed = _base_embed("Inventaire des pets", embed_description, color=Colors.INFO)
+    embed = _base_embed("# Inventaire des pets", embed_description, color=Colors.INFO)
     _set_member_author(embed, member)
 
     current_page = max(1, page)
@@ -891,7 +891,7 @@ def pet_index_embed(
 
 def egg_index_embed(*, eggs: Sequence[PetEggDefinition]) -> discord.Embed:
     embed = _base_embed(
-        "Index des œufs",
+        "# Index des œufs",
         "Probabilités de drop connues pour chaque œuf.",
         color=Colors.INFO,
     )
@@ -931,10 +931,11 @@ def egg_index_embed(*, eggs: Sequence[PetEggDefinition]) -> discord.Embed:
                 price_display = format_gems(egg.price)
             else:
                 price_display = format_currency(egg.price)
-            field_name = f"{egg.name} — {price_display}"
+            field_name = egg.name
             if len(chunks) > 1:
                 field_name = f"{field_name} ({index})"
-            embed.add_field(name=field_name, value=value, inline=False)
+            field_value = f"## {price_display}\n{value}"
+            embed.add_field(name=field_name, value=field_value, inline=False)
 
     embed.set_footer(text="Les chances indiquées sont susceptibles de changer avec les mises à jour.")
     return _finalize_embed(embed)
