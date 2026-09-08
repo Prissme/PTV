@@ -1161,10 +1161,6 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_plaza_consumable_seller ON plaza_consumable_listings(seller_id)"
             )
 
-            await connection.execute(
-                """"""
-        )
-
         if connection is not None:
             await connection.execute(query, *params)
             return
