@@ -1161,12 +1161,136 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_plaza_consumable_seller ON plaza_consumable_listings(seller_id)"
             )
 
-        if connection is not None:
-            await connection.execute(query, *params)
-            return
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS clans (
+                    clan_id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    owner_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    capacity_level INTEGER NOT NULL DEFAULT 0 CHECK (capacity_level >= 0),
+                    boost_level INTEGER NOT NULL DEFAULT 0 CHECK (boost_level >= 0),
+                    clan_level INTEGER NOT NULL DEFAULT 1 CHECK (clan_level >= 1),
+                    total_investment BIGINT NOT NULL DEFAULT 0 CHECK (total_investment >= 0),
+                    pb_boost_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1 CHECK (pb_boost_multiplier >= 1),
+                    banner_emoji TEXT NOT NULL DEFAULT '⚔️'
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_clans_lower_name ON clans (LOWER(name))"
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clans ADD COLUMN IF NOT EXISTS capacity_level INTEGER NOT NULL DEFAULT 0
+                    CHECK (capacity_level >= 0)
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clans ADD COLUMN IF NOT EXISTS boost_level INTEGER NOT NULL DEFAULT 0
+                    CHECK (boost_level >= 0)
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clans ADD COLUMN IF NOT EXISTS clan_level INTEGER NOT NULL DEFAULT 1
+                    CHECK (clan_level >= 1)
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clans ADD COLUMN IF NOT EXISTS total_investment BIGINT NOT NULL DEFAULT 0
+                    CHECK (total_investment >= 0)
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clans ADD COLUMN IF NOT EXISTS pb_boost_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1
+                    CHECK (pb_boost_multiplier >= 1)
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clans ADD COLUMN IF NOT EXISTS shiny_luck_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1
+                    CHECK (shiny_luck_multiplier >= 1)
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clans ADD COLUMN IF NOT EXISTS banner_emoji TEXT NOT NULL DEFAULT '⚔️'
+                """
+            )
 
-        async with self.transaction() as txn_connection:
-            await txn_connection.execute(query, *params)
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS clan_members (
+                    clan_id INTEGER NOT NULL REFERENCES clans(clan_id) ON DELETE CASCADE,
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    role TEXT NOT NULL DEFAULT 'member',
+                    joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    contribution BIGINT NOT NULL DEFAULT 0 CHECK (contribution >= 0),
+                    last_activity TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (clan_id, user_id)
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_clan_members_user ON clan_members(user_id)"
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clan_members ADD COLUMN IF NOT EXISTS contribution BIGINT NOT NULL DEFAULT 0
+                    CHECK (contribution >= 0)
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE clan_members ADD COLUMN IF NOT EXISTS last_activity TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                """
+            )
+
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_activity (
+                    guild_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    message_count BIGINT NOT NULL DEFAULT 0 CHECK (message_count >= 0),
+                    last_message_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (guild_id, user_id)
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_activity_guild_count ON user_activity(guild_id, message_count DESC)"
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_activity_last_message ON user_activity(guild_id, last_message_at DESC)"
+            )
+
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_potions (
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    potion_slug TEXT NOT NULL,
+                    quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+                    PRIMARY KEY (user_id, potion_slug)
+                )
+                """
+            )
+            # Fonctionnalité des enchantements retirée du jeu : nettoyage des anciennes tables.
+            await connection.execute("DROP TABLE IF EXISTS user_equipped_enchantments")
+            await connection.execute("DROP TABLE IF EXISTS user_enchantments")
+            # Fonctionnalité de tombola retirée du jeu : nettoyage des anciennes tables.
+            await connection.execute("DROP TABLE IF EXISTS raffle_tickets")
+            await connection.execute("DROP TABLE IF EXISTS raffle_entries")
+            await connection.execute("DROP TABLE IF EXISTS raffle_draws")
+
+            await self._apply_economy_migrations(connection)
+
+    # ------------------------------------------------------------------
+    # Utilitaires généraux
+    # ------------------------------------------------------------------
 
     async def _get_trade_history_market_values(self) -> Dict[Tuple[int, str], int]:
         query = """
