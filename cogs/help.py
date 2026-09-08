@@ -332,40 +332,6 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
             ),
         },
         {
-            "key": "auctions",
-            "label": "🔨 Enchères",
-            "description": "Vends ou achète via les enchères.",
-            "commands": (
-                {
-                    "command": f"{PREFIX}auction",
-                    "description": "Liste les enchères actives.",
-                    "aliases": ("enchere", "encheres", "enchères"),
-                },
-                {
-                    "command": f"{PREFIX}auction pet <mise> <durée_min> [achat_immédiat] <pet>",
-                    "description": "Crée une enchère pour un pet.",
-                },
-                {
-                    "command": f"{PREFIX}auction potion <slug> <quantité> <mise> <durée_min> [achat_immédiat]",
-                    "description": "Crée une enchère pour des potions.",
-                },
-                {
-                    "command": f"{PREFIX}auction bid <id> <montant>",
-                    "description": "Fais une offre sur une enchère.",
-                    "aliases": ("mise", "parier"),
-                },
-                {
-                    "command": f"{PREFIX}auction mine",
-                    "description": "Affiche tes enchères en cours.",
-                    "aliases": ("mes",),
-                },
-                {
-                    "command": f"{PREFIX}auction cancel <id>",
-                    "description": "Annule une de tes enchères.",
-                },
-            ),
-        },
-        {
             "key": "leaderboards",
             "label": "📊 Classements",
             "description": "Accède aux différents classements économiques.",
@@ -583,40 +549,6 @@ _HELP_SECTION_BLUEPRINTS: Dict[str, Tuple[dict[str, object], ...]] = {
                 {
                     "command": f"{PREFIX}plaza",
                     "description": "Overview of all active booths.",
-                },
-            ),
-        },
-        {
-            "key": "auctions",
-            "label": "🔨 Auctions",
-            "description": "Sell or buy items through auctions.",
-            "commands": (
-                {
-                    "command": f"{PREFIX}auction",
-                    "description": "List active auctions.",
-                    "aliases": ("enchere", "encheres", "enchères"),
-                },
-                {
-                    "command": f"{PREFIX}auction pet <bid> <minutes> [buyout] <pet>",
-                    "description": "Create an auction for a pet.",
-                },
-                {
-                    "command": f"{PREFIX}auction potion <slug> <qty> <bid> <minutes> [buyout]",
-                    "description": "Create an auction for potions.",
-                },
-                {
-                    "command": f"{PREFIX}auction bid <id> <amount>",
-                    "description": "Place a bid on an auction.",
-                    "aliases": ("mise", "parier"),
-                },
-                {
-                    "command": f"{PREFIX}auction mine",
-                    "description": "Show your active auctions.",
-                    "aliases": ("mes",),
-                },
-                {
-                    "command": f"{PREFIX}auction cancel <id>",
-                    "description": "Cancel one of your auctions.",
                 },
             ),
         },
