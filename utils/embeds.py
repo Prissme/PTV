@@ -187,14 +187,14 @@ def balance_embed(
     gems: int | None = None,
     festive_coins: int | None = None,
 ) -> discord.Embed:
-    lines = [f"**Solde :** {format_currency(balance)}"]
+    lines = [f"## {format_currency(balance)}"]
     if gems is not None:
-        lines.append(f"**{Emojis.GEM} :** {format_compact(gems)}")
+        lines.append(f"## {Emojis.GEM} {format_compact(gems)}")
     if festive_coins is not None:
-        lines.append(f"**{FESTIVE_COIN_EMOJI} Festive Coins :** {format_compact(festive_coins)}")
+        lines.append(f"## {FESTIVE_COIN_EMOJI} {format_compact(festive_coins)}")
     description = "\n".join(lines)
     embed = _base_embed("Solde", description, color=Colors.SUCCESS if balance else Colors.NEUTRAL)
-    _set_member_author(embed, member)
+    _set_member_thumbnail(embed, member)
     embed.set_footer(text=f"Utilise {PREFIX}daily pour collecter ta récompense")
     return _finalize_embed(embed)
 
