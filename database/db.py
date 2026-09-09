@@ -4968,6 +4968,44 @@ class Database:
         record = await self.get_user_pet(user_id, user_pet_id)
         return record, new_active_count, max_slots
 
+    async def deactivate_all_user_pets(self, user_id: int) -> tuple[int, int]:
+        """Déséquipe tous les pets actifs d'un utilisateur. Retourne (nb_deseq, max_slots)."""
+        await self.ensure_user(user_id)
+        async with self.transaction() as connection:
+            active_count = int(
+                await connection.fetchval(
+                    "SELECT COUNT(*) FROM user_pets WHERE user_id = $1 AND is_active",
+                    user_id,
+                )
+                or 0
+            )
+
+            grade_row = await connection.fetchrow(
+                "SELECT grade_level FROM user_grades WHERE user_id = $1",
+                user_id,
+            )
+            grade_level = int(grade_row["grade_level"]) if grade_row else 0
+            extra_row = await connection.fetchrow(
+                "SELECT extra_pet_slots FROM users WHERE user_id = $1",
+                user_id,
+            )
+            extra_slots = int(extra_row.get("extra_pet_slots") or 0) if extra_row else 0
+            max_slots = self._compute_pet_slot_limit(grade_level, extra_slots)
+
+            if active_count == 0:
+                return 0, max_slots
+
+            await connection.execute(
+                "UPDATE user_pets SET is_active = FALSE WHERE user_id = $1 AND is_active",
+                user_id,
+            )
+            await connection.execute(
+                "UPDATE users SET pet_last_claim = NOW() WHERE user_id = $1",
+                user_id,
+            )
+
+        return active_count, max_slots
+
     async def swap_active_pets(
         self, user_id: int, pet_out_id: int, pet_in_id: int
     ) -> tuple[asyncpg.Record, asyncpg.Record, int, int]:
