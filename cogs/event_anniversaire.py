@@ -297,7 +297,7 @@ class EventAnniversaire(commands.Cog):
         festive_rows = [
             row
             for row in rows
-            if str(row.get("name", "")) in FESTIVE_COIN_INCOME_PER_SECOND
+            if str(row.get("name", "")) in FESTIVE_EVENT_PET_NAMES
             and not bool(row.get("on_market"))
         ]
         if not festive_rows:
