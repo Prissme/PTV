@@ -9,10 +9,12 @@ from config import (
     FESTIVE_EGG_PRICE,
     FESTIVE_EGG_DEFINITION,
     FESTIVE_EVENT_PET_NAMES,
+    FESTIVE_HUGE_PET_NAMES,
+    get_huge_multiplier,
 )
 from database.db import ActivePetLimitError, DatabaseError
 from utils import embeds
-from utils.pet_formatting import FESTIVE_COIN_EMOJI
+from utils.pet_formatting import FESTIVE_COIN_EMOJI, pet_emoji
 
 CAKE_PRICE: int = 100          # Festive Coins par gâteau
 CAKE_AUTOPINATA_SECONDS: int = 5   # secondes d'autopinata par gâteau
@@ -144,12 +146,47 @@ class EventAnniversaire(commands.Cog):
             for name in FESTIVE_EVENT_PET_NAMES
         }
 
+    async def _best_base_festive_income_connection(self, connection, user_id: int) -> int:
+        """Revenu/s du meilleur pet festif NON-huge possédé (référence des Huges festifs)."""
+        rows = await connection.fetch(
+            """
+            SELECT DISTINCT p.name AS name
+            FROM user_pets AS up
+            JOIN pets AS p ON p.pet_id = up.pet_id
+            WHERE up.user_id = $1 AND NOT up.is_huge AND p.name = ANY($2::text[])
+            """,
+            user_id,
+            list(FESTIVE_COIN_INCOME_PER_SECOND),
+        )
+        owned_names = {row["name"] for row in rows}
+        if not owned_names:
+            return 0
+        return max(FESTIVE_COIN_INCOME_PER_SECOND[name] for name in owned_names)
+
+    def _huge_festive_income(self, name: str, reference_income: int) -> int:
+        """Revenu/s d'un Huge festif = meilleur pet event possédé x son multiplicateur."""
+        if reference_income <= 0:
+            return 0
+        multiplier = max(1.0, float(get_huge_multiplier(name)))
+        return max(0, int(reference_income * multiplier))
+
     async def _income_per_second_for_connection(self, connection, user_id: int) -> int:
         equipped = await self._equipped_festive_counts_connection(connection, user_id)
-        return sum(
-            FESTIVE_COIN_INCOME_PER_SECOND[name] * count
-            for name, count in equipped.items()
-        )
+        if not equipped:
+            return 0
+        reference_income: int | None = None
+        total = 0
+        for name, count in equipped.items():
+            if name in FESTIVE_HUGE_PET_NAMES:
+                if reference_income is None:
+                    reference_income = await self._best_base_festive_income_connection(
+                        connection, user_id
+                    )
+                per_unit = self._huge_festive_income(name, reference_income)
+            else:
+                per_unit = FESTIVE_COIN_INCOME_PER_SECOND[name]
+            total += per_unit * count
+        return total
 
     # ------------------------------------------------------------------
     # Solde / gains
@@ -204,15 +241,26 @@ class EventAnniversaire(commands.Cog):
         """Affiche ton solde de Festive Coins et l'état de tes pets festifs."""
         balance = await self.get_balance(ctx.author.id)
         counts = await self._owned_festive_counts(ctx.author.id)
+
+        pool = self.database.pool
+        async with pool.acquire() as connection:
+            reference_income = await self._best_base_festive_income_connection(
+                connection, ctx.author.id
+            )
+
+        def unit_income(name: str) -> int:
+            if name in FESTIVE_HUGE_PET_NAMES:
+                return self._huge_festive_income(name, reference_income)
+            return FESTIVE_COIN_INCOME_PER_SECOND[name]
+
         income = sum(
-            FESTIVE_COIN_INCOME_PER_SECOND[name] * equipped
-            for name, (_, equipped) in counts.items()
+            unit_income(name) * equipped for name, (_, equipped) in counts.items()
         )
 
         lines = [f"{FESTIVE_COIN_EMOJI} Solde : **{balance}** Festive Coins"]
         pet_lines = [
             f"• {name} : {owned} possédé(s), {equipped} équipé(s) "
-            f"({FESTIVE_COIN_INCOME_PER_SECOND[name]}/s chacun)"
+            f"({unit_income(name)}/s chacun)"
             for name, (owned, equipped) in counts.items()
             if owned > 0
         ]
@@ -265,8 +313,17 @@ class EventAnniversaire(commands.Cog):
         active_total = sum(1 for row in rows if bool(row.get("is_active")))
         free_slots = max(0, max_slots - active_total)
 
+        pool = self.database.pool
+        async with pool.acquire() as connection:
+            reference_income = await self._best_base_festive_income_connection(
+                connection, user_id
+            )
+
         def income_of(row) -> int:
-            return FESTIVE_COIN_INCOME_PER_SECOND[str(row.get("name", ""))]
+            name = str(row.get("name", ""))
+            if name in FESTIVE_HUGE_PET_NAMES:
+                return self._huge_festive_income(name, reference_income)
+            return FESTIVE_COIN_INCOME_PER_SECOND[name]
 
         inactive_festive = sorted(
             (row for row in festive_rows if not bool(row.get("is_active"))),
@@ -417,6 +474,49 @@ class EventAnniversaire(commands.Cog):
         # Lancer la boucle d'autopinata si pas déjà en cours
         import asyncio
         asyncio.create_task(pinata_cog._run_autopinata_loop(ctx))
+
+    def _build_festive_egg_preview_embed(
+        self, *, discovered_pet_ids: set[int]
+    ) -> discord.Embed:
+        """Construit l'embed d'aperçu de l'œuf festif (même style que les autres œufs)."""
+        pets_cog = self.bot.get_cog("Pets")
+        pet_ids = getattr(pets_cog, "_pet_ids", {})
+        total_weight = sum(
+            max(0.0, float(p.drop_rate)) for p in FESTIVE_EGG_DEFINITION.pets
+        )
+
+        lines: list[str] = []
+        for pet in FESTIVE_EGG_DEFINITION.pets:
+            pet_id = pet_ids.get(pet.name)
+            discovered = pet_id is not None and pet_id in discovered_pet_ids
+            rate = max(0.0, float(pet.drop_rate))
+            pct = (rate / total_weight * 100) if total_weight > 0 else 0.0
+
+            if discovered:
+                emoji = pet_emoji(pet.name)
+                emoji_prefix = f"{emoji} " if emoji else ""
+                pct_text = f"{pct:.2f}%" if pct >= 0.01 else f"{pct:.6f}%"
+                lines.append(f"{emoji_prefix}**{pet.name}** — {pct_text}")
+            else:
+                lines.append("⬛ **???** — ??")
+
+        price_text = f"{FESTIVE_EGG_PRICE} {FESTIVE_COIN_EMOJI}"
+        description = (
+            f"# 🥚 {FESTIVE_EGG_DEFINITION.name}\n## {price_text}\n\n" + "\n".join(lines)
+            if lines
+            else f"# 🥚 {FESTIVE_EGG_DEFINITION.name}\n## {price_text}"
+        )
+        embed = discord.Embed(title="", description=description, color=embeds.Colors.INFO)
+        embed.set_footer(text="Les pets non découverts sont masqués. Ouvre l'œuf pour les révéler !")
+        return embed
+
+    @commands.command(name="festive", aliases=("apercufestif", "festivepreview"))
+    async def festive_preview(self, ctx: commands.Context) -> None:
+        """Affiche un aperçu de l'œuf festif et de son contenu."""
+        discovered_pet_ids = await self.database.get_discovered_pet_ids(ctx.author.id)
+        embed = self._build_festive_egg_preview_embed(discovered_pet_ids=discovered_pet_ids)
+        embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+        await ctx.send(embed=embed)
 
     @commands.command(name="oeuffestif", aliases=("festivegg", "oeufanniversaire"))
     async def oeuffestif(self, ctx: commands.Context) -> None:
