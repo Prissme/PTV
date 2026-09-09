@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import discord
 from discord.ext import commands
 
@@ -25,6 +26,52 @@ STARTING_FESTIVE_COINS: int = 100
 # chance aux pets les plus rares de l'œuf festif. Les 90 améliorations au total
 # donnent donc un bonus maximal volontairement modeste de +9 %.
 PINATA_FESTIVE_EGG_LUCK_PER_UPGRADE: float = 0.001
+
+class FestiveEggPreviewView(discord.ui.View):
+    """Embed d'aperçu de l'œuf festif, avec boutons Ouvrir et AUTO (comme les autres œufs)."""
+
+    def __init__(self, cog: "EventAnniversaire", ctx: commands.Context) -> None:
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.ctx = ctx
+        self.message: discord.Message | None = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "Seul l'acheteur peut utiliser ces boutons.", ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Ouvrir l'œuf", style=discord.ButtonStyle.success)
+    async def open_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        self.stop()
+        await self.cog.oeuffestif(self.ctx)
+
+    @discord.ui.button(label="AUTO", style=discord.ButtonStyle.primary)
+    async def auto_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        self.stop()
+        if self.message is not None:
+            await self.cog._start_auto_festive_hatch(self.ctx, self.message)
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message is not None:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=self)
+
 
 class FestiveEggReplayView(discord.ui.View):
     """Boutons 'Encore!' et 'AUTO' après l'ouverture d'un œuf festif."""
@@ -516,7 +563,9 @@ class EventAnniversaire(commands.Cog):
         discovered_pet_ids = await self.database.get_discovered_pet_ids(ctx.author.id)
         embed = self._build_festive_egg_preview_embed(discovered_pet_ids=discovered_pet_ids)
         embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
-        await ctx.send(embed=embed)
+        view = FestiveEggPreviewView(self, ctx)
+        message = await ctx.send(embed=embed, view=view)
+        view.message = message
 
     @commands.command(name="oeuffestif", aliases=("festivegg", "oeufanniversaire"))
     async def oeuffestif(self, ctx: commands.Context) -> None:
@@ -596,7 +645,11 @@ class EventAnniversaire(commands.Cog):
         stop_event = asyncio.Event()
 
         def _message_check(message: discord.Message) -> bool:
-            return message.author.id == ctx.author.id and not message.author.bot
+            return (
+                message.channel.id == thread.id
+                and message.author.id == ctx.author.id
+                and not message.author.bot
+            )
 
         async def _wait_for_user_message() -> None:
             try:
@@ -610,10 +663,11 @@ class EventAnniversaire(commands.Cog):
         async def _runner() -> None:
             await thread.send(
                 embed=embeds.info_embed(
-                    "Ouverture automatique activée. Envoie n'importe quel message pour arrêter.",
+                    "Ouverture automatique activée. Envoie n'importe quel message **dans ce fil** pour arrêter.",
                     title="AUTO en cours",
                 )
             )
+            consecutive_errors = 0
             try:
                 while not stop_event.is_set():
                     pool = self.database.pool
@@ -633,6 +687,30 @@ class EventAnniversaire(commands.Cog):
                     ctx.__dict__["channel"] = thread  # type: ignore[assignment]
                     try:
                         await self.oeuffestif(ctx)
+                        consecutive_errors = 0
+                    except Exception:
+                        consecutive_errors += 1
+                        import logging
+
+                        logging.getLogger(__name__).exception(
+                            "Erreur pendant l'auto-ouverture de l'œuf festif (user_id=%s)",
+                            ctx.author.id,
+                        )
+                        if consecutive_errors >= 3:
+                            with contextlib.suppress(discord.HTTPException):
+                                await thread.send(
+                                    embed=embeds.error_embed(
+                                        "Trop d'erreurs consécutives, arrêt de l'ouverture automatique."
+                                    )
+                                )
+                            stop_event.set()
+                            break
+                        with contextlib.suppress(discord.HTTPException):
+                            await thread.send(
+                                embed=embeds.warning_embed(
+                                    "Un problème est survenu, nouvelle tentative..."
+                                )
+                            )
                     finally:
                         ctx.__dict__["channel"] = original_channel
                     try:
@@ -643,7 +721,6 @@ class EventAnniversaire(commands.Cog):
                 stop_event.set()
                 if not wait_task.done():
                     wait_task.cancel()
-                import contextlib
                 with contextlib.suppress(asyncio.CancelledError):
                     await wait_task
                 with contextlib.suppress(discord.HTTPException):
