@@ -5665,6 +5665,26 @@ class Pets(commands.Cog):
             return
         await deactivate_candidate(selection)
 
+    @commands.command(name="unequipall", aliases=("desequiptous", "unequipbest", "clearpets"))
+    async def unequip_all(self, ctx: commands.Context) -> None:
+        """Déséquipe tous tes pets actifs d'un coup."""
+        deactivated_count, max_slots = await self.database.deactivate_all_user_pets(ctx.author.id)
+
+        if deactivated_count == 0:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    "⚠️ Tu n'as aucun pet équipé actuellement. Utilise `e!pets` pour voir ta collection."
+                )
+            )
+            return
+
+        await ctx.send(
+            embed=embeds.success_embed(
+                f"✅ {deactivated_count} pet(s) déséquipé(s) ({max_slots} emplacements disponibles). "
+                "Utilise `e!equip <pet>` ou `e!equipbest` pour en rééquiper."
+            )
+        )
+
     @commands.command(name="swap")
     async def swap(self, ctx: commands.Context, pet_out: str, *, pet_in: str) -> None:
         out_definition, out_rows, out_ordinal, _ = await self._resolve_user_pet_candidates(
