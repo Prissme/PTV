@@ -930,6 +930,13 @@ HUGE_WISHED_NAME: Final[str] = "Huge Wished"
 HUGE_WISHED_MULTIPLIER: Final[float] = 20
 HUGE_VIRGO_COLLETTE_MULTIPLIER: Final[float] = 25
 TITANIC_CAPRICORN_STU_MULTIPLIER: Final[float] = 100
+# Event Anniversaire — variantes Huge des pets festifs (œuf festif)
+HUGE_FESTIVE_MANDY_NAME: Final[str] = "Huge Festive Mandy"
+HUGE_FESTIVE_MANDY_MULTIPLIER: Final[float] = 10
+HUGE_FESTIVE_PIPER_NAME: Final[str] = "Huge Festive Piper"
+HUGE_FESTIVE_PIPER_MULTIPLIER: Final[float] = 25
+HUGE_OLLIE_NAME: Final[str] = "Huge Ollie"
+HUGE_OLLIE_MULTIPLIER: Final[float] = 50
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
 HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
@@ -953,6 +960,9 @@ TITANIC_MEEPLE_NAME: TITANIC_MEEPLE_MULTIPLIER,
     TITANIC_ZOMBIBI_NAME: TITANIC_ZOMBIBI_MULTIPLIER,
     TITANIC_SMOOTH_LOU_NAME: TITANIC_SMOOTH_LOU_MULTIPLIER,
     HUGE_RED_KING_FRANK_NAME: HUGE_RED_KING_FRANK_MULTIPLIER,
+    HUGE_FESTIVE_MANDY_NAME: HUGE_FESTIVE_MANDY_MULTIPLIER,
+    HUGE_FESTIVE_PIPER_NAME: HUGE_FESTIVE_PIPER_MULTIPLIER,
+    HUGE_OLLIE_NAME: HUGE_OLLIE_MULTIPLIER,
 }
 
 HUGE_PET_MIN_LEVEL_MULTIPLIERS: Final[Dict[str, float]] = {
@@ -1648,13 +1658,25 @@ FESTIVE_COIN_INCOME_PER_SECOND: Final[Dict[str, int]] = {
     "Festive Piper": 3,
     "Ollie": 7,
 }
+# Les Huges festifs n'ont pas de revenu fixe : comme les autres Huges, leur
+# gain se base dynamiquement sur le meilleur pet festif NON-huge possédé par
+# le joueur (via get_huge_multiplier + le revenu de ce meilleur pet event),
+# calculé côté cog (event_anniversaire.py), pas ici.
+FESTIVE_HUGE_PET_NAMES: Final[Tuple[str, ...]] = (
+    HUGE_FESTIVE_MANDY_NAME,
+    HUGE_FESTIVE_PIPER_NAME,
+    HUGE_OLLIE_NAME,
+)
 FESTIVE_PET_DROP_RATES: Final[Dict[str, float]] = {
     "Festive Mandy": 0.70,
     "Festive Piper": 0.25,
     "Ollie": 0.05,
+    HUGE_FESTIVE_MANDY_NAME: 1 / 500_000,
+    HUGE_FESTIVE_PIPER_NAME: 1 / 2_500_000,
+    HUGE_OLLIE_NAME: 1 / 10_000_000,
     TITANIC_SMOOTH_LOU_NAME: 1 / 175_000_000,
 }
-FESTIVE_EVENT_PET_NAMES: Final[Tuple[str, ...]] = tuple(FESTIVE_COIN_INCOME_PER_SECOND)
+FESTIVE_EVENT_PET_NAMES: Final[Tuple[str, ...]] = tuple(FESTIVE_COIN_INCOME_PER_SECOND) + FESTIVE_HUGE_PET_NAMES
 
 # NOTE : base_income_per_hour = 0 volontairement — ces pets ne rapportent pas de PB
 # via e!claim, uniquement des Festive Coins via le système d'event dédié.
@@ -1679,6 +1701,32 @@ _FESTIVE_EVENT_PETS: Tuple[PetDefinition, ...] = (
         image_url="https://cdn.discordapp.com/emojis/1545752797482459237.png",
         base_income_per_hour=0,
         drop_rate=0.0,
+    ),
+    # Variantes Huge des pets festifs — pas de PB (e!claim), uniquement des
+    # Festive Coins boostés par leur multiplicateur Huge respectif.
+    PetDefinition(
+        name=HUGE_FESTIVE_MANDY_NAME,
+        rarity="Festif",
+        image_url="https://cdn.discordapp.com/emojis/1546429349530439691.png",
+        base_income_per_hour=0,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=HUGE_FESTIVE_PIPER_NAME,
+        rarity="Festif",
+        image_url="https://cdn.discordapp.com/emojis/1546430131466141776.png",
+        base_income_per_hour=0,
+        drop_rate=0.0,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=HUGE_OLLIE_NAME,
+        rarity="Festif",
+        image_url="https://cdn.discordapp.com/emojis/1546428608367566898.png",
+        base_income_per_hour=0,
+        drop_rate=0.0,
+        is_huge=True,
     ),
     PetDefinition(
         name=TITANIC_SMOOTH_LOU_NAME,
@@ -1791,6 +1839,9 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Festive Mandy": os.getenv("PET_EMOJI_FESTIVE_MANDY", "<:FestiveMandy:1545748676012544070>"),
     "Festive Piper": os.getenv("PET_EMOJI_FESTIVE_PIPER", "<:FestivePiper:1546430132842008686>"),
     "Ollie": os.getenv("PET_EMOJI_OLLIE", "<:Ollie:1545752797482459237>"),
+    HUGE_FESTIVE_MANDY_NAME: os.getenv("PET_EMOJI_HUGE_FESTIVE_MANDY", "<:HugeFestiveMandy:1546429349530439691>"),
+    HUGE_FESTIVE_PIPER_NAME: os.getenv("PET_EMOJI_HUGE_FESTIVE_PIPER", "<:HugeFestivePiper:1546430131466141776>"),
+    HUGE_OLLIE_NAME: os.getenv("PET_EMOJI_HUGE_OLLIE", "<:HugeOllie:1546428608367566898>"),
     # FIX: Ensure default emoji falls back when the environment variable is empty.
     "default": os.getenv("PET_EMOJI_DEFAULT") or "🐾",
 }
