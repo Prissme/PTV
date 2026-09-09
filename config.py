@@ -1781,7 +1781,7 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Trunk": os.getenv("PET_EMOJI_TRUNK", "<:Trunk:1546593223173214258>"),
     "Huge Trunk": os.getenv("PET_EMOJI_HUGE_TRUNK", "<:HugeTrunk:1430876043400446013>"),
     HUGE_GALE_NAME: os.getenv("PET_EMOJI_HUGE_GALE", "<:HugeGale:1430981225375600641>"),
-    HUGE_GRIFF_NAME: os.getenv("PET_EMOJI_HUGE_GRIFF", "<:HugeGriff:1431005620227670036>"),
+    HUGE_GRIFF_NAME: os.getenv("PET_EMOJI_HUGE_GRIFF", "<:HugeGriff:1547302963998101626>"),
     TITANIC_GRIFF_NAME: os.getenv(
         "PET_EMOJI_TITANIC_GRIFF", "<:TITANICGRIFF:1432161869342183525>"
     ),
@@ -1803,7 +1803,7 @@ PET_EMOJIS: Final[dict[str, str]] = {
         or os.getenv("PET_EMOJI_HUGE_WISHED")
         or "<:HugeWished:1459842344592609414>"
     ),
-    HUGE_BO_NAME: os.getenv("PET_EMOJI_HUGE_BO", "<:HugeBo:1435335892712685628>"),
+    HUGE_BO_NAME: os.getenv("PET_EMOJI_HUGE_BO", "<:HugeBo:1547302965331890236>"),
     HUGE_RED_KING_FRANK_NAME: os.getenv(
         "PET_EMOJI_HUGE_RED_KING_FRANK", "<:HugeRedKingFrank:1442532497979084890>"
     ),
