@@ -755,13 +755,25 @@ class MastermindView(discord.ui.View):
             self.confirm_button.disabled = len(self.current_guess) != code_length
             self.clear_button.disabled = len(self.current_guess) == 0
 
-        if interaction is not None:
-            if not interaction.response.is_done():
-                await interaction.response.edit_message(embed=embed, view=self)
-            else:
-                await interaction.message.edit(embed=embed, view=self)
-        elif self.message is not None:
-            await self.message.edit(embed=embed, view=self)
+        try:
+            if interaction is not None:
+                if not interaction.response.is_done():
+                    await interaction.response.edit_message(embed=embed, view=self)
+                else:
+                    # L'interaction a été déférée (traitement potentiellement long
+                    # comme process_guess) : il faut éditer via edit_original_response,
+                    # pas interaction.message.edit qui peut échouer ou cibler le mauvais état.
+                    await interaction.edit_original_response(embed=embed, view=self)
+            elif self.message is not None:
+                await self.message.edit(embed=embed, view=self)
+        except discord.HTTPException:
+            self.session._logger.warning(
+                "Édition de l'interaction Mastermind échouée (token expiré), fallback sur le message direct.",
+                extra={"user_id": self.session.ctx.author.id},
+            )
+            if self.message is not None:
+                with contextlib.suppress(discord.HTTPException):
+                    await self.message.edit(embed=embed, view=self)
 
         if self.session.finished:
             self.stop()
@@ -789,6 +801,11 @@ class MastermindView(discord.ui.View):
             )
             return
 
+        # FIX: on défère immédiatement (avant tout appel DB potentiellement lent dans
+        # process_guess) pour ne jamais laisser le token d'interaction expirer (3s) et
+        # bloquer la mise à jour du plateau.
+        await interaction.response.defer()
+
         guess = list(self.current_guess)
         self.current_guess.clear()
         await self.session.process_guess(guess)
@@ -808,6 +825,9 @@ class MastermindView(discord.ui.View):
         if self.session.finished:
             await interaction.response.send_message("La partie est déjà terminée.", ephemeral=True)
             return
+        # FIX: même raison que handle_confirm — session.cancel() touche la DB (reset
+        # winstreak), donc on défère avant pour éviter l'expiration du token.
+        await interaction.response.defer()
         await self.session.cancel()
         await self.session.finalize(interaction)
 
