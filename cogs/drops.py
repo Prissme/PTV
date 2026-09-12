@@ -49,7 +49,7 @@ def _pick_pb_reward() -> DropReward:
 
 
 def _pick_gem_reward() -> DropReward:
-    amount = random.randint(100, 1_000)
+    amount = random.randint(200, 1_500)
     label = f"{format_compact(amount)} {Emojis.GEM}"
     return DropReward(kind="gems", label=label, data={"amount": amount})
 
@@ -154,7 +154,7 @@ def _roll_drop() -> DropReward:
     choices: Sequence[tuple[str, int]] = (
         ("potion", 3),
         ("pb", 2),
-        ("gems", 2),
+        ("gems", 3),
     )
     pool = [entry for entry, weight in choices for _ in range(weight)]
     selected = random.choice(pool)
