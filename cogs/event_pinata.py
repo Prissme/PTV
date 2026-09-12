@@ -395,7 +395,8 @@ class EventPinata(commands.Cog):
                     f"🎲 Chance d'upgrade : **{chance_display}**\n"
                     f"Réessaie dans {self._cooldown_seconds(cooldown_upgrades):.1f}s.",
                     title="Piñata secouée",
-                )
+                ),
+                delete_after=5,
             )
 
     @commands.command(name="pinatashop", aliases=("pinataupgrade", "pinataboutique"))
