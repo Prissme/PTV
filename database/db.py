@@ -3756,6 +3756,8 @@ class Database:
                     description="Coût goldify",
                 )
             # FIX: Prevent rainbow pets from being consumed and guarantee deterministic ordering.
+            # FIX: Ne jamais sacrifier un exemplaire shiny lors de la sélection automatique —
+            # ils sont exclus au même titre que gold/rainbow/galaxy/équipé/en vente.
             rows = await connection.fetch(
                 """
                 SELECT up.id
@@ -3765,6 +3767,7 @@ class Database:
                   AND NOT up.is_gold
                   AND NOT up.is_rainbow
                   AND NOT up.is_galaxy
+                  AND NOT up.is_shiny
                   AND NOT up.is_active
                   AND NOT up.on_market
                 ORDER BY up.acquired_at, up.id
@@ -3779,8 +3782,8 @@ class Database:
             if len(available_ids) < required:
                 raise DatabaseError(
                     (
-                        "Tu as besoin d'au moins {required} exemplaires non équipés et non listés sur ton stand "
-                        "pour créer une version or."
+                        "Tu as besoin d'au moins {required} exemplaires non équipés, non listés sur ton "
+                        "stand et non shiny pour créer une version or (les shiny sont protégés)."
                     ).format(required=required)
                 )
 
@@ -3889,6 +3892,7 @@ class Database:
                     description="Coût rainbowify",
                 )
             # FIX: Ensure deterministic rainbow fusion selection order.
+            # FIX: Ne jamais sacrifier un exemplaire shiny lors de la sélection automatique.
             rows = await connection.fetch(
                 """
                 SELECT up.id
@@ -3898,6 +3902,7 @@ class Database:
                   AND up.is_gold
                   AND NOT up.is_rainbow
                   AND NOT up.is_galaxy
+                  AND NOT up.is_shiny
                   AND NOT up.is_active
                   AND NOT up.on_market
                 ORDER BY up.acquired_at, up.id
@@ -3912,7 +3917,8 @@ class Database:
 
             if len(available_ids) < required:
                 raise DatabaseError(
-                    f"Tu as besoin de {required} exemplaires GOLD pour créer un Rainbow. Tu en as seulement {len(available_ids)}."
+                    f"Tu as besoin de {required} exemplaires GOLD non shiny pour créer un Rainbow "
+                    f"(les shiny sont protégés). Tu en as seulement {len(available_ids)}."
                 )
 
             consumed_ids = available_ids[:required]
@@ -4029,6 +4035,7 @@ class Database:
                   AND up.pet_id = $2
                   AND up.is_rainbow
                   AND NOT up.is_galaxy
+                  AND NOT up.is_shiny
                   AND NOT up.is_active
                   AND NOT up.on_market
                 ORDER BY up.acquired_at, up.id
@@ -4043,7 +4050,8 @@ class Database:
 
             if len(available_ids) < required:
                 raise DatabaseError(
-                    f"Il te faut {required} exemplaires RAINBOW pour créer un Galaxy. Tu n'en as que {len(available_ids)}."
+                    f"Il te faut {required} exemplaires RAINBOW non shiny pour créer un Galaxy "
+                    f"(les shiny sont protégés). Tu n'en as que {len(available_ids)}."
                 )
 
             consumed_ids = available_ids[:required]
