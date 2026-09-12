@@ -349,6 +349,9 @@ class EventPinata(commands.Cog):
                             f"💵 Solde : **{current['dollars']:.1f}$**\n"
                             f"⏳ Prochain essai dans **{max(remaining, 0.0):.1f}s**.",
                             title="Piñata de l'event",
+                        ).set_author(
+                            name=ctx.author.display_name,
+                            icon_url=ctx.author.display_avatar.url,
                         )
                     )
                     return
@@ -375,6 +378,9 @@ class EventPinata(commands.Cog):
                     f"🎉 Ta piñata passe au **niveau {level}** ! "
                     f"Elle rapporte maintenant **{income:.1f}$/s**.",
                     title="🪅 Upgrade réussi !",
+                ).set_author(
+                    name=ctx.author.display_name,
+                    icon_url=ctx.author.display_avatar.url,
                 )
             )
         elif level >= MAX_PINATA_LEVEL:
@@ -384,6 +390,9 @@ class EventPinata(commands.Cog):
                     f"Elle rapporte **{income:.1f}$/s**.\n"
                     f"Fonce sur `e!pinatashop` pour dépenser tes dollars.",
                     title="Piñata au maximum",
+                ).set_author(
+                    name=ctx.author.display_name,
+                    icon_url=ctx.author.display_avatar.url,
                 )
             )
         else:
@@ -395,6 +404,9 @@ class EventPinata(commands.Cog):
                     f"🎲 Chance d'upgrade : **{chance_display}**\n"
                     f"Réessaie dans {self._cooldown_seconds(cooldown_upgrades):.1f}s.",
                     title="Piñata secouée",
+                ).set_author(
+                    name=ctx.author.display_name,
+                    icon_url=ctx.author.display_avatar.url,
                 ),
                 delete_after=5,
             )
