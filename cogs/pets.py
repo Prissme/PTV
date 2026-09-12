@@ -251,15 +251,7 @@ class GemshopRoleOffer:
     slug: str
 
 
-GEMSHOP_ROLE_OFFERS: Final[tuple[GemshopRoleOffer, ...]] = (
-    GemshopRoleOffer(
-        role_id=1388837886924685343,
-        description="Rôle Bourgeois",
-        price=rebase_gems_price(10_000),
-        stock=20,
-        slug="bourgeois",
-    ),
-)
+GEMSHOP_ROLE_OFFERS: Final[tuple[GemshopRoleOffer, ...]] = ()
 
 
 @dataclass(frozen=True)
@@ -2881,8 +2873,11 @@ class Pets(commands.Cog):
 
     @staticmethod
     def _format_slot_cost(amount: int) -> str:
+        # FIX: dans le gemshop, on affiche "X gemmes" en toutes lettres,
+        # sans l'emoji, à la demande — contrairement à embeds.format_gems
+        # utilisé partout ailleurs dans le bot.
         if PET_SLOT_SHOP_CURRENCY == "gem":
-            return embeds.format_gems(amount)
+            return f"{embeds.format_compact(amount)} gemmes"
         return embeds.format_currency(amount)
 
     async def _get_active_income(self, user_id: int) -> int:
@@ -5144,7 +5139,7 @@ class Pets(commands.Cog):
             f"Tu peux maintenant équiper **{new_state.total_slots}** pet{'s' if new_state.total_slots > 1 else ''}.",
         ]
         if PET_SLOT_SHOP_CURRENCY == "gem" and balance_after is not None:
-            lines.append(f"{Emojis.GEM} restantes : {embeds.format_gems(balance_after)}")
+            lines.append(f"Gemmes restantes : {embeds.format_compact(balance_after)} gemmes")
         elif balance_after is not None:
             lines.append(f"Solde restant : {embeds.format_currency(balance_after)}")
 
