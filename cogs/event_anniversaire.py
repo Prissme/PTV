@@ -22,10 +22,15 @@ CAKE_AUTOPINATA_SECONDS: int = 5   # secondes d'autopinata par gâteau
 
 
 STARTING_FESTIVE_COINS: int = 100
-# Chaque amélioration achetée dans la boutique de la piñata ajoute 0,1 % de
-# chance aux pets les plus rares de l'œuf festif. Les 90 améliorations au total
-# donnent donc un bonus maximal volontairement modeste de +9 %.
-PINATA_FESTIVE_EGG_LUCK_PER_UPGRADE: float = 0.001
+# Chaque niveau de piñata gravi (level up, pas achat d'upgrade) ajoute 0,5 % de
+# chance aux pets les plus rares de l'œuf festif. La piñata plafonne à
+# MAX_PINATA_LEVEL (15), soit 14 level-ups possibles -> bonus max de +7 %.
+PINATA_FESTIVE_EGG_LUCK_PER_LEVEL: float = 0.005
+# Le prix du gâteau augmente très légèrement à chaque gâteau acheté (au total,
+# tous achats confondus), pour éviter le spam infini à prix fixe.
+CAKE_PRICE_INCREASE_PER_CAKE: float = 0.05
+# Chaque level up de piñata augmente aussi le prix de l'œuf festif (léger).
+FESTIVE_EGG_PRICE_INCREASE_PER_PINATA_LEVEL: float = 5.0
 
 class FestiveEggPreviewView(discord.ui.View):
     """Embed d'aperçu de l'œuf festif, avec boutons Ouvrir et AUTO (comme les autres œufs)."""
@@ -149,6 +154,12 @@ class EventAnniversaire(commands.Cog):
                 """
                 ALTER TABLE festive_event_wallet
                 ADD COLUMN IF NOT EXISTS last_income_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                """
+            )
+            await connection.execute(
+                """
+                ALTER TABLE festive_event_wallet
+                ADD COLUMN IF NOT EXISTS cakes_bought BIGINT NOT NULL DEFAULT 0
                 """
             )
         self._tables_ready = True
@@ -322,10 +333,11 @@ class EventAnniversaire(commands.Cog):
                 "pets) pour gérer lesquels sont actifs."
             )
         else:
+            egg_price = await self._current_festive_egg_price(ctx.author.id)
             lines.append("")
             lines.append(
                 f"Tu n'as encore aucun pet festif. Utilise `!oeuffestif` "
-                f"pour en obtenir un ({FESTIVE_EGG_PRICE} Festive Coins)."
+                f"pour en obtenir un ({egg_price} Festive Coins)."
             )
 
         embed = embeds.info_embed("\n".join(lines), title="🎂 Event Anniversaire")
@@ -348,10 +360,11 @@ class EventAnniversaire(commands.Cog):
             and not bool(row.get("on_market"))
         ]
         if not festive_rows:
+            egg_price = await self._current_festive_egg_price(user_id)
             await ctx.send(
                 embed=embeds.warning_embed(
                     f"Tu n'as encore aucun pet festif. Utilise `!oeuffestif` pour en obtenir un "
-                    f"({FESTIVE_EGG_PRICE} Festive Coins)."
+                    f"({egg_price} Festive Coins)."
                 )
             )
             return
@@ -470,7 +483,7 @@ class EventAnniversaire(commands.Cog):
 
     @commands.command(name="buycake", aliases=("achetergâteau", "achetercake", "gateau", "cake"))
     async def buycake(self, ctx: commands.Context, quantity: int = 1) -> None:
-        """Achète un ou plusieurs gâteaux (100 FC chacun, +5s d'autopinata par gâteau)."""
+        """Achète un ou plusieurs gâteaux (prix ~100 FC, augmente très légèrement à chaque achat)."""
         if quantity < 1:
             await ctx.send(embed=embeds.error_embed("La quantité doit être d'au moins 1."))
             return
@@ -479,13 +492,21 @@ class EventAnniversaire(commands.Cog):
             return
 
         user_id = ctx.author.id
-        total_cost = CAKE_PRICE * quantity
         total_seconds = CAKE_AUTOPINATA_SECONDS * quantity
         pool = self.database.pool
 
         async with pool.acquire() as connection:
             async with connection.transaction():
                 balance = await self._settle_income(connection, user_id)
+                row = await connection.fetchrow(
+                    "SELECT cakes_bought FROM festive_event_wallet WHERE user_id = $1",
+                    user_id,
+                )
+                cakes_bought = int(row["cakes_bought"]) if row is not None else 0
+                total_cost = sum(
+                    self._cake_price_for(cakes_bought + i) for i in range(quantity)
+                )
+
                 if balance < total_cost:
                     await ctx.send(
                         embed=embeds.error_embed(
@@ -495,9 +516,14 @@ class EventAnniversaire(commands.Cog):
                     )
                     return
                 await connection.execute(
-                    "UPDATE festive_event_wallet SET festive_coins = festive_coins - $2 WHERE user_id = $1",
+                    """
+                    UPDATE festive_event_wallet
+                    SET festive_coins = festive_coins - $2, cakes_bought = cakes_bought + $3
+                    WHERE user_id = $1
+                    """,
                     user_id,
                     total_cost,
+                    quantity,
                 )
 
         # Créditer les secondes d'autopinata
@@ -522,8 +548,8 @@ class EventAnniversaire(commands.Cog):
         import asyncio
         asyncio.create_task(pinata_cog._run_autopinata_loop(ctx))
 
-    def _build_festive_egg_preview_embed(
-        self, *, discovered_pet_ids: set[int]
+    async def _build_festive_egg_preview_embed(
+        self, *, user_id: int, discovered_pet_ids: set[int]
     ) -> discord.Embed:
         """Construit l'embed d'aperçu de l'œuf festif (même style que les autres œufs)."""
         pets_cog = self.bot.get_cog("Pets")
@@ -547,7 +573,8 @@ class EventAnniversaire(commands.Cog):
             else:
                 lines.append("⬛ **???** — ??")
 
-        price_text = f"{FESTIVE_EGG_PRICE} {FESTIVE_COIN_EMOJI}"
+        egg_price = await self._current_festive_egg_price(user_id)
+        price_text = f"{egg_price} {FESTIVE_COIN_EMOJI}"
         description = (
             f"# 🥚 {FESTIVE_EGG_DEFINITION.name}\n## {price_text}\n\n" + "\n".join(lines)
             if lines
@@ -561,7 +588,9 @@ class EventAnniversaire(commands.Cog):
     async def festive_preview(self, ctx: commands.Context) -> None:
         """Affiche un aperçu de l'œuf festif et de son contenu."""
         discovered_pet_ids = await self.database.get_discovered_pet_ids(ctx.author.id)
-        embed = self._build_festive_egg_preview_embed(discovered_pet_ids=discovered_pet_ids)
+        embed = await self._build_festive_egg_preview_embed(
+            user_id=ctx.author.id, discovered_pet_ids=discovered_pet_ids
+        )
         embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
         view = FestiveEggPreviewView(self, ctx)
         message = await ctx.send(embed=embed, view=view)
@@ -585,10 +614,11 @@ class EventAnniversaire(commands.Cog):
         async with pool.acquire() as connection:
             async with connection.transaction():
                 balance = await self._settle_income(connection, user_id)
-                if balance < FESTIVE_EGG_PRICE:
+                egg_price = await self._current_festive_egg_price(user_id)
+                if balance < egg_price:
                     await ctx.send(
                         embed=embeds.error_embed(
-                            f"Il te faut **{FESTIVE_EGG_PRICE}** Festive Coins pour "
+                            f"Il te faut **{egg_price}** Festive Coins pour "
                             f"acheter un œuf festif (tu as {balance})."
                         )
                     )
@@ -601,7 +631,7 @@ class EventAnniversaire(commands.Cog):
                     WHERE user_id = $1
                     """,
                     user_id,
-                    FESTIVE_EGG_PRICE,
+                    egg_price,
                 )
 
         replay_view = FestiveEggReplayView(self, ctx)
@@ -674,10 +704,11 @@ class EventAnniversaire(commands.Cog):
                     async with pool.acquire() as connection:
                         async with connection.transaction():
                             balance = await self._settle_income(connection, ctx.author.id)
-                    if balance < FESTIVE_EGG_PRICE:
+                    egg_price = await self._current_festive_egg_price(ctx.author.id)
+                    if balance < egg_price:
                         await thread.send(
                             embed=embeds.warning_embed(
-                                f"Tu n'as plus assez de Festive Coins (solde : {balance}, coût : {FESTIVE_EGG_PRICE})."
+                                f"Tu n'as plus assez de Festive Coins (solde : {balance}, coût : {egg_price})."
                             )
                         )
                         stop_event.set()
@@ -733,20 +764,37 @@ class EventAnniversaire(commands.Cog):
 
         asyncio.create_task(_runner())
 
-    async def _pinata_festive_egg_luck_bonus(self, user_id: int) -> float:
-        """Retourne le bonus de chance de l'œuf festif accordé par la piñata."""
+    @staticmethod
+    def _cake_price_for(cakes_bought: int) -> int:
+        return int(round(CAKE_PRICE + CAKE_PRICE_INCREASE_PER_CAKE * cakes_bought))
+
+    async def _get_pinata_level(self, user_id: int) -> int:
         pool = self.database.pool
         row = await pool.fetchrow(
-            "SELECT cooldown_upgrades, chance_upgrades, cash_upgrades FROM pinata_event WHERE user_id = $1",
+            "SELECT pinata_level FROM pinata_event WHERE user_id = $1",
             user_id,
         )
-        if row is None:
-            return 0.0
-        upgrades = sum(
-            int(row[key])
-            for key in ("cooldown_upgrades", "chance_upgrades", "cash_upgrades")
+        return int(row["pinata_level"]) if row is not None else 1
+
+    async def _current_festive_egg_price(self, user_id: int) -> int:
+        level = await self._get_pinata_level(user_id)
+        levels_gained = max(0, level - 1)
+        return int(
+            round(
+                FESTIVE_EGG_PRICE
+                + FESTIVE_EGG_PRICE_INCREASE_PER_PINATA_LEVEL * levels_gained
+            )
         )
-        return upgrades * PINATA_FESTIVE_EGG_LUCK_PER_UPGRADE
+
+    async def _pinata_festive_egg_luck_bonus(self, user_id: int) -> float:
+        """Retourne le bonus de chance de l'œuf festif accordé par la piñata.
+
+        Basé sur le NIVEAU de la piñata (level up), pas sur les upgrades
+        achetées dans la boutique.
+        """
+        level = await self._get_pinata_level(user_id)
+        levels_gained = max(0, level - 1)
+        return levels_gained * PINATA_FESTIVE_EGG_LUCK_PER_LEVEL
 
 
 async def setup(bot: commands.Bot) -> None:
