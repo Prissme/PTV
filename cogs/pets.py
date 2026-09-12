@@ -1664,6 +1664,49 @@ class MasteryOverviewView(discord.ui.View):
                 await self.message.edit(view=self)
 
 
+class FusionConfirmView(discord.ui.View):
+    """Confirmation avant une fusion irréversible (gold/rainbow/galaxy)."""
+
+    def __init__(self, author_id: int) -> None:
+        super().__init__(timeout=60)
+        self.author_id = int(author_id)
+        self.value: Optional[bool] = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "Seule la personne qui a lancé la commande peut confirmer cette fusion.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Confirmer la fusion", style=discord.ButtonStyle.danger)
+    async def confirm(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.value = True
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        self.stop()
+
+    @discord.ui.button(label="Annuler", style=discord.ButtonStyle.secondary)
+    async def cancel(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.value = False
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        self.stop()
+
+    async def on_timeout(self) -> None:
+        self.value = False
+        for child in self.children:
+            child.disabled = True
+
+
 class Pets(commands.Cog):
     """Commande de collection de pets inspirée de Brawl Stars."""
 
@@ -6205,6 +6248,38 @@ class Pets(commands.Cog):
         shiny_chance *= clan_shiny_multiplier
         shiny_chance = min(1.0, max(0.0, shiny_chance))
 
+        # FIX: Confirmation obligatoire avant une fusion en masse irréversible,
+        # avec un récapitulatif complet (nb de fusions, coût total, chance de
+        # shiny réelle) pour éviter les mauvaises surprises.
+        planned_fusions = sum(quantity for _, _, quantity in plan)
+        planned_cost = planned_fusions * cost
+        planned_consumed = planned_fusions * combine_required
+        shiny_pct_text = (
+            f"{shiny_chance * 100:.2f}%".rstrip("0").rstrip(".") + "%"
+            if shiny_chance > 0
+            else "0%"
+        )
+        confirm_view = FusionConfirmView(ctx.author.id)
+        confirm_message = await ctx.send(
+            embed=embeds.info_embed(
+                f"Tu es sur le point de lancer **{planned_fusions}** fusion(s) {variant_label} "
+                f"({len(plan)} pet(s) différents), consommant **{planned_consumed}** exemplaires au total.\n"
+                f"💎 Coût total : **{embeds.format_gems(planned_cost)}**\n"
+                f"✨ Chance de shiny par fusion : **{shiny_pct_text}**\n\n"
+                "⚠️ Cette action est **irréversible** — les exemplaires utilisés seront supprimés "
+                "(les shiny sont automatiquement protégés et jamais sélectionnés).",
+                title=f"Confirmer — {title}",
+            ),
+            view=confirm_view,
+        )
+        await confirm_view.wait()
+        if not confirm_view.value:
+            with contextlib.suppress(discord.HTTPException):
+                await confirm_message.edit(
+                    embed=embeds.warning_embed("Fusion en masse annulée."), view=confirm_view
+                )
+            return
+
         total_cost = 0
         total_consumed = 0
         total_fusions = 0
@@ -6280,6 +6355,7 @@ class Pets(commands.Cog):
                     "Utilise `e!goldify <nom du pet> [quantité]` pour fusionner **"
                     f"{GOLD_PET_COMBINE_REQUIRED}** exemplaires identiques en une version or."
                     f"\nCoût : {embeds.format_gems(GOLDIFY_GEM_COST)} par fusion."
+                    "\n⚠️ Les exemplaires **shiny** ne sont jamais sacrifiés automatiquement."
                     "\nAstuce : utilise `e!gold all` pour tout fusionner d'un coup."
                 )
             )
@@ -6327,6 +6403,34 @@ class Pets(commands.Cog):
         shiny_chance *= float(pet_perks.egg_shiny_multiplier)
         shiny_chance *= clan_shiny_multiplier
         shiny_chance = min(1.0, max(0.0, shiny_chance))
+
+        # FIX: Confirmation obligatoire avant une fusion irréversible, avec la
+        # chance de shiny réelle affichée (souvent 0% en dessous du niveau de
+        # maîtrise 20) pour que le joueur sache exactement ce qu'il risque.
+        required = GOLD_PET_COMBINE_REQUIRED * quantity
+        total_cost_preview = GOLDIFY_GEM_COST * quantity
+        shiny_pct_text = f"{shiny_chance * 100:.2f}%".rstrip("0").rstrip(".") + "%" if shiny_chance > 0 else "0%"
+        confirm_view = FusionConfirmView(ctx.author.id)
+        confirm_message = await ctx.send(
+            embed=embeds.info_embed(
+                f"Tu es sur le point de fusionner **{required}** {definition.name} en **1** version or "
+                f"(x{quantity} si quantité > 1).\n"
+                f"💎 Coût : **{embeds.format_gems(total_cost_preview)}**\n"
+                f"✨ Chance de shiny sur le résultat : **{shiny_pct_text}**\n\n"
+                "⚠️ Cette action est **irréversible** — les exemplaires utilisés seront supprimés "
+                "(les shiny sont automatiquement protégés et jamais sélectionnés).",
+                title="Confirmer la fusion dorée",
+            ),
+            view=confirm_view,
+        )
+        await confirm_view.wait()
+        if not confirm_view.value:
+            with contextlib.suppress(discord.HTTPException):
+                await confirm_message.edit(
+                    embed=embeds.warning_embed("Fusion annulée."), view=confirm_view
+                )
+            return
+
         make_shiny = [random.random() < shiny_chance for _ in range(quantity)]
 
         try:
