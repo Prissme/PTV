@@ -585,18 +585,22 @@ class GoldifyButtonMixin:
                 ephemeral=True,
             )
             return
+        # FIX: déférer avant l'appel DB (get_user_pets) qui peut être lent sous
+        # charge — sinon le token d'interaction expire (3s) et
+        # response.send_message plante avec "Unknown interaction".
+        await interaction.response.defer(ephemeral=True)
         pets_cog = self.ctx.cog
         rows = await pets_cog.database.get_user_pets(self.ctx.author.id)
         plan = pets_cog._build_bulk_fusion_plan(rows, mode="gold")
         if not plan:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Aucun pet n'est éligible au goldify pour le moment "
                 f"(il faut au moins {GOLD_PET_COMBINE_REQUIRED} exemplaires identiques).",
                 ephemeral=True,
             )
             return
         view = GoldifyPromptView(ctx=self.ctx, pets_cog=pets_cog, plan=plan)
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Choisis le pet à fusionner en version or :",
             view=view,
             ephemeral=True,
@@ -867,6 +871,7 @@ class ZoneOverviewView(discord.ui.View):
                 meets_egg_mastery=page.meets_egg_mastery,
                 meets_pet_mastery=page.meets_pet_mastery,
                 meets_rebirth=page.meets_rebirth,
+                meets_income=page.meets_income,
             )
             self._refresh_footer()
             self._sync_buttons()
