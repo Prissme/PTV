@@ -700,24 +700,31 @@ class EventAnniversaire(commands.Cog):
             consecutive_errors = 0
             try:
                 while not stop_event.is_set():
-                    pool = self.database.pool
-                    async with pool.acquire() as connection:
-                        async with connection.transaction():
-                            balance = await self._settle_income(connection, ctx.author.id)
-                    egg_price = await self._current_festive_egg_price(ctx.author.id)
-                    if balance < egg_price:
-                        await thread.send(
-                            embed=embeds.warning_embed(
-                                f"Tu n'as plus assez de Festive Coins (solde : {balance}, coût : {egg_price})."
-                            )
-                        )
-                        stop_event.set()
-                        break
-                    # Réutilise la commande principale mais dans le thread
-                    original_channel = ctx.channel
-                    ctx.__dict__["channel"] = thread  # type: ignore[assignment]
+                    # FIX: tout le corps de boucle (settle_income inclus) est
+                    # maintenant dans le try/except — avant, un simple timeout
+                    # DB transitoire sur _settle_income (hors du try) faisait
+                    # planter toute la tâche silencieusement (jamais retryé).
                     try:
-                        await self.oeuffestif(ctx)
+                        pool = self.database.pool
+                        async with pool.acquire() as connection:
+                            async with connection.transaction():
+                                balance = await self._settle_income(connection, ctx.author.id)
+                        egg_price = await self._current_festive_egg_price(ctx.author.id)
+                        if balance < egg_price:
+                            await thread.send(
+                                embed=embeds.warning_embed(
+                                    f"Tu n'as plus assez de Festive Coins (solde : {balance}, coût : {egg_price})."
+                                )
+                            )
+                            stop_event.set()
+                            break
+                        # Réutilise la commande principale mais dans le thread
+                        original_channel = ctx.channel
+                        ctx.__dict__["channel"] = thread  # type: ignore[assignment]
+                        try:
+                            await self.oeuffestif(ctx)
+                        finally:
+                            ctx.__dict__["channel"] = original_channel
                         consecutive_errors = 0
                     except Exception:
                         consecutive_errors += 1
@@ -731,7 +738,8 @@ class EventAnniversaire(commands.Cog):
                             with contextlib.suppress(discord.HTTPException):
                                 await thread.send(
                                     embed=embeds.error_embed(
-                                        "Trop d'erreurs consécutives, arrêt de l'ouverture automatique."
+                                        "Trop d'erreurs consécutives (souvent une lenteur DB passagère), "
+                                        "arrêt de l'ouverture automatique."
                                     )
                                 )
                             stop_event.set()
@@ -742,8 +750,6 @@ class EventAnniversaire(commands.Cog):
                                     "Un problème est survenu, nouvelle tentative..."
                                 )
                             )
-                    finally:
-                        ctx.__dict__["channel"] = original_channel
                     try:
                         await asyncio.wait_for(asyncio.shield(wait_task), timeout=1.5)
                     except asyncio.TimeoutError:
