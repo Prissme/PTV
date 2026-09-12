@@ -331,15 +331,15 @@ DAILY_STREAK_DIMINISH_START = _get_balance_int("daily_streak_diminish_start", 25
 DAILY_STREAK_DIMINISH_EXPONENT = _get_balance_float(
     "daily_streak_diminish_exponent", 0.75, minimum=0.1, maximum=1.0
 )
-DAILY_GEMS_BASE = _get_balance_int("daily_gems_base", 5, minimum=0)
+DAILY_GEMS_BASE = _get_balance_int("daily_gems_base", 12, minimum=0)
 DAILY_GEMS_BONUS_CHANCE = _get_balance_float(
     "daily_gems_bonus_chance", 0.15, minimum=0.0, maximum=1.0
 )
-DAILY_GEMS_BONUS_MIN = _get_balance_int("daily_gems_bonus_min", 1, minimum=0)
+DAILY_GEMS_BONUS_MIN = _get_balance_int("daily_gems_bonus_min", 3, minimum=0)
 DAILY_GEMS_BONUS_MAX = _get_balance_int(
-    "daily_gems_bonus_max", 5, minimum=DAILY_GEMS_BONUS_MIN
+    "daily_gems_bonus_max", 12, minimum=DAILY_GEMS_BONUS_MIN
 )
-DAILY_GEMS_CAP = _get_balance_int("daily_gems_cap", 12, minimum=0)
+DAILY_GEMS_CAP = _get_balance_int("daily_gems_cap", 30, minimum=0)
 MESSAGE_REWARD = _get_balance_int("message_reward", 1, minimum=0)
 MESSAGE_COOLDOWN = 60
 LEADERBOARD_LIMIT = _get_economy_int("leaderboard_limit", 10, minimum=1)
