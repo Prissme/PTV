@@ -731,6 +731,7 @@ class ZoneOverviewView(discord.ui.View):
         meets_pet_mastery: bool
         meets_rebirth: bool
         meets_income: bool
+        discovered_pet_ids: Set[int] = field(default_factory=set)
 
     def __init__(
         self,
@@ -762,6 +763,7 @@ class ZoneOverviewView(discord.ui.View):
                 meets_pet_mastery=False,
                 meets_rebirth=False,
                 meets_income=False,
+                discovered_pet_ids=set(),
             )
         return self._pages[self.page]
 
@@ -872,6 +874,7 @@ class ZoneOverviewView(discord.ui.View):
                 meets_pet_mastery=page.meets_pet_mastery,
                 meets_rebirth=page.meets_rebirth,
                 meets_income=page.meets_income,
+                discovered_pet_ids=page.discovered_pet_ids,
             )
             self._refresh_footer()
             self._sync_buttons()
@@ -1196,7 +1199,7 @@ class PetIndexView(discord.ui.View):
             pet_id = self._pet_ids.get(name)
             owned = bool(pet_id and pet_id in owned_ids)
             status = "✅" if owned else "🔒"
-            emoji_value = pet_emoji(name)
+            emoji_value = pet_emoji(name) if owned else "⬛"
             emoji_prefix = f"{emoji_value} " if emoji_value else ""
             details: List[str] = [f"Rareté : {definition.rarity}"]
             if category.slug == "normal":
@@ -3002,7 +3005,9 @@ class Pets(commands.Cog):
         meets_pet_mastery: bool,
         meets_rebirth: bool,
         meets_income: bool,
+        discovered_pet_ids: Set[int] | None = None,
     ) -> discord.Embed:
+        discovered_pet_ids = discovered_pet_ids or set()
         status_emoji = "✅" if has_unlocked else "🔒"
         title = f"{status_emoji} {zone.name}"
         cost_text = "Gratuit" if zone.entry_cost <= 0 else self._format_zone_cost(zone)
@@ -3065,7 +3070,12 @@ class Pets(commands.Cog):
 
         if zone.eggs:
             for egg in zone.eggs:
-                emoji_sequence = [pet_emoji(pet.name) for pet in egg.pets]
+                emoji_sequence = [
+                    pet_emoji(pet.name)
+                    if (self._pet_ids.get(pet.name) in discovered_pet_ids)
+                    else "⬛"
+                    for pet in egg.pets
+                ]
                 unique_emojis = list(dict.fromkeys(emoji_sequence))
                 if egg.currency == "gem":
                     price_display = embeds.format_gems(egg.price)
@@ -3108,6 +3118,7 @@ class Pets(commands.Cog):
         pet_level = int(pet_mastery.get("level", 1))
         rebirth_count = await self.database.get_rebirth_count(ctx.author.id)
         active_income = await self._get_active_income(ctx.author.id)
+        discovered_pet_ids = await self.database.get_discovered_pet_ids(ctx.author.id)
 
         zone_pages: List[ZoneOverviewView.PageState] = []
         for zone in PET_ZONES:
@@ -3125,6 +3136,7 @@ class Pets(commands.Cog):
                 meets_pet_mastery=meets_pet_mastery,
                 meets_rebirth=meets_rebirth,
                 meets_income=meets_income,
+                discovered_pet_ids=discovered_pet_ids,
             )
             zone_pages.append(
                 ZoneOverviewView.PageState(
@@ -3135,6 +3147,7 @@ class Pets(commands.Cog):
                     meets_pet_mastery=meets_pet_mastery,
                     meets_rebirth=meets_rebirth,
                     meets_income=meets_income,
+                    discovered_pet_ids=discovered_pet_ids,
                 )
             )
 
@@ -3834,6 +3847,11 @@ class Pets(commands.Cog):
     @commands.command(name="huevo")
     async def huevo(self, ctx: commands.Context) -> None:
         await self._openbox_impl(ctx, "huevo")
+
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    @commands.command(name="dead", aliases=("mort", "cimetiere"))
+    async def dead(self, ctx: commands.Context) -> None:
+        await self._openbox_impl(ctx, "dead")
 
     def _build_egg_preview_embed(
         self,
