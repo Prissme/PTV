@@ -864,6 +864,7 @@ MANOIR_ZONE_SLUG: Final[str] = "manoir_hante"
 ROBOT_ZONE_SLUG: Final[str] = "robotique"
 ANIMALERIE_ZONE_SLUG: Final[str] = "animalerie"
 MEXICO_ZONE_SLUG: Final[str] = "mexico"
+CIMETIERE_ZONE_SLUG: Final[str] = "cimetiere_enfers"
 CELESTE_ZONE_SLUG: Final[str] = "celeste"
 ZODIAQUE_ZONE_SLUG: Final[str] = "zodiaque"
 GOLD_PET_MULTIPLIER: Final[int] = 3
@@ -937,6 +938,13 @@ HUGE_FESTIVE_PIPER_NAME: Final[str] = "Huge Festive Piper"
 HUGE_FESTIVE_PIPER_MULTIPLIER: Final[float] = 25
 HUGE_OLLIE_NAME: Final[str] = "Huge Ollie"
 HUGE_OLLIE_MULTIPLIER: Final[float] = 50
+# Cimetière des Enfers — Œuf Mort
+HUGE_LUMI_NAME: Final[str] = "Huge Lumi"
+HUGE_LUMI_MULTIPLIER: Final[float] = 30
+HUGE_FRANK_NAME: Final[str] = "Huge Frank"
+HUGE_FRANK_MULTIPLIER: Final[float] = 35
+TITANIC_DRACO_NAME: Final[str] = "Titanic Draco"
+TITANIC_DRACO_MULTIPLIER: Final[float] = 200
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
     HUGE_GRIFF_NAME: HUGE_GRIFF_MULTIPLIER,
 HUGE_GALE_NAME: HUGE_GALE_MULTIPLIER,
@@ -963,6 +971,9 @@ TITANIC_MEEPLE_NAME: TITANIC_MEEPLE_MULTIPLIER,
     HUGE_FESTIVE_MANDY_NAME: HUGE_FESTIVE_MANDY_MULTIPLIER,
     HUGE_FESTIVE_PIPER_NAME: HUGE_FESTIVE_PIPER_MULTIPLIER,
     HUGE_OLLIE_NAME: HUGE_OLLIE_MULTIPLIER,
+    HUGE_LUMI_NAME: HUGE_LUMI_MULTIPLIER,
+    HUGE_FRANK_NAME: HUGE_FRANK_MULTIPLIER,
+    TITANIC_DRACO_NAME: TITANIC_DRACO_MULTIPLIER,
 }
 
 HUGE_PET_MIN_LEVEL_MULTIPLIERS: Final[Dict[str, float]] = {
@@ -1525,6 +1536,56 @@ _MEXICO_EGG_PETS: Tuple[PetDefinition, ...] = (
     ),
 )
 
+_CIMETIERE_EGG_PETS: Tuple[PetDefinition, ...] = (
+    PetDefinition(
+        name="Mortis",
+        rarity="Commun",
+        image_url="https://cdn.discordapp.com/emojis/1549529697816285245.png",
+        base_income_per_hour=20_000_000,
+        drop_rate=0.55,
+    ),
+    PetDefinition(
+        name="Emz",
+        rarity="Rare",
+        image_url="https://cdn.discordapp.com/emojis/1549529694385475624.png",
+        base_income_per_hour=45_000_000,
+        drop_rate=0.30,
+    ),
+    PetDefinition(
+        name="Ziggy",
+        rarity="Épique",
+        image_url="https://cdn.discordapp.com/emojis/1549529693122994296.png",
+        base_income_per_hour=90_000_000,
+        drop_rate=0.149997,
+    ),
+    PetDefinition(
+        name=HUGE_LUMI_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1549529690224594974.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0000015,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=HUGE_FRANK_NAME,
+        rarity="Secret",
+        image_url="https://cdn.discordapp.com/emojis/1549529688572039198.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0000005,
+        is_huge=True,
+    ),
+    PetDefinition(
+        name=TITANIC_DRACO_NAME,
+        rarity="Secret",
+        # FIX: titanic volontairement plus rare que les 0.0000005 (1/2M)
+        # utilisés jusqu'ici sur tous les autres œufs.
+        image_url="https://cdn.discordapp.com/emojis/1549529686768357547.png",
+        base_income_per_hour=HUGE_PET_MIN_INCOME,
+        drop_rate=0.0000001,
+        is_huge=True,
+    ),
+)
+
 PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
     PetEggDefinition(
         name="Œuf basique",
@@ -1588,6 +1649,14 @@ PET_EGG_DEFINITIONS: Tuple[PetEggDefinition, ...] = (
         zone_slug=MEXICO_ZONE_SLUG,
         aliases=("oeuf huevo", "huevo", "oeuf mexico", "mexico"),
     ),
+    PetEggDefinition(
+        name="Œuf Mort",
+        slug="dead",
+        price=10_000_000_000_000,
+        pets=_CIMETIERE_EGG_PETS,
+        zone_slug=CIMETIERE_ZONE_SLUG,
+        aliases=("oeuf mort", "mort", "dead", "cimetiere", "cimetière", "cimetiere des enfers"),
+    ),
 )
 
 
@@ -1644,6 +1713,13 @@ PET_ZONES: Tuple[PetZoneDefinition, ...] = (
         entry_cost=5_000_000_000_000,
         eggs=_eggs_for_zone(MEXICO_ZONE_SLUG),
         rebirth_required=2,
+    ),
+    PetZoneDefinition(
+        name="Cimetière des Enfers",
+        slug=CIMETIERE_ZONE_SLUG,
+        grade_required=0,
+        entry_cost=100_000_000_000_000,
+        eggs=_eggs_for_zone(CIMETIERE_ZONE_SLUG),
     ),
 )
 
@@ -1842,6 +1918,13 @@ PET_EMOJIS: Final[dict[str, str]] = {
     HUGE_FESTIVE_MANDY_NAME: os.getenv("PET_EMOJI_HUGE_FESTIVE_MANDY", "<:HugeFestiveMandy:1546429349530439691>"),
     HUGE_FESTIVE_PIPER_NAME: os.getenv("PET_EMOJI_HUGE_FESTIVE_PIPER", "<:HugeFestivePiper:1546430131466141776>"),
     HUGE_OLLIE_NAME: os.getenv("PET_EMOJI_HUGE_OLLIE", "<:HugeOllie:1546428608367566898>"),
+    # Cimetière des Enfers — Œuf Mort
+    "Mortis": os.getenv("PET_EMOJI_MORTIS", "<:Mortis:1549529697816285245>"),
+    "Emz": os.getenv("PET_EMOJI_EMZ", "<:Emz:1549529694385475624>"),
+    "Ziggy": os.getenv("PET_EMOJI_ZIGGY", "<:Ziggy:1549529693122994296>"),
+    HUGE_LUMI_NAME: os.getenv("PET_EMOJI_HUGE_LUMI", "<:HugeLumi:1549529690224594974>"),
+    HUGE_FRANK_NAME: os.getenv("PET_EMOJI_HUGE_FRANK", "<:HugeFrank:1549529688572039198>"),
+    TITANIC_DRACO_NAME: os.getenv("PET_EMOJI_TITANIC_DRACO", "<:TitanicDraco:1549529686768357547>"),
     # FIX: Ensure default emoji falls back when the environment variable is empty.
     "default": os.getenv("PET_EMOJI_DEFAULT") or "🐾",
 }
