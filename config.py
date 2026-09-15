@@ -563,7 +563,7 @@ def rebase_gems_price(value: float | int) -> int:
 
 
 BASE_PET_SLOTS: Final[int] = 4
-PET_SLOT_MAX_CAPACITY: Final[int] = 40
+PET_SLOT_MAX_CAPACITY: Final[int] = 99
 PET_SLOT_SHOP_BASE_COST: Final[int] = rebase_gems_price(8_500)
 PET_SLOT_SHOP_COST_GROWTH: Final[float] = 1.75
 PET_SLOT_SHOP_CURRENCY: Final[str] = "gem"
