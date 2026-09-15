@@ -4252,12 +4252,25 @@ class Pets(commands.Cog):
 
         stop_event = asyncio.Event()
 
+        # FIX: on ne coupe plus l'AUTO sur n'importe quel message envoyé par
+        # l'utilisateur (ça arrêtait l'ouverture dès qu'il écrivait autre
+        # chose dans le salon). On n'arrête l'AUTO que sur un message qui
+        # invoque explicitement la commande e!stop (ou ses alias).
+        stop_command = self.bot.get_command("stop")
+        stop_names = {stop_command.name, *stop_command.aliases} if stop_command else {"stop"}
+        stop_names = {name.casefold() for name in stop_names}
+
         def _message_check(message: discord.Message) -> bool:
-            return (
-                message.author.id == ctx.author.id
-                and not message.author.bot
-                and message.content is not None
-            )
+            if message.author.id != ctx.author.id or message.author.bot:
+                return False
+            content = (message.content or "").strip()
+            if not content:
+                return False
+            prefix = ctx.prefix or ""
+            if prefix and content.casefold().startswith(prefix.casefold()):
+                content = content[len(prefix):]
+            command_word = content.split(maxsplit=1)[0].casefold() if content.split() else ""
+            return command_word in stop_names
 
         async def _wait_for_user_message() -> None:
             try:
@@ -4271,7 +4284,7 @@ class Pets(commands.Cog):
         async def _runner() -> None:
             await thread.send(
                 embed=embeds.info_embed(
-                    "Ouverture automatique activée. Envoie n'importe quel message pour arrêter.",
+                    "Ouverture automatique activée. Utilise `e!stop` pour arrêter.",
                     title="AUTO en cours",
                 )
             )
