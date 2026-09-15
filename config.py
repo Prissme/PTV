@@ -940,9 +940,9 @@ HUGE_OLLIE_NAME: Final[str] = "Huge Ollie"
 HUGE_OLLIE_MULTIPLIER: Final[float] = 50
 # Cimetière des Enfers — Œuf Mort
 HUGE_LUMI_NAME: Final[str] = "Huge Lumi"
-HUGE_LUMI_MULTIPLIER: Final[float] = 30
+HUGE_LUMI_MULTIPLIER: Final[float] = 15
 HUGE_FRANK_NAME: Final[str] = "Huge Frank"
-HUGE_FRANK_MULTIPLIER: Final[float] = 35
+HUGE_FRANK_MULTIPLIER: Final[float] = 20
 TITANIC_DRACO_NAME: Final[str] = "Titanic Draco"
 TITANIC_DRACO_MULTIPLIER: Final[float] = 200
 HUGE_PET_CUSTOM_MULTIPLIERS: Final[Dict[str, float]] = {
@@ -1254,7 +1254,7 @@ _FOREST_EGG_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name="Huge Trunk",
         rarity="Secret",
-        image_url="https://example.com/document53.png",
+        image_url="https://cdn.discordapp.com/emojis/1546647175155679324.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0001,
         is_huge=True,
@@ -1331,7 +1331,7 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name=HUGE_GALE_NAME,
         rarity="Secret",
-        image_url="https://example.com/document54.png",
+        image_url="https://cdn.discordapp.com/emojis/1549542041099178024.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0,
         is_huge=True,
@@ -1347,7 +1347,7 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name=TITANIC_GRIFF_NAME,
         rarity="Secret",
-        image_url="https://cdn.discordapp.com/emojis/1432161869342183525.png",
+        image_url="https://cdn.discordapp.com/emojis/1549542035948568606.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0,
         is_huge=True,
@@ -1355,7 +1355,7 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name=TITANIC_COLT_NAME,
         rarity="Secret",
-        image_url="https://cdn.discordapp.com/emojis/1442530708810760326.png",
+        image_url="https://cdn.discordapp.com/emojis/1549542039778099322.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0,
         is_huge=True,
@@ -1363,7 +1363,7 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name=HUGE_KENJI_ONI_NAME,
         rarity="Secret",
-        image_url="https://example.com/document56.png",
+        image_url="https://cdn.discordapp.com/emojis/1549542034719641670.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0,
         is_huge=True,
@@ -1379,7 +1379,7 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name=HUGE_MORTIS_NAME,
         rarity="Secret",
-        image_url="https://cdn.discordapp.com/emojis/1431435110590189638.png",
+        image_url="https://cdn.discordapp.com/emojis/1549542043309834261.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0,
         is_huge=True,
@@ -1387,7 +1387,7 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name=HUGE_BULL_NAME,
         rarity="Secret",
-        image_url="https://cdn.discordapp.com/emojis/1433617222357487748.png",
+        image_url="https://cdn.discordapp.com/emojis/1549542033427927202.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0,
         is_huge=True,
@@ -1403,7 +1403,7 @@ _EXCLUSIVE_PETS: Tuple[PetDefinition, ...] = (
     PetDefinition(
         name=HUGE_RED_KING_FRANK_NAME,
         rarity="Secret",
-        image_url="https://cdn.discordapp.com/emojis/1442532497979084890.png",
+        image_url="https://cdn.discordapp.com/emojis/1549542038519939152.png",
         base_income_per_hour=HUGE_PET_MIN_INCOME,
         drop_rate=0.0,
         is_huge=True,
@@ -1855,13 +1855,13 @@ PET_EMOJIS: Final[dict[str, str]] = {
     "Cordelius": os.getenv("PET_EMOJI_CORDELIUS", "<:Cordelius:1546593226868129853>"),
     "Doug": os.getenv("PET_EMOJI_DOUG", "<:Doug:1546593224385101864>"),
     "Trunk": os.getenv("PET_EMOJI_TRUNK", "<:Trunk:1546593223173214258>"),
-    "Huge Trunk": os.getenv("PET_EMOJI_HUGE_TRUNK", "<:HugeTrunk:1430876043400446013>"),
-    HUGE_GALE_NAME: os.getenv("PET_EMOJI_HUGE_GALE", "<:HugeGale:1430981225375600641>"),
+    "Huge Trunk": os.getenv("PET_EMOJI_HUGE_TRUNK", "<:HugeTrunk:1546647175155679324>"),
+    HUGE_GALE_NAME: os.getenv("PET_EMOJI_HUGE_GALE", "<:HugeGale:1549542041099178024>"),
     HUGE_GRIFF_NAME: os.getenv("PET_EMOJI_HUGE_GRIFF", "<:HugeGriff:1547302963998101626>"),
     TITANIC_GRIFF_NAME: os.getenv(
-        "PET_EMOJI_TITANIC_GRIFF", "<:TITANICGRIFF:1432161869342183525>"
+        "PET_EMOJI_TITANIC_GRIFF", "<:TitanicGriff:1549542035948568606>"
     ),
-    HUGE_KENJI_ONI_NAME: os.getenv("PET_EMOJI_HUGE_KENJI_ONI", "<:HugeKenjiOni:1431057254337089576>"),
+    HUGE_KENJI_ONI_NAME: os.getenv("PET_EMOJI_HUGE_KENJI_ONI", "<:HugeKenjiOni:1549542034719641670>"),
     "Gus": os.getenv("PET_EMOJI_GUS", "<:Gus:1546649442394972240>"),
     "Ghost Squeak": os.getenv("PET_EMOJI_GHOST_SQUEAK", "<:GhostSqueak:1546649813414846544>"),
     "Ghost Leon": os.getenv("PET_EMOJI_GHOST_LEON", "<:GhostLeon:1546650056629948476>"),
@@ -1869,11 +1869,11 @@ PET_EMOJIS: Final[dict[str, str]] = {
     HUGE_SHADE_NAME: os.getenv("PET_EMOJI_HUGE_SHADE", "<:HugeShade:1546805401297887302>"),
     "Chuck": os.getenv("PET_EMOJI_CHUCK", "<:Chuck:1546650953111834674>"),
     TITANIC_ZOMBIBI_NAME: os.getenv("PET_EMOJI_TITANIC_ZOMBIBI", "<:TitanicZombibi:1546805402782404618>"),
-    HUGE_MORTIS_NAME: os.getenv("PET_EMOJI_HUGE_MORTIS", "<:HugeMortis:1431435110590189638>"),
+    HUGE_MORTIS_NAME: os.getenv("PET_EMOJI_HUGE_MORTIS", "<:HugeMortis:1549542043309834261>"),
     HUGE_SURGE_NAME: os.getenv("PET_EMOJI_HUGE_SURGE", "<:HugeSurge:1546845903535603713>"),
     TITANIC_MEEPLE_NAME: os.getenv("PET_EMOJI_TITANIC_MEEPLE", "<:TITANICMEEPLE:1546845901228736592>"),
-    TITANIC_COLT_NAME: os.getenv("PET_EMOJI_TITANIC_COLT", "<:TitanicColt:1442530708810760326>"),
-    HUGE_BULL_NAME: os.getenv("PET_EMOJI_HUGE_BULL", "<:HugeBull:1433617222357487748>"),
+    TITANIC_COLT_NAME: os.getenv("PET_EMOJI_TITANIC_COLT", "<:TitanicColt:1549542039778099322>"),
+    HUGE_BULL_NAME: os.getenv("PET_EMOJI_HUGE_BULL", "<:HugeBull:1549542033427927202>"),
     HUGE_WISHED_NAME: (
         os.getenv("PET_EMOJI_TITANIC_WISHED")
         or os.getenv("PET_EMOJI_HUGE_WISHED")
@@ -1881,7 +1881,7 @@ PET_EMOJIS: Final[dict[str, str]] = {
     ),
     HUGE_BO_NAME: os.getenv("PET_EMOJI_HUGE_BO", "<:HugeBo:1547302965331890236>"),
     HUGE_RED_KING_FRANK_NAME: os.getenv(
-        "PET_EMOJI_HUGE_RED_KING_FRANK", "<:HugeRedKingFrank:1442532497979084890>"
+        "PET_EMOJI_HUGE_RED_KING_FRANK", "<:HugeRedKingFrank:1549542038519939152>"
     ),
     "Darryl": os.getenv("PET_EMOJI_DARRYL", "<:Darryl:1546845910112149504>"),
     "Rico": os.getenv("PET_EMOJI_RICO", "<:Rico:1546845908711243856>"),
