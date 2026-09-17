@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 from collections import OrderedDict
 import contextlib
 import logging
@@ -4762,7 +4763,16 @@ class Pets(commands.Cog):
         best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
         entry_by_id: Dict[int, Dict[str, Any]] = {}
         scored_entries: List[Dict[str, Any]] = []
-        for row in available_rows:
+        # FIX: avec un inventaire de plusieurs milliers/dizaines de milliers
+        # de pets (aggravé par la suppression de la fuse qui consommait les
+        # doublons), cette boucle 100% synchrone pouvait tourner plusieurs
+        # secondes d'affilée et geler TOUT le bot (event loop bloqué, aucun
+        # autre utilisateur ne pouvait interagir avec le bot pendant ce temps).
+        # On rend la main à la boucle d'événements régulièrement pour que les
+        # autres commandes continuent de répondre pendant le calcul.
+        for index, row in enumerate(available_rows):
+            if index % 500 == 0 and index > 0:
+                await asyncio.sleep(0)
             user_pet_id = int(row.get("id") or 0)
             if user_pet_id <= 0:
                 continue
@@ -4817,15 +4827,18 @@ class Pets(commands.Cog):
             )
             return
 
-        scored_entries.sort(
-            key=lambda item: (
+        def _sort_key(item: Dict[str, Any]) -> tuple[int, int, float, str]:
+            return (
                 -int(item.get("income", 0)),
                 -int(item.get("rarity_rank", -1)),
                 float(item.get("acquired_sort", float("inf"))),
                 str(item.get("name", "")),
             )
-        )
-        desired_entries = scored_entries[:max_slots]
+
+        # FIX: heapq.nsmallest est O(n log k) au lieu de O(n log n) pour un
+        # tri complet — énorme gain quand max_slots (≤99) est petit devant
+        # un inventaire qui peut compter des dizaines de milliers de pets.
+        desired_entries = heapq.nsmallest(max_slots, scored_entries, key=_sort_key)
         desired_ids = {int(entry["id"]) for entry in desired_entries if int(entry["id"]) > 0}
 
         if not desired_ids:
