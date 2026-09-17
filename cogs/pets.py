@@ -2023,6 +2023,33 @@ class Pets(commands.Cog):
         self._pet_ids = await self.database.sync_pets(self._definitions)
         self._definition_by_id = {pet_id: self._definition_by_name[name] for name, pet_id in self._pet_ids.items()}
         logger.info("Catalogue de pets synchronisé (%d entrées)", len(self._definition_by_id))
+        # FIX: le RAP (valeur marché en gemmes) n'était calculé qu'une seule
+        # fois, au tout premier démarrage du bot (table pet_market_values
+        # vide), puis restait figé pour toujours. On relance désormais un
+        # resync périodique qui mélange la formule théorique avec les
+        # vraies transactions récentes, pour un marché qui bouge vraiment.
+        self._market_resync_task = asyncio.create_task(self._market_resync_loop())
+
+    async def cog_unload(self) -> None:
+        task = getattr(self, "_market_resync_task", None)
+        if task is not None:
+            task.cancel()
+
+    async def _market_resync_loop(self) -> None:
+        # Premier resync peu après le démarrage, puis toutes les 6h.
+        await asyncio.sleep(300)
+        while True:
+            try:
+                updated = await self.database.sync_pet_market_values()
+                logger.info(
+                    "Valeurs marché (RAP) resynchronisées (%d entrées mises à jour)",
+                    updated,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Échec du resync périodique des valeurs marché")
+            await asyncio.sleep(6 * 3600)
 
     async def _resync_pets(self) -> None:
         self._pet_ids = await self.database.sync_pets(self._definitions)
