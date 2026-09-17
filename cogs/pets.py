@@ -194,14 +194,11 @@ def _compute_egg_mastery_perks(level: int) -> EggMasteryPerks:
 class PetMasteryPerks:
     """Synthétise les bonus associés à la maîtrise des pets."""
 
-    fuse_unlocked: bool = False
     auto_goldify: bool = False
     auto_rainbowify: bool = False
     egg_shiny_chance: float = 0.0
     goldify_shiny_chance: float = 0.0
     rainbowify_shiny_chance: float = 0.0
-    fuse_double_chance: float = 0.0
-    fuse_triple_chance: float = 0.0
     egg_shiny_multiplier: float = 1.0
     gold_luck_multiplier: float = 1.0
     rainbow_luck_multiplier: float = 1.0
@@ -290,10 +287,10 @@ _EGG_MASTERY_TIERS: tuple[MasteryTier, ...] = (
 _PET_MASTERY_TIERS: tuple[MasteryTier, ...] = (
     MasteryTier(
         5,
-        "Atelier fusion",
-        "Débloque la fusion, l'auto goldify et +1% de shiny via les œufs.",
+        "Atelier doré",
+        "Débloque l'auto goldify et +1% de shiny via les œufs.",
     ),
-    MasteryTier(10, "Artisan patient", "10% de chance de fusion double."),
+    MasteryTier(10, "Artisan patient", "Aucun bonus actif (ancien palier fusion retiré)."),
     MasteryTier(
         20,
         "Forge colorée",
@@ -306,13 +303,13 @@ _PET_MASTERY_TIERS: tuple[MasteryTier, ...] = (
     ),
     MasteryTier(
         40,
-        "Fusions maîtrisées",
-        "35% de doubles fusions et 10% de triples réussies.",
+        "Palier avancé",
+        "Aucun bonus actif (ancien palier fusion retiré).",
     ),
     MasteryTier(
         50,
         "Légende des altérations",
-        "50% de doubles, +5% shiny œufs et goldify, +3% shiny rainbowify.",
+        "+5% shiny œufs et goldify, +3% shiny rainbowify.",
     ),
     MasteryTier(
         64,
@@ -455,25 +452,18 @@ class GemshopView(discord.ui.View):
 def _compute_pet_mastery_perks(level: int) -> PetMasteryPerks:
     """Calcule les bonus actifs pour la maîtrise des pets."""
 
-    fuse_unlocked = level >= 5
     auto_goldify = level >= 5
     auto_rainbowify = level >= 30
     egg_shiny_chance = 0.01 if level >= 5 else 0.0
     goldify_shiny_chance = 0.03 if level >= 20 else 0.0
     rainbowify_shiny_chance = 0.01 if level >= 20 else 0.0
-    fuse_double_chance = 0.10 if level >= 10 else 0.0
-    fuse_triple_chance = 0.0
     egg_shiny_multiplier = 1.0
     gold_luck_multiplier = 1.0
     rainbow_luck_multiplier = 1.0
 
     if level >= 30:
         egg_shiny_chance = 0.03
-    if level >= 40:
-        fuse_double_chance = 0.35
-        fuse_triple_chance = 0.10
     if level >= 50:
-        fuse_double_chance = 0.50
         egg_shiny_chance = 0.05
         goldify_shiny_chance = 0.05
         rainbowify_shiny_chance = 0.03
@@ -483,14 +473,11 @@ def _compute_pet_mastery_perks(level: int) -> PetMasteryPerks:
         rainbow_luck_multiplier = 1.3
 
     return PetMasteryPerks(
-        fuse_unlocked=fuse_unlocked,
         auto_goldify=auto_goldify,
         auto_rainbowify=auto_rainbowify,
         egg_shiny_chance=egg_shiny_chance,
         goldify_shiny_chance=goldify_shiny_chance,
         rainbowify_shiny_chance=rainbowify_shiny_chance,
-        fuse_double_chance=fuse_double_chance,
-        fuse_triple_chance=fuse_triple_chance,
         egg_shiny_multiplier=egg_shiny_multiplier,
         gold_luck_multiplier=gold_luck_multiplier,
         rainbow_luck_multiplier=rainbow_luck_multiplier,
@@ -2464,11 +2451,7 @@ class Pets(commands.Cog):
         elif mastery is PET_MASTERY:
             if previous_level < 5 <= level:
                 lines.append(
-                    "La machine de fusion est débloquée, auto-goldify activé et **1%** de shiny dans les œufs !"
-                )
-            if previous_level < 10 <= level:
-                lines.append(
-                    "La machine de fusion offre désormais **10%** de chance de double récompense !"
+                    "Auto-goldify activé et **1%** de shiny dans les œufs !"
                 )
             if previous_level < 20 <= level:
                 lines.append(
@@ -2478,13 +2461,9 @@ class Pets(commands.Cog):
                 lines.append(
                     "Auto-rainbowify débloqué et ta chance de shiny dans les œufs passe à **3%** !"
                 )
-            if previous_level < 40 <= level:
-                lines.append(
-                    "La machine de fusion atteint **35% double** et **10% triple** !"
-                )
             if previous_level < 50 <= level:
                 lines.append(
-                    "Tu profites de **50%** de double fuse, **5%** de shiny dans les œufs et plus de chances via goldify/rainbowify !"
+                    "**5%** de shiny dans les œufs et plus de chances via goldify/rainbowify !"
                 )
             if previous_level < 64 <= level:
                 lines.append(
@@ -5894,334 +5873,6 @@ class Pets(commands.Cog):
             inline=False,
         )
         await ctx.send(embed=embed)
-
-    @commands.command(name="fuse")
-    async def fuse(self, ctx: commands.Context, *user_pet_inputs: str) -> None:
-        await self._ack_heavy_command(ctx)
-        auto_mode = not user_pet_inputs
-        if user_pet_inputs:
-            auto_mode = any(str(value).lower() in {"auto", "random"} for value in user_pet_inputs)
-
-        name_requests: list[tuple[str, int]] = []
-        id_inputs: list[int] = []
-        raw_inputs = [str(value) for value in user_pet_inputs]
-        if user_pet_inputs and not auto_mode:
-            if any(not token.isdigit() for token in raw_inputs):
-                name_buffer: list[str] = []
-                for token in raw_inputs:
-                    lowered = token.lower()
-                    if lowered in {"auto", "random"}:
-                        continue
-                    if token.isdigit():
-                        if name_buffer:
-                            count = int(token)
-                            name = " ".join(name_buffer).strip()
-                            if name and count > 0:
-                                name_requests.append((name, count))
-                            name_buffer = []
-                        else:
-                            parsed = int(token)
-                            if parsed > 0:
-                                id_inputs.append(parsed)
-                    else:
-                        name_buffer.append(token)
-                if name_buffer:
-                    name_requests.append((" ".join(name_buffer).strip(), 1))
-            else:
-                for token in raw_inputs:
-                    parsed = int(token)
-                    if parsed > 0:
-                        id_inputs.append(parsed)
-
-        unique_ids: list[int] = []
-        for value in id_inputs:
-            if value > 0 and value not in unique_ids:
-                unique_ids.append(value)
-
-        auto_selected = False
-        if name_requests:
-            rows = await self.database.get_user_pets(ctx.author.id)
-            available = [
-                row
-                for row in rows
-                if not bool(row.get("is_active"))
-                and not bool(row.get("on_market"))
-                and not bool(row.get("is_huge"))
-            ]
-            available_by_name: Dict[str, List[Dict[str, Any]]] = {}
-            for row in available:
-                data = self._convert_record(row, best_non_huge_income=None)
-                key = str(data.get("name", "")).casefold()
-                available_by_name.setdefault(key, []).append({"record": row, "data": data})
-            for entries in available_by_name.values():
-                entries.sort(
-                    key=lambda entry: (
-                        int(entry["data"].get("base_income_per_hour", 0)),
-                        int(entry["record"].get("id") or 0),
-                    )
-                )
-
-            missing: List[str] = []
-            for raw_name, count in name_requests:
-                if count <= 0:
-                    continue
-                slug, _, variant = self._parse_pet_query(raw_name)
-                definition = self._definition_by_slug.get(slug or "")
-                if definition is None:
-                    missing.append(raw_name)
-                    continue
-                key = definition.name.casefold()
-                candidates = available_by_name.get(key, [])
-                if variant == "gold":
-                    filtered = [
-                        entry for entry in candidates if bool(entry["data"].get("is_gold"))
-                    ]
-                elif variant == "rainbow":
-                    filtered = [
-                        entry for entry in candidates if bool(entry["data"].get("is_rainbow"))
-                    ]
-                elif variant == "normal":
-                    filtered = [
-                        entry
-                        for entry in candidates
-                        if not bool(entry["data"].get("is_gold"))
-                        and not bool(entry["data"].get("is_rainbow"))
-                    ]
-                else:
-                    filtered = list(candidates)
-
-                if len(filtered) < count:
-                    await ctx.send(
-                        embed=embeds.error_embed(
-                            f"Il te faut encore {count} pets **{definition.name}** disponibles pour la fusion."
-                        )
-                    )
-                    return
-
-                chosen = filtered[:count]
-                chosen_ids = {int(entry["record"].get("id") or 0) for entry in chosen}
-                available_by_name[key] = [
-                    entry
-                    for entry in candidates
-                    if int(entry["record"].get("id") or 0) not in chosen_ids
-                ]
-                for entry in chosen:
-                    entry_id = int(entry["record"].get("id") or 0)
-                    if entry_id > 0 and entry_id not in unique_ids:
-                        unique_ids.append(entry_id)
-
-            if missing:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Pets introuvables pour la fusion : "
-                        + ", ".join(f"`{name}`" for name in missing)
-                    )
-                )
-                return
-
-        if auto_mode and not unique_ids:
-            rows = await self.database.get_user_pets(ctx.author.id)
-            available = [
-                row
-                for row in rows
-                if not bool(row.get("is_active"))
-                and not bool(row.get("on_market"))
-                and not bool(row.get("is_huge"))
-            ]
-            if len(available) < 10:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "La machine a besoin de **10 pets** disponibles."
-                        " Pense à retirer les pets actifs ou en vente, puis réessaie.",
-                    )
-                )
-                return
-            def _fuse_sort_key(row: Mapping[str, Any]) -> tuple[int, int, str, int]:
-                data = self._convert_record(row, best_non_huge_income=None)
-                rarity_rank = PET_RARITY_ORDER.get(str(data.get("rarity", "")), 0)
-                income = int(data.get("base_income_per_hour", 0))
-                name = str(data.get("name", "")).casefold()
-                return (rarity_rank, income, name, int(row.get("id") or 0))
-
-            available_sorted = sorted(available, key=_fuse_sort_key)
-            unique_ids = [int(row["id"]) for row in available_sorted[:10]]
-            auto_selected = True
-
-        if not unique_ids:
-            await ctx.send(
-                embed=embeds.info_embed(
-                    "Utilise `e!fuse <id1> <id2> … <id10>` pour sacrifier 10 pets et en obtenir un nouveau."
-                    " Tu peux aussi lancer `e!fuse auto` pour choisir automatiquement,"
-                    " ou `e!fuse shelly 5 angelo 3 lily 2` pour fusionner par nom.",
-                )
-            )
-            return
-
-        if len(unique_ids) > 10:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "La machine ne peut consommer que **10 pets** à la fois."
-                )
-            )
-            return
-
-        if len(unique_ids) < 10:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "La machine a besoin de **10 pets**."
-                    " Utilise `e!pets` puis repère la colonne `ID` pour noter ceux qui sont libres.",
-                )
-            )
-            return
-
-        pet_mastery_progress = await self.database.get_mastery_progress(
-            ctx.author.id, PET_MASTERY.slug
-        )
-        pet_mastery_level = int(pet_mastery_progress.get("level", 1))
-        pet_perks = _compute_pet_mastery_perks(pet_mastery_level)
-        if not pet_perks.fuse_unlocked:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Atteins le niveau 5 de Maîtrise des pets pour débloquer la machine de fusion."
-                    f" (Niveau actuel : {pet_mastery_level}).",
-                )
-            )
-            return
-
-        clan_row = await self.database.get_user_clan(ctx.author.id)
-        clan_shiny_multiplier = 1.0
-        if clan_row is not None:
-            clan_shiny_multiplier = max(
-                1.0, float(clan_row.get("shiny_luck_multiplier") or 1.0)
-            )
-        _, index_bonus_ratio = await self._fetch_index_shiny_bonus(ctx.author.id)
-
-        non_huge_definitions = [
-            pet for pet in PET_DEFINITIONS if not getattr(pet, "is_huge", False)
-        ]
-        if not non_huge_definitions:
-            await ctx.send(embed=embeds.error_embed("Aucun pet disponible pour la fusion."))
-            return
-
-        zodiaque_pet_names = {
-            pet.name
-            for egg in PET_EGG_DEFINITIONS
-            if egg.zone_slug == ZODIAQUE_ZONE_SLUG
-            for pet in egg.pets
-        }
-        weights = []
-        for pet in non_huge_definitions:
-            base_weight = max(0.0001, float(getattr(pet, "drop_rate", 0.0)) or 0.0001)
-            if pet.name in zodiaque_pet_names:
-                base_weight *= FUSE_ZODIAQUE_WEIGHT_MULTIPLIER
-            weights.append(max(0.0001, base_weight))
-
-        total_outputs = 1
-        bonus_label = None
-        if pet_perks.fuse_triple_chance > 0 and random.random() < pet_perks.fuse_triple_chance:
-            total_outputs = 3
-            bonus_label = "🔥 Chance triple !"
-        elif pet_perks.fuse_double_chance > 0 and random.random() < pet_perks.fuse_double_chance:
-            total_outputs = 2
-            bonus_label = "⚙️ Chance double !"
-
-        selected_defs = random.choices(non_huge_definitions, weights=weights, k=total_outputs)
-
-        def _roll_shiny(base_chance: float) -> bool:
-            chance = self._apply_index_bonus(base_chance, index_bonus_ratio)
-            if chance <= 0:
-                return False
-            chance *= float(pet_perks.egg_shiny_multiplier)
-            chance *= clan_shiny_multiplier
-            return random.random() < min(1.0, chance)
-
-        results: List[Dict[str, Any]] = []
-        consumed_ids = unique_ids[:10]
-
-        primary_definition = selected_defs[0]
-        rarity_label = "Huge" if primary_definition.is_huge else str(primary_definition.rarity)
-        power_value = max(
-            int(getattr(definition, "base_income_per_hour", 0) or 0)
-            for definition in selected_defs
-        )
-        power_value = scale_pet_value(power_value)
-        fusion_cost = self._compute_fusion_cost(
-            rarity=rarity_label,
-            power_value=power_value,
-            consumed_count=len(consumed_ids),
-            output_count=total_outputs,
-        )
-        primary_shiny = _roll_shiny(pet_perks.egg_shiny_chance)
-        try:
-            primary_record = await self.database.fuse_user_pets(
-                ctx.author.id,
-                consumed_ids,
-                self._pet_ids[primary_definition.name],
-                make_shiny=primary_shiny,
-                result_is_huge=primary_definition.is_huge,
-                cost=fusion_cost,
-            )
-        except InsufficientBalanceError:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    f"Tu n'as pas assez de {Emojis.GEM} pour payer la fusion ({embeds.format_gems(fusion_cost)})."
-                )
-            )
-            return
-        except DatabaseError as exc:
-            await ctx.send(embed=embeds.error_embed(str(exc)))
-            return
-
-        results.append(
-            self._convert_record(primary_record, best_non_huge_income=None)
-        )
-
-        for extra_definition in selected_defs[1:]:
-            extra_shiny = _roll_shiny(pet_perks.egg_shiny_chance)
-            extra_record = await self.database.add_user_pet(
-                ctx.author.id,
-                self._pet_ids[extra_definition.name],
-                is_huge=extra_definition.is_huge,
-                is_shiny=extra_shiny,
-            )
-            results.append(
-                self._convert_record(extra_record, best_non_huge_income=None)
-            )
-
-        embed = embeds.success_embed("Résultats de la fusion", title="🛠️ Machine de fusion")
-        lines = []
-        for entry in results:
-            name = str(entry.get("name", "Pet"))
-            income = scale_pet_value(int(entry.get("base_income_per_hour", 0)))
-            tags: List[str] = []
-            if entry.get("is_galaxy"):
-                tags.append("Galaxy")
-            elif entry.get("is_rainbow"):
-                tags.append("Rainbow")
-            elif entry.get("is_gold"):
-                tags.append("Gold")
-            if entry.get("is_shiny"):
-                tags.append("Shiny")
-            suffix = f" ({', '.join(tags)})" if tags else ""
-            emoji = pet_emoji(name)
-            lines.append(f"{embeds.format_currency(income)}/h — {emoji}{suffix}")
-
-        if auto_selected:
-            used_ids = ", ".join(str(pet_id) for pet_id in consumed_ids)
-            lines.append(f"IDs utilisés : {used_ids}")
-        if bonus_label:
-            lines.append(bonus_label)
-        lines.append(f"Coût : {embeds.format_gems(fusion_cost)}")
-
-        embed.description = "\n".join(lines)
-        await ctx.send(embed=embed)
-
-        mastery_update = await self.database.add_mastery_experience(
-            ctx.author.id, PET_MASTERY.slug, len(consumed_ids)
-        )
-        await self._handle_mastery_notifications(
-            ctx, mastery_update, mastery=PET_MASTERY
-        )
 
     async def _bulk_fuse_variants(
         self,
