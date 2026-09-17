@@ -85,8 +85,13 @@ logger = logging.getLogger(__name__)
 _HUGE_PET_NAME_LOOKUP = {name.lower() for name in HUGE_PET_NAMES}
 _MARKET_HISTORY_SAMPLE = 20
 _MARKET_BASE_MULTIPLIER = 80
-_MARKET_MIN_MULTIPLIER = 0.6
-_MARKET_MAX_MULTIPLIER = 2.5
+# FIX: fourchette élargie (avant 0.6-2.5) pour laisser un vrai marché de
+# joueurs faire davantage bouger la valeur autour de la formule théorique.
+_MARKET_MIN_MULTIPLIER = 0.4
+_MARKET_MAX_MULTIPLIER = 3.5
+# Poids des vraies transactions dans le prix final lors du resync
+# périodique (0 = 100% formule figée, 1 = 100% marché réel).
+_MARKET_TRADE_WEIGHT = 0.5
 _MARKET_MAX_VALUE = 100_000_000
 _MARKET_RARITY_BASE = {
     "Commun": 3,
@@ -6018,7 +6023,16 @@ class Database:
         )
 
     async def sync_pet_market_values(self) -> int:
-        """Recalcule et stocke les valeurs marché pour chaque pet et variante."""
+        """Recalcule et stocke les valeurs marché pour chaque pet et variante.
+
+        FIX (marché plus "libéral") : la valeur n'est plus uniquement une
+        formule figée. On la mélange avec la médiane des vraies transactions
+        récentes (pet_trade_history) quand il y en a assez, bornée pour
+        éviter les dérives extrêmes/manipulations. Cette fonction est
+        maintenant aussi rappelée périodiquement (voir _market_resync_loop
+        dans cogs/pets.py) au lieu de tourner une seule fois au premier
+        démarrage du bot.
+        """
 
         pets = await self.pool.fetch(
             """
@@ -6036,6 +6050,7 @@ class Database:
         owner_counts = {
             int(row["pet_id"]): int(row.get("owners") or 0) for row in owner_rows
         }
+        trade_market_values = await self._get_trade_history_market_values()
 
         is_huge_lookup = {pet.name.lower(): pet.is_huge for pet in PET_DEFINITIONS}
         zone_by_pet = {
@@ -6075,7 +6090,22 @@ class Database:
                     cap_int = 0
 
             for code, multiplier in _MARKET_VARIANTS:
-                value = base_value * multiplier
+                formula_value = self._round_market_value(base_value * multiplier)
+                traded_value = trade_market_values.get((pet_id, code))
+                if traded_value and traded_value > 0:
+                    # Le marché réel (vraies ventes) pèse pour moitié dans le
+                    # prix final, borné pour rester crédible par rapport à
+                    # la formule (évite qu'une poignée de trades absurdes
+                    # ne fassent exploser/s'effondrer la valeur d'un coup).
+                    min_bound = max(1, int(formula_value * _MARKET_MIN_MULTIPLIER))
+                    max_bound = max(min_bound, int(formula_value * _MARKET_MAX_MULTIPLIER))
+                    bounded_trade_value = min(max(traded_value, min_bound), max_bound)
+                    value = round(
+                        (formula_value * (1 - _MARKET_TRADE_WEIGHT))
+                        + (bounded_trade_value * _MARKET_TRADE_WEIGHT)
+                    )
+                else:
+                    value = formula_value
                 value = self._round_market_value(value)
                 if cap_int > 0:
                     value = min(value, cap_int)
