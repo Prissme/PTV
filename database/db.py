@@ -5014,6 +5014,104 @@ class Database:
 
         return active_count, max_slots
 
+    async def bulk_set_active_pets(
+        self,
+        user_id: int,
+        *,
+        activate_ids: Sequence[int],
+        deactivate_ids: Sequence[int],
+    ) -> tuple[int, int]:
+        """Active/désactive plusieurs pets en une seule transaction.
+
+        FIX: remplace les appels séquentiels à activate_user_pet/
+        deactivate_user_pet (une transaction + ~6 requêtes SQL PAR pet)
+        qui rendaient e!equipbest extrêmement lent (jusqu'à des centaines
+        de requêtes DB successives) et pouvaient saturer le pool de
+        connexions pour tout le bot. Ici : quelques requêtes bulk au total.
+        Retourne (nb_actifs_apres, max_slots).
+        """
+
+        await self.ensure_user(user_id)
+        activate_list = [int(pid) for pid in activate_ids if int(pid) > 0]
+        deactivate_list = [int(pid) for pid in deactivate_ids if int(pid) > 0]
+
+        async with self.transaction() as connection:
+            grade_row = await connection.fetchrow(
+                "SELECT grade_level FROM user_grades WHERE user_id = $1",
+                user_id,
+            )
+            grade_level = int(grade_row["grade_level"]) if grade_row else 0
+            extra_row = await connection.fetchrow(
+                "SELECT extra_pet_slots FROM users WHERE user_id = $1",
+                user_id,
+            )
+            extra_slots = int(extra_row.get("extra_pet_slots") or 0) if extra_row else 0
+            max_slots = self._compute_pet_slot_limit(grade_level, extra_slots)
+
+            if not activate_list and not deactivate_list:
+                active_count = int(
+                    await connection.fetchval(
+                        "SELECT COUNT(*) FROM user_pets WHERE user_id = $1 AND is_active",
+                        user_id,
+                    )
+                    or 0
+                )
+                return active_count, max_slots
+
+            if deactivate_list:
+                await connection.execute(
+                    """
+                    UPDATE user_pets
+                    SET is_active = FALSE
+                    WHERE user_id = $1 AND id = ANY($2::bigint[])
+                    """,
+                    user_id,
+                    deactivate_list,
+                )
+
+            if activate_list:
+                # Verrouille les lignes concernées pour éviter les courses
+                # avec une autre commande d'équipement en parallèle.
+                await connection.fetch(
+                    """
+                    SELECT id FROM user_pets
+                    WHERE user_id = $1 AND id = ANY($2::bigint[])
+                    FOR UPDATE
+                    """,
+                    user_id,
+                    activate_list,
+                )
+                await connection.execute(
+                    """
+                    UPDATE user_pets
+                    SET is_active = TRUE, on_market = FALSE
+                    WHERE user_id = $1
+                      AND id = ANY($2::bigint[])
+                      AND on_market = FALSE
+                      AND id NOT IN (SELECT user_pet_id FROM user_daycare WHERE user_id = $1)
+                    """,
+                    user_id,
+                    activate_list,
+                )
+
+            active_count = int(
+                await connection.fetchval(
+                    "SELECT COUNT(*) FROM user_pets WHERE user_id = $1 AND is_active",
+                    user_id,
+                )
+                or 0
+            )
+
+            if active_count > max_slots:
+                raise ActivePetLimitError(active_count, max_slots)
+
+            await connection.execute(
+                "UPDATE users SET pet_last_claim = NOW() WHERE user_id = $1",
+                user_id,
+            )
+
+        return active_count, max_slots
+
     async def swap_active_pets(
         self, user_id: int, pet_out_id: int, pet_in_id: int
     ) -> tuple[asyncpg.Record, asyncpg.Record, int, int]:
