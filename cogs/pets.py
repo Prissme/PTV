@@ -4861,34 +4861,36 @@ class Pets(commands.Cog):
         to_deactivate = [pet_id for pet_id in current_active_ids if pet_id not in desired_ids]
         to_activate = [pet_id for pet_id in desired_ids if pet_id not in current_active_ids]
 
-        removed_names: List[str] = []
-        for user_pet_id in to_deactivate:
-            try:
-                await self.database.deactivate_user_pet(ctx.author.id, user_pet_id)
-            except DatabaseError as exc:
-                await ctx.send(embed=embeds.error_embed(str(exc)))
-                return
-            entry = entry_by_id.get(user_pet_id)
-            if entry:
-                removed_names.append(entry.get("name", "Pet"))
+        # FIX: un seul appel bulk (une transaction) au lieu de N appels
+        # séquentiels activate_user_pet/deactivate_user_pet qui rendaient
+        # equipbest très lent (et pouvaient geler le bot entier).
+        try:
+            await self.database.bulk_set_active_pets(
+                ctx.author.id,
+                activate_ids=to_activate,
+                deactivate_ids=to_deactivate,
+            )
+        except ActivePetLimitError as exc:
+            message = (
+                "❌ Tous tes slots sont déjà utilisés "
+                f"({exc.active}/{exc.limit}). Déséquipe un pet avant de relancer la commande."
+            )
+            await ctx.send(embed=embeds.error_embed(message))
+            return
+        except DatabaseError as exc:
+            await ctx.send(embed=embeds.error_embed(str(exc)))
+            return
 
-        added_names: List[str] = []
-        for user_pet_id in to_activate:
-            try:
-                await self.database.activate_user_pet(ctx.author.id, user_pet_id)
-            except ActivePetLimitError as exc:
-                message = (
-                    "❌ Tous tes slots sont déjà utilisés "
-                    f"({exc.active}/{exc.limit}). Déséquipe un pet avant de relancer la commande."
-                )
-                await ctx.send(embed=embeds.error_embed(message))
-                return
-            except DatabaseError as exc:
-                await ctx.send(embed=embeds.error_embed(str(exc)))
-                return
-            entry = entry_by_id.get(user_pet_id)
-            if entry:
-                added_names.append(entry.get("name", "Pet"))
+        removed_names = [
+            entry_by_id[pet_id].get("name", "Pet")
+            for pet_id in to_deactivate
+            if pet_id in entry_by_id
+        ]
+        added_names = [
+            entry_by_id[pet_id].get("name", "Pet")
+            for pet_id in to_activate
+            if pet_id in entry_by_id
+        ]
 
         updated_rows = await self.database.get_user_pets(ctx.author.id)
         active_rows = [row for row in updated_rows if bool(row.get("is_active"))]
