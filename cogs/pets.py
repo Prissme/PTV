@@ -4913,15 +4913,26 @@ class Pets(commands.Cog):
 
         total_income = sum(int(item.get("income", 0)) for item in active_entries)
         summary_lines: List[str] = []
+
+        # FIX: avec jusqu'à 99 slots, les listes complètes (noms ajoutés/
+        # retirés + détail de chaque pet équipé) peuvent largement dépasser
+        # la limite Discord de 4096 caractères pour une description
+        # d'embed, ce qui faisait planter la commande (HTTPException 400).
+        # On tronque chaque liste et on indique le nombre d'éléments
+        # restants au lieu de tout afficher.
+        def _joined_names(names: List[str], *, limit: int = 20) -> str:
+            shown = names[:limit]
+            joined = ", ".join(pet_emoji(name) or f"**{name}**" for name in shown)
+            remaining = len(names) - len(shown)
+            if remaining > 0:
+                joined += f" *(+{remaining} autre{'s' if remaining != 1 else ''})*"
+            return joined
+
         if added_names or removed_names:
             if added_names:
-                summary_lines.append(
-                    "✅ Activés : " + ", ".join(pet_emoji(name) or f"**{name}**" for name in added_names)
-                )
+                summary_lines.append("✅ Activés : " + _joined_names(added_names))
             if removed_names:
-                summary_lines.append(
-                    "♻️ Retirés : " + ", ".join(pet_emoji(name) or f"**{name}**" for name in removed_names)
-                )
+                summary_lines.append("♻️ Retirés : " + _joined_names(removed_names))
         else:
             summary_lines.append("🔄 Tes meilleurs pets étaient déjà équipés.")
 
@@ -4932,9 +4943,10 @@ class Pets(commands.Cog):
             f"Revenus actifs : **{embeds.format_currency(total_income)}**/h"
         )
 
+        MAX_DETAIL_LINES = 30
         if active_entries:
             detail_lines = []
-            for index, item in enumerate(active_entries, start=1):
+            for index, item in enumerate(active_entries[:MAX_DETAIL_LINES], start=1):
                 data = item.get("data", {})
                 name = str(data.get("name", "Pet"))
                 income = int(item.get("income", 0))
@@ -4955,8 +4967,13 @@ class Pets(commands.Cog):
                 detail_lines.append(line.strip())
             summary_lines.append("")
             summary_lines.extend(detail_lines)
+            remaining = len(active_entries) - len(detail_lines)
+            if remaining > 0:
+                summary_lines.append(f"*… et {remaining} autre{'s' if remaining != 1 else ''} pet{'s' if remaining != 1 else ''} équipé{'s' if remaining != 1 else ''}.*")
 
         description = "\n".join(summary_lines)
+        if len(description) > 4096:
+            description = description[:4093] + "…"
         embed = embeds.success_embed(
             description,
             title="Équipe de pets optimisée",
