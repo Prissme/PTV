@@ -2896,9 +2896,23 @@ class Pets(commands.Cog):
         return embeds.format_currency(amount)
 
     async def _get_active_income(self, user_id: int) -> int:
-        records = await self.database.get_user_pets(user_id)
-        pets = self._sort_pets_for_display(records, market_values=None)
-        return sum(int(pet["income"]) for pet in pets if pet.get("is_active"))
+        # FIX (OOM/lenteur) : on ne charge plus tout l'inventaire du joueur
+        # juste pour sommer le revenu des pets actifs — les pets actifs
+        # sont bornés par le nombre de slots (≤99), donc get_user_active_pets
+        # reste toujours petit, même pour un inventaire de plusieurs
+        # dizaines de milliers de pets. Le revenu de référence des Huges
+        # (best_non_huge_income) reste calculé sur TOUT l'inventaire via
+        # une requête SQL d'agrégation légère (get_best_non_huge_income),
+        # pour ne pas changer la formule existante.
+        active_records = await self.database.get_user_active_pets(user_id)
+        if not active_records:
+            return 0
+        best_non_huge_income = await self.database.get_best_non_huge_income(user_id)
+        total = 0
+        for record in active_records:
+            data = self._convert_record(record, best_non_huge_income=best_non_huge_income)
+            total += int(data.get("base_income_per_hour", 0))
+        return total
 
     async def _ensure_zone_access(
         self, ctx: commands.Context, zone: PetZoneDefinition
@@ -3778,17 +3792,22 @@ class Pets(commands.Cog):
             key: tuple[object, ...] = display.collection_key()
             if display.is_huge:
                 key = (key, display.identifier or id(pet))
+            # FIX: avec get_user_pets_grouped, chaque ligne porte déjà le
+            # nombre réel d'exemplaires (agrégé côté SQL) au lieu d'une
+            # ligne par pet individuel — on part de cette quantité au lieu
+            # de toujours démarrer à 1.
+            row_quantity = max(1, int(pet.get("quantity") or 1))
             entry = grouped.get(key)
             if entry is None:
                 entry = display.to_mutable_mapping()
                 entry["identifier"] = display.identifier
-                entry["quantity"] = 1
+                entry["quantity"] = row_quantity
                 if display.is_huge and display.identifier:
                     entry["identifiers"] = [int(display.identifier)]
                 grouped[key] = entry
                 continue
 
-            entry["quantity"] = int(entry.get("quantity", 1)) + 1
+            entry["quantity"] = int(entry.get("quantity", 1)) + row_quantity
             if display.is_huge and display.identifier:
                 identifiers = entry.setdefault("identifiers", [])
                 if isinstance(identifiers, list):
@@ -4538,7 +4557,7 @@ class Pets(commands.Cog):
             records, market_values = cached
         else:
             records, market_values = await asyncio.gather(
-                self.database.get_user_pets(ctx.author.id),
+                self.database.get_user_pets_grouped(ctx.author.id),
                 self.database.get_pet_market_values(),
             )
             self._pets_cache.set(ctx.author.id, (records, market_values))
@@ -4546,9 +4565,13 @@ class Pets(commands.Cog):
                 logger.debug("Cache pets mis à jour", extra={"user_id": ctx.author.id})
         pets = self._sort_pets_for_display(records, market_values)
         grouped_pets = self._group_inventory_pets(pets)
-        active_income = sum(int(pet["income"]) for pet in pets if pet.get("is_active"))
+        active_income = sum(
+            int(pet["income"]) * max(1, int(pet.get("quantity") or 1))
+            for pet in pets
+            if pet.get("is_active")
+        )
         per_page = PETS_PAGE_SIZE
-        total_count = len(pets)
+        total_count = sum(max(1, int(pet.get("quantity") or 1)) for pet in pets)
         page_count = max(1, math.ceil(len(grouped_pets) / per_page))
         if page_count <= 1:
             embed = embeds.pet_collection_embed(
