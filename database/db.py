@@ -5754,8 +5754,14 @@ class Database:
         rarity_by_pet: Dict[int, str] = {}
         owner_counts: Dict[int, int] = {}
         async with self.transaction() as connection:
+            # FIX: on compte le nombre total d'EXEMPLAIRES du pet en
+            # circulation (COUNT(*)), pas le nombre de joueurs distincts qui
+            # en possèdent au moins un (COUNT(DISTINCT user_id)). Un pet
+            # rare mais accumulé en masse par quelques farmers doit rester
+            # bon marché, pas artificiellement cher juste parce que peu de
+            # joueurs différents en ont.
             owner_rows = await connection.fetch(
-                "SELECT pet_id, COUNT(DISTINCT user_id) AS owners FROM user_pets GROUP BY pet_id"
+                "SELECT pet_id, COUNT(*) AS owners FROM user_pets GROUP BY pet_id"
             )
             owner_counts = {
                 int(row["pet_id"]): int(row.get("owners") or 0) for row in owner_rows
@@ -6044,8 +6050,10 @@ class Database:
             FROM pets AS p
             """
         )
+        # FIX: nombre total d'exemplaires en circulation, pas de possesseurs
+        # distincts (voir _get_trade_history_market_values pour le détail).
         owner_rows = await self.pool.fetch(
-            "SELECT pet_id, COUNT(DISTINCT user_id) AS owners FROM user_pets GROUP BY pet_id"
+            "SELECT pet_id, COUNT(*) AS owners FROM user_pets GROUP BY pet_id"
         )
         owner_counts = {
             int(row["pet_id"]): int(row.get("owners") or 0) for row in owner_rows
