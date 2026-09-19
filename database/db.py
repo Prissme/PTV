@@ -3035,9 +3035,29 @@ class Database:
             END
         """
         return f"""
-            WITH pet_values AS (
+            WITH pet_counts AS (
+                -- FIX (timeout RAP) : sans la fuse pour consommer les
+                -- doublons, user_pets peut contenir des centaines de
+                -- milliers de lignes identiques par joueur. On agrège
+                -- D'ABORD par (user, pet, variante) avant de joindre les
+                -- valeurs marché, au lieu de faire 5 LEFT JOIN sur CHAQUE
+                -- ligne individuelle — le volume traité par les JOIN
+                -- devient alors indépendant du nombre de doublons.
                 SELECT
                     up.user_id,
+                    up.pet_id,
+                    up.is_gold,
+                    up.is_rainbow,
+                    up.is_galaxy,
+                    up.is_shiny,
+                    COUNT(*) AS qty
+                FROM user_pets AS up
+                GROUP BY up.user_id, up.pet_id, up.is_gold, up.is_rainbow, up.is_galaxy, up.is_shiny
+            ),
+            pet_values AS (
+                SELECT
+                    up.user_id,
+                    up.qty,
                     COALESCE(
                         mv_primary.value_in_gems,
                         mv_shiny_base.value_in_gems,
@@ -3045,8 +3065,8 @@ class Database:
                         mv_normal_shiny.value_in_gems,
                         mv_normal.value_in_gems,
                         0
-                    ) AS market_value
-                FROM user_pets AS up
+                    ) * up.qty AS market_value
+                FROM pet_counts AS up
                 LEFT JOIN pet_market_values AS mv_primary
                     ON mv_primary.pet_id = up.pet_id
                     AND mv_primary.variant_code = (
@@ -3094,6 +3114,11 @@ class Database:
 
     async def _compute_pet_rap_totals_map(self) -> defaultdict[int, int]:
         market_values = await self.get_pet_market_values()
+        # FIX (lenteur) : on agrège d'abord par (user, pet, variante) avec
+        # COUNT(*) au lieu de streamer une ligne par pet individuel — sans
+        # la fuse pour consommer les doublons, user_pets peut compter des
+        # millions de lignes tous joueurs confondus, ce qui rendait cette
+        # boucle Python extrêmement lente.
         query = """
             SELECT
                 up.user_id,
@@ -3103,12 +3128,15 @@ class Database:
                 up.is_rainbow,
                 up.is_galaxy,
                 up.is_shiny,
-                up.huge_level,
                 p.base_income_per_hour,
                 p.name,
-                p.rarity
+                p.rarity,
+                COUNT(*) AS qty
             FROM user_pets AS up
             JOIN pets AS p ON p.pet_id = up.pet_id
+            GROUP BY
+                up.user_id, up.pet_id, up.is_gold, up.is_huge, up.is_rainbow,
+                up.is_galaxy, up.is_shiny, p.base_income_per_hour, p.name, p.rarity
         """
 
         rap_totals: defaultdict[int, int] = defaultdict(int)
@@ -3117,6 +3145,7 @@ class Database:
                 async for row in connection.cursor(query):
                     user_id = int(row["user_id"])
                     pet_id = int(row["pet_id"])
+                    qty = int(row.get("qty") or 1)
                     base_income = int(row["base_income_per_hour"])
                     name = str(row.get("name", ""))
                     rarity = str(row.get("rarity", ""))
@@ -3141,7 +3170,7 @@ class Database:
                             is_galaxy=bool(row.get("is_galaxy")),
                             is_shiny=bool(row.get("is_shiny")),
                         )
-                    rap_totals[user_id] += max(0, scale_pet_value(value))
+                    rap_totals[user_id] += max(0, scale_pet_value(value)) * qty
 
         return rap_totals
 
@@ -4112,6 +4141,126 @@ class Database:
             raise DatabaseError("Impossible de récupérer le pet galaxy")
 
         return list(new_records), required
+
+    async def get_user_pets_grouped(self, user_id: int) -> Sequence[asyncpg.Record]:
+        """Comme get_user_pets, mais avec les doublons agrégés côté SQL.
+
+        FIX (OOM sur e!pets) : sans la fuse pour consommer les doublons,
+        un joueur actif peut accumuler des dizaines/centaines de milliers
+        de pets identiques. get_user_pets() + le regroupement en Python
+        (_group_inventory_pets) chargeait CHAQUE ligne individuellement en
+        mémoire (Record -> dict -> PetDisplay pour chacune) avant de les
+        regrouper, ce qui a fini par faire planter le bot entier par
+        manque de mémoire (Application exited with code 9 / OOM).
+        Ici, Postgres fait l'agrégation : on ne rapatrie qu'une ligne par
+        combinaison (pet, variante, actif/inactif) pour les pets normaux,
+        avec une colonne `quantity`. Les Huges/Titanics restent individuels
+        (bien moins nombreux, et chacun a un niveau/XP propre à afficher).
+        """
+
+        non_huge_rows = await self.pool.fetch(
+            """
+            SELECT
+                MIN(up.id) AS id,
+                NULL::text AS nickname,
+                up.is_active,
+                FALSE AS is_huge,
+                up.is_gold,
+                up.is_rainbow,
+                up.is_galaxy,
+                up.is_shiny,
+                bool_or(up.on_market) AS on_market,
+                NULL::int AS huge_level,
+                NULL::int AS huge_xp,
+                MIN(up.acquired_at) AS acquired_at,
+                p.pet_id,
+                p.name,
+                p.rarity,
+                p.image_url,
+                p.base_income_per_hour,
+                COUNT(*) AS quantity
+            FROM user_pets AS up
+            JOIN pets AS p ON p.pet_id = up.pet_id
+            WHERE up.user_id = $1 AND NOT up.is_huge
+            GROUP BY
+                up.is_active, up.is_gold, up.is_rainbow, up.is_galaxy,
+                up.is_shiny, p.pet_id, p.name, p.rarity, p.image_url,
+                p.base_income_per_hour
+            """,
+            user_id,
+        )
+        huge_rows = await self.pool.fetch(
+            """
+            SELECT
+                up.id,
+                up.nickname,
+                up.is_active,
+                up.is_huge,
+                up.is_gold,
+                up.is_rainbow,
+                up.is_galaxy,
+                up.is_shiny,
+                up.on_market,
+                up.huge_level,
+                up.huge_xp,
+                up.acquired_at,
+                p.pet_id,
+                p.name,
+                p.rarity,
+                p.image_url,
+                p.base_income_per_hour,
+                1 AS quantity
+            FROM user_pets AS up
+            JOIN pets AS p ON p.pet_id = up.pet_id
+            WHERE up.user_id = $1 AND up.is_huge
+            """,
+            user_id,
+        )
+        combined = list(non_huge_rows) + list(huge_rows)
+        _fallback_dt = datetime.min.replace(tzinfo=timezone.utc)
+        combined.sort(
+            key=lambda row: (
+                -int(row.get("base_income_per_hour") or 0),
+                row.get("acquired_at") or _fallback_dt,
+            )
+        )
+        return combined
+
+    async def get_user_active_pets(self, user_id: int) -> Sequence[asyncpg.Record]:
+        """Comme get_user_pets, mais uniquement les pets actuellement actifs.
+
+        FIX : évite de charger tout l'inventaire (potentiellement énorme)
+        juste pour calculer le revenu actif — les pets actifs sont bornés
+        par le nombre de slots (≤99), donc cette requête reste toujours
+        petite quelle que soit la taille de la collection du joueur.
+        """
+
+        return await self.pool.fetch(
+            """
+            SELECT
+                up.id,
+                up.nickname,
+                up.is_active,
+                up.is_huge,
+                up.is_gold,
+                up.is_rainbow,
+                up.is_galaxy,
+                up.is_shiny,
+                up.on_market,
+                up.huge_level,
+                up.huge_xp,
+                up.acquired_at,
+                p.pet_id,
+                p.name,
+                p.rarity,
+                p.image_url,
+                p.base_income_per_hour
+            FROM user_pets AS up
+            JOIN pets AS p ON p.pet_id = up.pet_id
+            WHERE up.user_id = $1 AND up.is_active
+            """,
+            user_id,
+        )
 
     async def get_user_pets(self, user_id: int) -> Sequence[asyncpg.Record]:
         return await self.pool.fetch(
