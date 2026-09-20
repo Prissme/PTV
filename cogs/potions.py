@@ -295,112 +295,20 @@ class Potions(commands.Cog):
         slug: str | None = None,
         quantity: int = 1,
     ) -> None:
-        """Permet de revendre une potion contre des PB."""
+        """FIX : la revente directe de potions contre des PB est retirée.
 
-        if not slug:
-            lines = [
-                "Utilise `e!sellpotion <slug> [quantité]` pour revendre tes potions.",
-                "Exemple : `e!sellpotion fortune_i 3`.",
-                "Potions disponibles :",
-            ]
-            for definition in POTION_DEFINITIONS:
-                value = POTION_SELL_VALUES.get(definition.slug)
-                if value:
-                    lines.append(
-                        f"• `{definition.slug}` — {definition.name} → {embeds.format_currency(value)}"
-                    )
-            await ctx.send(
-                embed=embeds.info_embed("\n".join(lines), title="Vente de potions")
+        Les potions passent désormais uniquement par la Plaza (`e!plaza`),
+        en gemmes, et comptent dans le RAP. Cette commande ne fait plus
+        que rediriger le joueur vers la Plaza.
+        """
+
+        await ctx.send(
+            embed=embeds.info_embed(
+                "La revente directe de potions n'existe plus. Utilise `e!plaza` pour "
+                "mettre tes potions en vente contre des gemmes auprès des autres joueurs.",
+                title="Vente de potions déplacée",
             )
-            return
-
-        try:
-            quantity = int(quantity)
-        except (TypeError, ValueError):
-            quantity = 0
-
-        if quantity <= 0:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "La quantité à vendre doit être un nombre positif.",
-                )
-            )
-            return
-
-        definition = self._resolve_potion(slug)
-        if definition is None:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Potion inconnue. Vérifie le slug avec `e!potions`.",
-                )
-            )
-            return
-
-        sell_value = POTION_SELL_VALUES.get(definition.slug)
-        if not sell_value:
-            await ctx.send(
-                embed=embeds.error_embed(
-                    "Cette potion ne peut pas être revendue pour le moment.",
-                )
-            )
-            return
-
-        total_value = sell_value * quantity
-
-        await self.database.ensure_user(ctx.author.id)
-        async with self.database.transaction() as connection:
-            removed = await self.database.consume_user_potion(
-                ctx.author.id,
-                definition.slug,
-                quantity=quantity,
-                connection=connection,
-            )
-            if not removed:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Tu n'as pas assez d'exemplaires de cette potion.",
-                    )
-                )
-                return
-
-            row = await connection.fetchrow(
-                "SELECT balance FROM users WHERE user_id = $1 FOR UPDATE",
-                ctx.author.id,
-            )
-            if row is None:
-                await ctx.send(
-                    embed=embeds.error_embed(
-                        "Impossible d'accéder à ton solde. Réessaie plus tard.",
-                    )
-                )
-                return
-
-            before_balance = int(row.get("balance") or 0)
-            after_balance = before_balance + total_value
-            await connection.execute(
-                "UPDATE users SET balance = $2 WHERE user_id = $1",
-                ctx.author.id,
-                after_balance,
-            )
-            await self.database.record_transaction(
-                user_id=ctx.author.id,
-                transaction_type="potion_sale",
-                amount=total_value,
-                balance_before=before_balance,
-                balance_after=after_balance,
-                description=f"Vente {definition.name} x{quantity}",
-                connection=connection,
-            )
-
-        embed = embeds.success_embed(
-            (
-                f"Tu as vendu **{quantity}** potion{'s' if quantity > 1 else ''}"
-                f" {definition.name} pour {embeds.format_currency(total_value)}.\n"
-                f"Nouveau solde : {embeds.format_currency(after_balance)}"
-            ),
-            title="Potion revendue",
         )
-        await ctx.send(embed=embed)
 
 
 class PotionSelect(discord.ui.Select):
