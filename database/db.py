@@ -620,6 +620,35 @@ class Database:
             await connection.fetchval("SELECT pg_backend_pid()"),
         )
 
+        # FIX (boucle de crash au démarrage, suite) : pg_terminate_backend
+        # ci-dessus ne tue que LA connexion qui tenait le verrou advisory.
+        # Si l'ancienne instance n'est pas complètement arrêtée (recouvrement
+        # de déploiement Koyeb, process encore vivant quelques secondes...),
+        # le RESTE de son pool de connexions peut continuer à tourner et
+        # tenir des verrous de table (ex. transactions en cours sur
+        # users/user_grades), ce qui bloque ensuite indéfiniment les
+        # ALTER TABLE/CREATE TABLE de l'init du schéma. On tue ici TOUTES
+        # les autres connexions de ce même rôle applicatif sur cette base
+        # (sauf la nôtre) pour repartir sur une base saine. Sans danger pour
+        # notre propre pool : asyncpg reconnecte silencieusement toute
+        # connexion coupée au prochain usage.
+        with suppress(Exception):
+            terminated = await connection.fetch(
+                """
+                SELECT pg_terminate_backend(pid) AS ok
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                  AND usename = current_user
+                  AND pid <> pg_backend_pid()
+                """
+            )
+            if terminated:
+                logger.info(
+                    "%d connexion(s) résiduelle(s) terminée(s) avant l'init du schéma",
+                    len(terminated),
+                )
+                await asyncio.sleep(1)
+
     async def _release_instance_lock(self) -> None:
         """Libère le verrou d'instance de manière robuste."""
         if self._lock_connection is None:
