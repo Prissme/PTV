@@ -795,6 +795,22 @@ POTION_SELL_VALUES: Final[Dict[str, int]] = {
     "slots_luck": 2_000,
 }
 
+# Valeur de référence en gemmes de chaque potion, utilisée pour le calcul
+# du RAP (les potions ne se revendent plus directement contre des PB : elles
+# passent par la Plaza, en gemmes, et comptent désormais dans le RAP).
+POTION_RAP_VALUES: Final[Dict[str, int]] = {
+    "luck_i": 25,
+    "luck_ii": 55,
+    "luck_iii": 110,
+    "fortune_i": 40,
+    "fortune_ii": 90,
+    "fortune_iii": 160,
+    "fortune_iv": 230,
+    "fortune_v": 320,
+    "mastery_xp": 150,
+    "slots_luck": 80,
+}
+
 
 # ---------------------------------------------------------------------------
 # Animaux (Pets)
