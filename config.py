@@ -588,7 +588,7 @@ def scale_pet_value(raw_value: float | int, *, minimum: int = 0) -> int:
     return max(int(minimum), scaled)
 
 
-RAP_GOAL_UNIT: Final[int] = scale_pet_value(50_000, minimum=1)
+RAP_GOAL_UNIT: Final[int] = scale_pet_value(30_000, minimum=1)
 CASINO_LOSS_GOAL_UNIT: Final[int] = 5_000
 
 _GRADE_BLUEPRINTS: Tuple[tuple[str, int, int, int, int, int], ...] = (
