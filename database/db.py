@@ -19,6 +19,7 @@ import asyncpg
 
 from config import (
     BASE_PET_SLOTS,
+    POTION_RAP_VALUES,
     PET_SLOT_MAX_CAPACITY,
     CLAN_BASE_CAPACITY,
     CLAN_MAX_MEMBERS,
@@ -471,10 +472,24 @@ class Database:
             logger.exception("Impossible de créer le pool PostgreSQL")
             raise DatabaseError("Connexion base de données échouée") from exc
 
-        logger.info("Connexion PostgreSQL établie — initialisation du schéma")
-        await self._initialise_schema()
+        logger.info("Connexion PostgreSQL établie")
+        # FIX (boucle de crash au démarrage) : on acquiert le verrou
+        # d'instance — et on tue l'éventuel backend précédent encore actif
+        # via pg_terminate_backend — AVANT d'initialiser le schéma. Avant ce
+        # fix, l'ordre était inversé : si une instance précédente restait
+        # bloquée (ex. tuée par OOM en pleine transaction) en tenant un
+        # verrou sur une table, les ALTER TABLE/CREATE INDEX du schéma de
+        # la nouvelle instance restaient bloqués indéfiniment jusqu'au
+        # TimeoutError d'asyncpg (30s), sans jamais atteindre le code qui
+        # aurait justement libéré ce verrou — boucle de crash au boot.
         try:
             await self._acquire_instance_lock()
+        except Exception:
+            await self.close()
+            raise
+        logger.info("Verrou d'instance acquis — initialisation du schéma")
+        try:
+            await self._initialise_schema()
         except Exception:
             await self.close()
             raise
@@ -3034,6 +3049,11 @@ class Database:
                 ELSE 'normal'
             END
         """
+        potion_values_sql = ", ".join(
+            f"('{slug}', {int(value)})"
+            for slug, value in POTION_RAP_VALUES.items()
+            if int(value) > 0
+        ) or "('__none__', 0)"
         return f"""
             WITH pet_counts AS (
                 -- FIX (timeout RAP) : sans la fuse pour consommer les
@@ -3109,6 +3129,29 @@ class Database:
                         )
                     END AS rap_value
                 FROM pet_values
+
+                UNION ALL
+
+                -- FIX : les potions comptent désormais dans le RAP (elles
+                -- ne se revendent plus contre des PB, seulement via la
+                -- Plaza en gemmes). Valeurs de référence figées ici pour
+                -- que le classement RAP reste cohérent avec get_user_pet_rap.
+                SELECT
+                    up.user_id,
+                    CASE
+                        WHEN {PET_VALUE_SCALE} <= 1 THEN up.quantity * pv.unit_value
+                        ELSE GREATEST(
+                            1,
+                            CAST(
+                                FLOOR((up.quantity * pv.unit_value)::numeric / {PET_VALUE_SCALE})
+                                AS BIGINT
+                            )
+                        )
+                    END AS rap_value
+                FROM user_potions AS up
+                JOIN (VALUES {potion_values_sql}) AS pv(potion_slug, unit_value)
+                    ON pv.potion_slug = up.potion_slug
+                WHERE up.quantity > 0
             )
         """
 
@@ -3171,6 +3214,25 @@ class Database:
                             is_shiny=bool(row.get("is_shiny")),
                         )
                     rap_totals[user_id] += max(0, scale_pet_value(value)) * qty
+
+        # FIX : les potions comptent désormais dans le RAP, ici aussi pour
+        # que le classement RAP corresponde au même total que celui utilisé
+        # pour la progression de grade (get_user_pet_rap).
+        potion_query = """
+            SELECT user_id, potion_slug, quantity
+            FROM user_potions
+            WHERE quantity > 0
+        """
+        async with self.pool.acquire() as connection:
+            async with connection.transaction():
+                async for row in connection.cursor(potion_query):
+                    user_id = int(row["user_id"])
+                    potion_slug = str(row.get("potion_slug", ""))
+                    quantity = int(row.get("quantity") or 0)
+                    unit_value = POTION_RAP_VALUES.get(potion_slug, 0)
+                    if unit_value <= 0 or quantity <= 0:
+                        continue
+                    rap_totals[user_id] += max(0, scale_pet_value(unit_value)) * quantity
 
         return rap_totals
 
@@ -3317,6 +3379,21 @@ class Database:
                     is_shiny=bool(row.get("is_shiny")),
                 )
             rap_total += max(0, scale_pet_value(value))
+
+        # FIX : les potions comptent désormais dans le RAP (elles ne se
+        # revendent plus contre des PB, seulement via la Plaza en gemmes).
+        potion_query = "SELECT potion_slug, quantity FROM user_potions WHERE user_id = $1"
+        potion_rows = await fetcher(potion_query, user_id)
+        for potion_row in potion_rows:
+            potion_slug = str(potion_row.get("potion_slug", ""))
+            potion_quantity = int(potion_row.get("quantity") or 0)
+            if potion_quantity <= 0:
+                continue
+            unit_value = POTION_RAP_VALUES.get(potion_slug, 0)
+            if unit_value <= 0:
+                continue
+            rap_total += max(0, scale_pet_value(unit_value)) * potion_quantity
+
         return rap_total
 
     async def get_user_best_pet_value(
