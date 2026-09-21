@@ -12,7 +12,7 @@ from config import (
     Emojis,
     POTION_DEFINITION_MAP,
     POTION_DEFINITIONS,
-    POTION_SELL_VALUES,
+    POTION_RAP_VALUES,
     PotionDefinition,
 )
 from utils import embeds
@@ -114,9 +114,9 @@ class Potions(commands.Cog):
             else:
                 display = definition.name
                 description = definition.description
-            sell_value = POTION_SELL_VALUES.get(slug)
+            rap_value = POTION_RAP_VALUES.get(slug)
             price_hint = (
-                f" — revendable {embeds.format_currency(sell_value)}" if sell_value else ""
+                f" — valeur RAP : {rap_value} 💎 (vente via `e!plaza`)" if rap_value else ""
             )
             inventory_lines.append(
                 f"• {display} (x{quantity}){price_hint}\n  {description}"
