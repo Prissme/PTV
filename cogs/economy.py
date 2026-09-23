@@ -1199,12 +1199,20 @@ class MillionaireRaceView(discord.ui.View):
     async def continue_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
+        # FIX : le traitement (attempt_stage -> DB) peut dépasser les 3
+        # secondes accordées pour une première réponse d'interaction,
+        # surtout sous charge DB — ce qui faisait planter le bouton avec
+        # "Unknown interaction" (404). On defer immédiatement (fenêtre de
+        # 15 min) puis on édite via le followup au lieu de response.edit_message.
+        with contextlib.suppress(discord.HTTPException):
+            await interaction.response.defer()
         await self.session.attempt_stage()
         if self.session.finished:
             self.disable_all_items()
         self._sync_buttons()
         embed = self.session.build_embed()
-        await interaction.response.edit_message(embed=embed, view=self)
+        with contextlib.suppress(discord.HTTPException):
+            await interaction.edit_original_response(embed=embed, view=self)
         if self.session.finished:
             self._release()
             self.stop()
@@ -1213,6 +1221,8 @@ class MillionaireRaceView(discord.ui.View):
     async def stop_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
+        with contextlib.suppress(discord.HTTPException):
+            await interaction.response.defer()
         self.session.finished = True
         self.session.failed = False
         kept = (
@@ -1229,7 +1239,8 @@ class MillionaireRaceView(discord.ui.View):
         await self.session._finalize_reward()
         self.disable_all_items()
         embed = self.session.build_embed()
-        await interaction.response.edit_message(embed=embed, view=self)
+        with contextlib.suppress(discord.HTTPException):
+            await interaction.edit_original_response(embed=embed, view=self)
         self._release()
         self.stop()
 
