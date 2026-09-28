@@ -4332,6 +4332,83 @@ class Database:
         )
         return combined
 
+    async def get_equip_candidates(
+        self, user_id: int, *, limit: int
+    ) -> Sequence[asyncpg.Record]:
+        """Candidats à l'équipement pour e!equipbest, sans charger tout l'inventaire.
+
+        FIX (equipbest silencieux/très lent) : l'ancienne version rapatriait
+        CHAQUE pet du joueur (get_user_pets, potentiellement des centaines de
+        milliers de lignes) puis une deuxième fois après l'équipement. Ici :
+        - pets normaux : une ligne par (pet, variante) avec au plus `limit`
+          ids (les pets déjà actifs en premier pour éviter des swaps inutiles) ;
+        - Huges/Titanics : une ligne chacun (ils sont peu nombreux).
+        Les pets sur le marché ou en garderie sont exclus.
+        """
+
+        limit = max(1, int(limit))
+        return await self.pool.fetch(
+            """
+            SELECT
+                p.pet_id,
+                p.name,
+                p.rarity,
+                p.image_url,
+                p.base_income_per_hour,
+                FALSE AS is_huge,
+                up.is_gold,
+                up.is_rainbow,
+                up.is_galaxy,
+                up.is_shiny,
+                NULL::int AS huge_level,
+                NULL::int AS huge_xp,
+                NULL::text AS nickname,
+                MIN(up.acquired_at) AS acquired_at,
+                (array_agg(up.id ORDER BY up.is_active DESC, up.acquired_at, up.id))[1:$2] AS ids
+            FROM user_pets AS up
+            JOIN pets AS p ON p.pet_id = up.pet_id
+            WHERE up.user_id = $1
+              AND NOT up.is_huge
+              AND NOT up.on_market
+              AND NOT EXISTS (
+                  SELECT 1 FROM user_daycare AS d
+                  WHERE d.user_id = up.user_id AND d.user_pet_id = up.id
+              )
+            GROUP BY p.pet_id, p.name, p.rarity, p.image_url, p.base_income_per_hour,
+                     up.is_gold, up.is_rainbow, up.is_galaxy, up.is_shiny
+
+            UNION ALL
+
+            SELECT
+                p.pet_id,
+                p.name,
+                p.rarity,
+                p.image_url,
+                p.base_income_per_hour,
+                TRUE AS is_huge,
+                up.is_gold,
+                up.is_rainbow,
+                up.is_galaxy,
+                up.is_shiny,
+                up.huge_level,
+                up.huge_xp,
+                up.nickname,
+                up.acquired_at,
+                ARRAY[up.id] AS ids
+            FROM user_pets AS up
+            JOIN pets AS p ON p.pet_id = up.pet_id
+            WHERE up.user_id = $1
+              AND up.is_huge
+              AND NOT up.on_market
+              AND NOT EXISTS (
+                  SELECT 1 FROM user_daycare AS d
+                  WHERE d.user_id = up.user_id AND d.user_pet_id = up.id
+              )
+            """,
+            user_id,
+            limit,
+        )
+
     async def get_user_active_pets(self, user_id: int) -> Sequence[asyncpg.Record]:
         """Comme get_user_pets, mais uniquement les pets actuellement actifs.
 
