@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import heapq
+import time
 from collections import OrderedDict
 import contextlib
 import logging
@@ -4775,31 +4776,12 @@ class Pets(commands.Cog):
                 await event_cog._run_autoequip_event(ctx)
                 return
 
+        # FIX (equipbest silencieux) : accusé de réception immédiat (indicateur
+        # "écrit…") pour que le joueur voie que la commande tourne.
+        await self._ack_heavy_command(ctx)
+        _equip_started = time.monotonic()
+        logger.info("equipbest lancé par %s", ctx.author.id)
         await self.database.ensure_user(ctx.author.id)
-        rows = await self.database.get_user_pets(ctx.author.id)
-        if not rows:
-            await ctx.send(
-                embed=embeds.warning_embed(
-                    "Tu n'as pas encore de pet à équiper. Ouvre un œuf avec `e!openbox`."
-                )
-            )
-            return
-
-        daycare_pets = await self.database.get_daycare_pets(ctx.author.id)
-        daycare_ids = {int(pet.get("user_pet_id") or 0) for pet in daycare_pets}
-        available_rows = [
-            row
-            for row in rows
-            if not bool(row.get("on_market"))
-            and int(row.get("id") or 0) not in daycare_ids
-        ]
-        if not available_rows:
-            await ctx.send(
-                embed=embeds.warning_embed(
-                    "Tous tes pets disponibles sont indisponibles (stand ou garderie). Retire-en un pour utiliser cette commande."
-                )
-            )
-            return
 
         max_slots = await self.database.get_pet_slot_limit(ctx.author.id)
         if max_slots <= 0:
@@ -4810,23 +4792,32 @@ class Pets(commands.Cog):
             )
             return
 
+        # FIX : on ne charge plus TOUT l'inventaire (des centaines de milliers
+        # de lignes possibles) — la requête SQL ne renvoie que les candidats
+        # utiles : une ligne par (pet, variante) avec au plus `max_slots` ids,
+        # plus les Huges/Titanics. Pets sur le marché / en garderie exclus.
+        candidate_rows = await self.database.get_equip_candidates(
+            ctx.author.id, limit=max_slots
+        )
+        if not candidate_rows:
+            await ctx.send(
+                embed=embeds.warning_embed(
+                    "Aucun pet disponible à équiper (aucun pet, ou tous sont au stand/en garderie). "
+                    "Ouvre un œuf avec `e!openbox`."
+                )
+            )
+            return
+
         best_non_huge_income = await self.database.get_best_non_huge_income(ctx.author.id)
         entry_by_id: Dict[int, Dict[str, Any]] = {}
-        scored_entries: List[Dict[str, Any]] = []
-        # FIX: avec un inventaire de plusieurs milliers/dizaines de milliers
-        # de pets (aggravé par la suppression de la fuse qui consommait les
-        # doublons), cette boucle 100% synchrone pouvait tourner plusieurs
-        # secondes d'affilée et geler TOUT le bot (event loop bloqué, aucun
-        # autre utilisateur ne pouvait interagir avec le bot pendant ce temps).
-        # On rend la main à la boucle d'événements régulièrement pour que les
-        # autres commandes continuent de répondre pendant le calcul.
-        for index, row in enumerate(available_rows):
-            if index % 500 == 0 and index > 0:
-                await asyncio.sleep(0)
-            user_pet_id = int(row.get("id") or 0)
-            if user_pet_id <= 0:
+        group_entries: List[Dict[str, Any]] = []
+        for row in candidate_rows:
+            ids = [int(pid) for pid in (row.get("ids") or []) if int(pid) > 0]
+            if not ids:
                 continue
-            data = self._convert_record(row, best_non_huge_income=best_non_huge_income)
+            record = dict(row)
+            record["id"] = ids[0]
+            data = self._convert_record(record, best_non_huge_income=best_non_huge_income)
             base_income = int(data.get("base_income_per_hour", 0))
             if bool(data.get("is_huge")):
                 reference_income = int(data.get("_reference_income") or 0)
@@ -4850,26 +4841,21 @@ class Pets(commands.Cog):
             else:
                 income = scale_pet_value(base_income)
             rarity = str(data.get("rarity", ""))
-            rarity_rank = PET_RARITY_ORDER.get(rarity, -1)
             acquired_at = row.get("acquired_at")
-            if isinstance(acquired_at, datetime):
-                acquired_sort = acquired_at.timestamp()
-            else:
-                acquired_sort = float("inf")
-            name = str(data.get("name", "Pet"))
-            entry = {
-                "id": user_pet_id,
-                "record": row,
-                "data": data,
-                "income": income,
-                "rarity_rank": rarity_rank,
-                "acquired_sort": acquired_sort,
-                "name": name,
-            }
-            entry_by_id[user_pet_id] = entry
-            scored_entries.append(entry)
+            acquired_sort = (
+                acquired_at.timestamp() if isinstance(acquired_at, datetime) else float("inf")
+            )
+            group_entries.append(
+                {
+                    "ids": ids,
+                    "income": income,
+                    "rarity_rank": PET_RARITY_ORDER.get(rarity, -1),
+                    "acquired_sort": acquired_sort,
+                    "name": str(data.get("name", "Pet")),
+                }
+            )
 
-        if not scored_entries:
+        if not group_entries:
             await ctx.send(
                 embed=embeds.warning_embed(
                     "Aucun pet disponible n'a pu être évalué. Vérifie que tes pets ne sont pas verrouillés sur le marché."
@@ -4877,19 +4863,28 @@ class Pets(commands.Cog):
             )
             return
 
-        def _sort_key(item: Dict[str, Any]) -> tuple[int, int, float, str]:
-            return (
-                -int(item.get("income", 0)),
-                -int(item.get("rarity_rank", -1)),
-                float(item.get("acquired_sort", float("inf"))),
-                str(item.get("name", "")),
+        group_entries.sort(
+            key=lambda item: (
+                -int(item["income"]),
+                -int(item["rarity_rank"]),
+                float(item["acquired_sort"]),
+                str(item["name"]),
             )
+        )
 
-        # FIX: heapq.nsmallest est O(n log k) au lieu de O(n log n) pour un
-        # tri complet — énorme gain quand max_slots (≤99) est petit devant
-        # un inventaire qui peut compter des dizaines de milliers de pets.
-        desired_entries = heapq.nsmallest(max_slots, scored_entries, key=_sort_key)
-        desired_ids = {int(entry["id"]) for entry in desired_entries if int(entry["id"]) > 0}
+        # Sélection gloutonne : les groupes sont triés du meilleur au moins bon,
+        # on remplit les slots avec les ids de chaque groupe (les pets déjà
+        # actifs sont en tête de liste, ce qui évite des swaps inutiles).
+        desired_list: List[int] = []
+        for entry in group_entries:
+            for pid in entry["ids"]:
+                if len(desired_list) >= max_slots:
+                    break
+                desired_list.append(pid)
+                entry_by_id[pid] = entry
+            if len(desired_list) >= max_slots:
+                break
+        desired_ids = set(desired_list)
 
         if not desired_ids:
             await ctx.send(
@@ -4899,9 +4894,13 @@ class Pets(commands.Cog):
             )
             return
 
-        current_active_ids = {int(row.get("id") or 0) for row in rows if bool(row.get("is_active"))}
+        active_records = await self.database.get_user_active_pets(ctx.author.id)
+        active_name_by_id = {
+            int(row.get("id") or 0): str(row.get("name") or "Pet") for row in active_records
+        }
+        current_active_ids = {pid for pid in active_name_by_id if pid > 0}
         to_deactivate = [pet_id for pet_id in current_active_ids if pet_id not in desired_ids]
-        to_activate = [pet_id for pet_id in desired_ids if pet_id not in current_active_ids]
+        to_activate = [pet_id for pet_id in desired_list if pet_id not in current_active_ids]
 
         # FIX: un seul appel bulk (une transaction) au lieu de N appels
         # séquentiels activate_user_pet/deactivate_user_pet qui rendaient
@@ -4924,18 +4923,18 @@ class Pets(commands.Cog):
             return
 
         removed_names = [
-            entry_by_id[pet_id].get("name", "Pet")
+            active_name_by_id[pet_id]
             for pet_id in to_deactivate
-            if pet_id in entry_by_id
+            if pet_id in active_name_by_id
         ]
         added_names = [
-            entry_by_id[pet_id].get("name", "Pet")
+            str(entry_by_id[pet_id].get("name", "Pet"))
             for pet_id in to_activate
             if pet_id in entry_by_id
         ]
 
-        updated_rows = await self.database.get_user_pets(ctx.author.id)
-        active_rows = [row for row in updated_rows if bool(row.get("is_active"))]
+        # FIX : seulement les pets actifs (≤ slots) au lieu de tout l'inventaire.
+        active_rows = list(await self.database.get_user_active_pets(ctx.author.id))
         pets_data = await self._prepare_pet_data(ctx.author.id, active_rows)
 
         active_entries: List[Dict[str, Any]] = []
@@ -5033,6 +5032,13 @@ class Pets(commands.Cog):
             icon_url=ctx.author.display_avatar.url,
         )
         await ctx.send(embed=embed)
+        logger.info(
+            "equipbest terminé pour %s en %.2fs (%d activés, %d retirés)",
+            ctx.author.id,
+            time.monotonic() - _equip_started,
+            len(added_names),
+            len(removed_names),
+        )
 
     def _fetch_gemshop_role_counts(
         self, guild: discord.Guild | None = None
