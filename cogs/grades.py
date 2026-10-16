@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from typing import Mapping, Optional
 from datetime import datetime, timedelta, timezone
 
@@ -45,6 +46,9 @@ class GradeSystem(commands.Cog):
         self.bot = bot
         self.database = bot.database
         self._profile_cache = TTLCache[dict[str, object]](CACHE_TTL_PROFILE)
+        # Cache court du RAP pour la vérification de passage de grade (évite de relire tout l'inventaire à chaque action)
+        self._rap_check_cache: dict[int, tuple[float, int]] = {}
+        self._RAP_CHECK_TTL = 60.0
 
     class RebirthConfirmView(discord.ui.View):
         def __init__(self, author_id: int) -> None:
@@ -240,13 +244,13 @@ class GradeSystem(commands.Cog):
             logger.exception("Impossible de mettre à jour les quêtes pour %s", member.id)
             return
 
-        try:
-            rap_total = await self.database.get_user_pet_rap(member.id)
-        except Exception:
-            logger.exception("Impossible de récupérer le RAP pour %s", member.id)
-            rap_total = 0
+        # OPTIMISATION : le RAP relit tout l'inventaire du joueur (très coûteux).
+        # On ne le calcule que si les autres objectifs du grade sont déjà atteints.
+        if not self._are_non_rap_goals_met(progress_row, definition):
+            return
 
-        if not self._is_grade_ready(progress_row, definition, rap_total=rap_total):
+        rap_total = await self._get_rap_for_grade_check(member.id)
+        if rap_total < definition.rap_goal:
             return
 
         try:
@@ -257,7 +261,7 @@ class GradeSystem(commands.Cog):
                 casino_loss_goal=definition.casino_loss_goal,
                 potion_goal=definition.potion_goal,
                 rap_goal=definition.rap_goal,
-                current_rap=rap_total,
+                current_rap=None,  # recalcul frais dans la transaction (rare : seulement au passage de grade)
                 max_grade=self.total_grades,
             )
         except Exception:
@@ -272,6 +276,36 @@ class GradeSystem(commands.Cog):
                 new_grade_level=new_grade_level,
                 channel=channel,
             )
+
+    @staticmethod
+    def _are_non_rap_goals_met(
+        row: Mapping[str, object],
+        definition: GradeDefinition,
+    ) -> bool:
+        """Vérifie les objectifs peu coûteux (hors RAP)."""
+        return (
+            int(row["mastermind_progress"]) >= definition.mastermind_goal
+            and int(row["egg_progress"]) >= definition.egg_goal
+            and int(row["sale_progress"]) >= definition.casino_loss_goal
+            and int(row["potion_progress"]) >= definition.potion_goal
+        )
+
+    async def _get_rap_for_grade_check(self, user_id: int) -> int:
+        """RAP avec cache court (60 s) pour ne pas recalculer à chaque action."""
+        now = time.monotonic()
+        cached = self._rap_check_cache.get(user_id)
+        if cached is not None and now - cached[0] < self._RAP_CHECK_TTL:
+            return cached[1]
+        try:
+            rap_total = int(await self.database.get_user_pet_rap(user_id))
+        except Exception:
+            logger.exception("Impossible de récupérer le RAP pour %s", user_id)
+            return 0
+        # Nettoyage simple pour éviter que le dict grossisse indéfiniment
+        if len(self._rap_check_cache) > 5000:
+            self._rap_check_cache.clear()
+        self._rap_check_cache[user_id] = (now, rap_total)
+        return rap_total
 
     @staticmethod
     def _is_grade_ready(
