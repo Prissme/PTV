@@ -3266,8 +3266,16 @@ class Database:
         return rap_totals
 
     async def _compute_pet_rap_totals(self) -> list[tuple[int, int]]:
+        # EGRESS : ce calcul parcourt tout user_pets et renvoie une ligne par
+        # (joueur, pet, variante) : on le met en cache le temps du TTL global.
+        cache_key = ("rap_totals_sorted",)
+        cached = self._leaderboard_cache.get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
         rap_totals = await self._compute_pet_rap_totals_map()
-        return sorted(rap_totals.items(), key=lambda item: item[1], reverse=True)
+        result = sorted(rap_totals.items(), key=lambda item: item[1], reverse=True)
+        self._leaderboard_cache.set(cache_key, result)
+        return result
 
     async def get_pet_rap_leaderboard(self, limit: int) -> list[tuple[int, int]]:
         clamped_limit = max(0, int(limit))
@@ -3491,15 +3499,50 @@ class Database:
         if clamped_limit == 0:
             return []
 
+        cache_key = ("leaderboard_income", clamped_limit)
+        cached = self._leaderboard_cache.get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+
+        # EGRESS : avant, TOUTE la table user_pets (des centaines de milliers de
+        # lignes) était rapatriée à chaque appel. Maintenant :
+        #  1) le meilleur revenu non-huge par joueur est calculé côté SQL (1 ligne/joueur),
+        #  2) seuls les pets ACTIFS sont rapatriés (quelques slots par joueur).
+        best_rows = await self.pool.fetch(
+            """
+            SELECT
+                up.user_id,
+                MAX(
+                    p.base_income_per_hour::bigint
+                    * CASE
+                        WHEN up.is_galaxy THEN $1::bigint
+                        WHEN up.is_rainbow THEN $2::bigint
+                        WHEN up.is_gold THEN $3::bigint
+                        ELSE 1::bigint
+                    END
+                    * CASE WHEN up.is_shiny THEN $4::bigint ELSE 1::bigint END
+                ) AS best_income
+            FROM user_pets AS up
+            JOIN pets AS p ON p.pet_id = up.pet_id
+            WHERE NOT COALESCE(up.is_huge, FALSE)
+            GROUP BY up.user_id
+            """,
+            GALAXY_PET_MULTIPLIER,
+            RAINBOW_PET_MULTIPLIER,
+            GOLD_PET_MULTIPLIER,
+            SHINY_PET_MULTIPLIER,
+        )
+        best_non_huge: defaultdict[int, int] = defaultdict(int)
+        for row in best_rows:
+            best_non_huge[int(row["user_id"])] = int(row["best_income"] or 0)
+
         rows = await self.pool.fetch(
             """
             SELECT
                 up.user_id,
-                up.is_active,
                 up.is_huge,
                 up.is_gold,
                 up.is_rainbow,
-
                 up.is_galaxy,
                 up.is_shiny,
                 up.huge_level,
@@ -3507,32 +3550,12 @@ class Database:
                 p.base_income_per_hour
             FROM user_pets AS up
             JOIN pets AS p ON p.pet_id = up.pet_id
+            WHERE up.is_active
             """
         )
 
-        best_non_huge: defaultdict[int, int] = defaultdict(int)
-        for row in rows:
-            if bool(row.get("is_huge")):
-                continue
-            base_income = int(row["base_income_per_hour"])
-            is_galaxy = bool(row.get("is_galaxy"))
-            is_rainbow = bool(row.get("is_rainbow"))
-            if is_galaxy:
-                base_income *= GALAXY_PET_MULTIPLIER
-            elif is_rainbow:
-                base_income *= RAINBOW_PET_MULTIPLIER
-            elif bool(row.get("is_gold")):
-                base_income *= GOLD_PET_MULTIPLIER
-            if bool(row.get("is_shiny")):
-                base_income *= SHINY_PET_MULTIPLIER
-            user_id = int(row["user_id"])
-            if base_income > best_non_huge[user_id]:
-                best_non_huge[user_id] = base_income
-
         income_totals: defaultdict[int, int] = defaultdict(int)
         for row in rows:
-            if not bool(row.get("is_active")):
-                continue
             user_id = int(row["user_id"])
             base_income = int(row["base_income_per_hour"])
             if bool(row.get("is_huge")):
@@ -3559,7 +3582,9 @@ class Database:
             key=lambda item: item[1],
             reverse=True,
         )
-        return sorted_totals[:clamped_limit]
+        result = sorted_totals[:clamped_limit]
+        self._leaderboard_cache.set(cache_key, result)
+        return result
 
     async def reset_user_grade(self, user_id: int) -> None:
         await self.ensure_user(user_id)
